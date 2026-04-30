@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""
+Fetch a random Wikipedia article from a local Kiwix/ZIM server.
+
+Uses requests + BeautifulSoup for clean HTTP and HTML handling.
+
+Usage:
+    python3 src/wikipedia_fetcher.py                  # random article
+    python3 src/wikipedia_fetcher.py "quantum"        # search-based fetch
+    python3 src/wikipedia_fetcher.py --config config.json  # read Kiwix settings from config
+"""
+
+import json
+import os
+import random
+import sys
+
+import requests
+from bs4 import BeautifulSoup
+
+
+# ── Kiwix client ────────────────────────────────────────────────────
+
+class KiwixClient:
+    """Thin client for a Kiwix Server (ZIM reader)."""
+
+    SKIP_PATTERNS = [
+        "List of", "list of", "List_of",
+        "Glossary", "Glossary_of",
+        "Index of", "index of", "Index_of",
+        "Table of", "Table_of",
+        "Bibliography", "Bibliography_of",
+        "Outline of", "Outline_of",
+    ]
+    FOOTER_MARKERS = [
+        "This article is issued from Wikipedia",
+        "Creative Commons",
+        "Additional terms may apply",
+    ]
+    CONTENT_SELECTOR = "#mw-content-text, #bodyContent, .mw-parser-output"
+
+    def __init__(self, base_url="http://192.168.100.52:8080", zim_name="wikipedia_en_all_maxi_2026-02"):
+        self.base_url = base_url.rstrip("/")
+        self.zim_name = zim_name
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "OpenClaw-Lingua/1.0"})
+
+    # ── HTTP helpers ──────────────────────────────────────────────
+
+    def _get(self, path, params=None, timeout=15):
+        """GET a Kiwix endpoint and return the response."""
+        url = f"{self.base_url}{path}"
+        return self.session.get(url, params=params, timeout=timeout)
+
+    # ── Public API ────────────────────────────────────────────────
+
+    def search(self, pattern, count=5, offset=0):
+        """Search the ZIM file. Returns list of article titles."""
+        params = {
+            "book": self.zim_name,
+            "pattern": pattern,
+            "offset": str(offset),
+            "count": str(count),
+        }
+        resp = self._get("/search", params=params)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        prefix = f"/content/{self.zim_name}/"
+        titles = []
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"]
+            if href.startswith(prefix):
+                titles.append(href[len(prefix):])
+        return titles
+
+    def get_article(self, title):
+        """Fetch full article HTML for a given title. Returns a Response."""
+        # URL-encode the title (handles spaces, underscores, special chars)
+        from urllib.parse import quote
+        encoded = quote(title, safe="")
+        resp = self._get(f"/content/{self.zim_name}/{encoded}")
+        resp.raise_for_status()
+        return resp
+
+    # ── Random article ────────────────────────────────────────────
+
+    def get_random_article(self, max_attempts=10, min_words=250, target_words=400, max_words=600):
+        """
+        Fetch a random readable article suitable for language learning.
+
+        Filters out lists, glossaries, disambiguation pages, and stubs.
+        Prefers articles in the target word range; smart-truncates longer ones
+        to complete sections so the result reads coherently.
+        """
+        import string
+
+        for _ in range(max_attempts):
+            letter = random.choice(string.ascii_lowercase)
+            titles = self.search(letter, count=20)
+            if not titles:
+                continue
+
+            chosen = random.choice(titles)
+
+            # Quick title filter
+            if any(skip in chosen for skip in self.SKIP_PATTERNS):
+                continue
+
+            resp = self.get_article(chosen)
+            text = extract_wiki_text(resp.text)
+
+            # Disambiguation page filter
+            if "may refer to" in text[:500]:
+                continue
+
+            word_count = len(text.split())
+
+            # Too short — skip
+            if word_count < min_words:
+                continue
+
+            # Perfect length — keep as-is
+            if word_count <= max_words:
+                title = _get_title_from_html(resp.text)
+                return title or chosen, text
+
+            # Too long — smart-truncate to a coherent chunk
+            truncated = smart_truncate(text, target_words=target_words, max_words=max_words, min_words=min_words)
+            if truncated:
+                title = _get_title_from_html(resp.text)
+                return title or chosen, truncated
+
+        return "Error", "Could not fetch a suitable random article after multiple attempts."
+
+    # ── Lifecycle ─────────────────────────────────────────────────
+
+    def close(self):
+        """Close the underlying session."""
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+# ── HTML extraction helpers ─────────────────────────────────────────
+
+def _get_title_from_html(html):
+    """Extract page title from HTML (prefers <h1>, falls back to <title>)."""
+    soup = BeautifulSoup(html, "html.parser")
+    h1 = soup.find("h1")
+    if h1 and h1.get_text(strip=True):
+        return h1.get_text(strip=True)
+    title = soup.find("title")
+    if title and title.get_text(strip=True):
+        return title.get_text(strip=True)
+    return None
+
+
+def extract_wiki_text(html):
+    """
+    Extract readable text from Wikipedia/Kiwix HTML.
+
+    Targets the main content area to avoid navigation chrome, then strips
+    common footer noise.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Prefer the article body over the full page
+    content = None
+    for selector in [
+        "#mw-content-text > .mw-parser-output",
+        "#mw-content-text",
+        "#bodyContent .mw-parser-output",
+        "#bodyContent",
+    ]:
+        content = soup.select_one(selector)
+        if content:
+            break
+
+    # Fallback: parse the whole page
+    if not content:
+        content = soup
+
+    # Remove script/style/nav/sidebar noise
+    for tag in content.find_all(["script", "style", "noscript", "nav", ".mw-hidden-catlinks", ".reflist", ".mw-references-wrap"]):
+        tag.decompose()
+
+    # Get clean text
+    text = content.get_text(separator="\n", strip=True)
+
+    # Collapse blank lines
+    lines = text.split("\n")
+    cleaned = []
+    prev_blank = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            prev_blank = True
+        else:
+            if prev_blank:
+                cleaned.append("")
+            cleaned.append(stripped)
+            prev_blank = False
+    text = "\n".join(cleaned)
+
+    # Remove footer noise
+    for marker in KiwixClient.FOOTER_MARKERS:
+        idx = text.find(marker)
+        if idx > 0:
+            text = text[:idx].rstrip()
+
+    return text
+
+
+# ── Smart truncation ──────────────────────────────────────────────
+
+def smart_truncate(text, target_words=400, max_words=600, min_words=250):
+    """
+    Truncate article text to a coherent chunk of roughly target_words.
+
+    Strategy (two-pass):
+      1. Split on Wikipedia section markers ("==...==" lines) and greedily
+         accumulate complete sections until hitting target_words.
+      2. If the first section itself is too long, fall back to splitting on
+         blank-line-separated paragraphs and accumulating those instead.
+
+    Returns the truncated text, or None if no usable chunk >= min_words
+    could be produced.
+    """
+    # Pass 1: section-level splitting
+    result = _accumulate_by_sections(text, target_words, max_words, min_words)
+    if result:
+        return result
+
+    # Pass 2: paragraph-level splitting (fallback for articles with no
+    # section markers or a single huge lead section)
+    result = _accumulate_by_paragraphs(text, target_words, max_words, min_words)
+    return result
+
+
+def _split_sections(text):
+    """
+    Split text on Wikipedia-style section headers (==Header==).
+    Returns a list of (header_line_or_None, body_text) tuples.
+    Non-header lines before any header are grouped under None.
+    """
+    import re
+    sections = []
+    current_header = None
+    current_body_lines = []
+
+    for line in text.split("\n"):
+        if re.match(r'^={2,}', line.strip()) and line.strip().endswith('='):
+            if current_body_lines or current_header is not None:
+                body = "\n".join(current_body_lines).strip()
+                if body:
+                    sections.append((current_header, body))
+            current_header = line.strip()
+            current_body_lines = []
+        else:
+            current_body_lines.append(line)
+
+    body = "\n".join(current_body_lines).strip()
+    if body:
+        sections.append((current_header, body))
+
+    return sections
+
+
+def _accumulate_by_sections(text, target_words, max_words, min_words):
+    """Accumulate complete sections until near target_words."""
+    sections = _split_sections(text)
+    if not sections:
+        return None
+
+    accumulated = []
+    total = 0
+    for header, body in sections:
+        body_words = len(body.split())
+        header_words = len(header.split()) if header else 0
+        chunk_words = header_words + body_words
+
+        if total + chunk_words > max_words:
+            break
+
+        if header:
+            accumulated.append(header)
+        accumulated.append(body)
+        total += chunk_words
+
+    result = "\n\n".join(accumulated).strip()
+    if total >= min_words:
+        return result
+    return None
+
+
+def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
+    """Accumulate complete paragraphs (blank-line separated) until near target_words."""
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return None
+
+    accumulated = []
+    total = 0
+    for para in paragraphs:
+        para_words = len(para.split())
+
+        if total + para_words > max_words:
+            break
+
+        accumulated.append(para)
+        total += para_words
+
+    result = "\n\n".join(accumulated).strip()
+    if total >= min_words:
+        return result
+    return None
+
+
+# ── CLI entry point ─────────────────────────────────────────────────
+
+def main():
+    config_path = None
+    search_query = None
+
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg.startswith("--config=") or arg == "--config":
+            if arg.startswith("--config="):
+                config_path = arg.split("=", 1)[1]
+            elif i + 1 < len(args):
+                config_path = args[i + 1]
+        elif not arg.startswith("-"):
+            search_query = arg
+
+    # Load config
+    if config_path is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, "..", "config.json")
+
+    base_url = "http://192.168.100.52:8080"
+    zim_name = "wikipedia_en_all_maxi_2026-02"
+    min_words = 250
+    target_words = 400
+    max_words = 600
+
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+        wiki_cfg = config.get("kiwix", {})
+        base_url = wiki_cfg.get("base_url", base_url)
+        zim_name = wiki_cfg.get("zim_name", zim_name)
+        af = config.get("article_filter", {})
+        min_words = af.get("min_words", min_words)
+        target_words = af.get("target_words", target_words)
+        max_words = af.get("max_words", max_words)
+
+    with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
+        if search_query:
+            # Search mode
+            titles = client.search(search_query, count=5)
+            if not titles:
+                print(json.dumps({"error": f"No results for '{search_query}'"}))
+                sys.exit(1)
+            chosen = random.choice(titles)
+            resp = client.get_article(chosen)
+            text = extract_wiki_text(resp.text)
+            title = _get_title_from_html(resp.text) or chosen
+
+            # Smart-truncate if needed
+            word_count = len(text.split())
+            if word_count > max_words:
+                truncated = smart_truncate(text, target_words, max_words, min_words)
+                if truncated:
+                    text = truncated
+        else:
+            # Random mode
+            title, text = client.get_random_article(
+                min_words=min_words,
+                target_words=target_words,
+                max_words=max_words,
+            )
+
+        # Output as structured payload
+        result = {
+            "title": title,
+            "text": text,
+            "source": f"Kiwix ({zim_name})",
+            "word_count": len(text.split()),
+        }
+        print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
