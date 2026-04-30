@@ -18,6 +18,10 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 
+DEFAULT_BASE_URL = "http://192.168.100.52:8080"
+DEFAULT_ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
+DEFAULT_ARTICLE_FILTER = {"min_words": 250, "target_words": 400, "max_words": 600}
+
 
 # ── Kiwix client ────────────────────────────────────────────────────
 
@@ -321,43 +325,58 @@ def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
     return None
 
 
-# ── CLI entry point ─────────────────────────────────────────────────
+# ── CLI helpers ───────────────────────────────────────────────────
 
-def main():
+def parse_cli_args(args):
     config_path = None
     search_query = None
-
-    args = sys.argv[1:]
     for i, arg in enumerate(args):
-        if arg.startswith("--config=") or arg == "--config":
-            if arg.startswith("--config="):
-                config_path = arg.split("=", 1)[1]
-            elif i + 1 < len(args):
-                config_path = args[i + 1]
+        if arg.startswith("--config="):
+            config_path = arg.split("=", 1)[1]
+        elif arg == "--config" and i + 1 < len(args):
+            config_path = args[i + 1]
         elif not arg.startswith("-"):
             search_query = arg
+    return config_path, search_query
 
-    # Load config
+
+def load_fetcher_config(config_path=None):
     if config_path is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(script_dir, "..", "config.json")
 
-    base_url = "http://192.168.100.52:8080"
-    zim_name = "wikipedia_en_all_maxi_2026-02"
-    min_words = 250
-    target_words = 400
-    max_words = 600
+    settings = {
+        "base_url": DEFAULT_BASE_URL,
+        "zim_name": DEFAULT_ZIM_NAME,
+        "article_filter": DEFAULT_ARTICLE_FILTER.copy(),
+    }
 
     if os.path.exists(config_path):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
+
         wiki_cfg = config.get("kiwix", {})
-        base_url = wiki_cfg.get("base_url", base_url)
-        zim_name = wiki_cfg.get("zim_name", zim_name)
+        settings["base_url"] = wiki_cfg.get("base_url", settings["base_url"])
+        settings["zim_name"] = wiki_cfg.get("zim_name", settings["zim_name"])
+
         af = config.get("article_filter", {})
-        min_words = af.get("min_words", min_words)
-        target_words = af.get("target_words", target_words)
-        max_words = af.get("max_words", max_words)
+        for key in settings["article_filter"]:
+            settings["article_filter"][key] = af.get(key, settings["article_filter"][key])
+
+    return settings
+
+
+# ── CLI entry point ─────────────────────────────────────────────────
+
+def main():
+    config_path, search_query = parse_cli_args(sys.argv[1:])
+    settings = load_fetcher_config(config_path)
+
+    base_url = settings["base_url"]
+    zim_name = settings["zim_name"]
+    min_words = settings["article_filter"]["min_words"]
+    target_words = settings["article_filter"]["target_words"]
+    max_words = settings["article_filter"]["max_words"]
 
     with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
         if search_query:

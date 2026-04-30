@@ -7,7 +7,8 @@ def check_env():
     errors = []
     
     # 1. Check Project Root
-    project_root = "/home/node/.openclaw/workspace/openclaw-lingua"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.normpath(os.path.join(script_dir, ".."))
     if os.path.exists(project_root):
         print(f"✅ Project Root: {project_root}")
     else:
@@ -45,7 +46,7 @@ def check_env():
         errors.append(f"❌ Vocabulary file missing at {vocab_path}")
 
     # 5. Check Dependencies (the 'src' folder)
-    src_path = os.path.join(project_root, "src/orchestrator.py")
+    src_path = os.path.join(project_root, "src", "orchestrator.py")
     if os.path.exists(src_path):
         print(f"✅ Orchestrator script: Found")
     else:

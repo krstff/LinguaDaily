@@ -8,9 +8,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
 CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
 
-KIWIX_URL = "http://192.168.100.52:8080"
-ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
-
 
 def load_config():
     with open(CONFIG_PATH, 'r') as f:
