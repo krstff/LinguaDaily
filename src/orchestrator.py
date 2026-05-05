@@ -1,7 +1,6 @@
 import sys
 import os
 import json
-import subprocess
 import argparse
 
 # Resolve paths
@@ -43,47 +42,30 @@ def get_profile(config, profile_name=None):
     raise ValueError("No profiles defined in config.json")
 
 
-def fetch_random_wiki_article(topic=None, config=None):
+def fetch_article(source="wikipedia", topic=None, config=None):
     """
-    Fetch a random Wikipedia article from the local Kiwix server.
-    Uses src/wikipedia_fetcher.py as a subprocess.
-    The fetcher handles length filtering via the profile's article_filter settings.
+    Fetch an article from the given content source via the router.
 
-    If topic is given, search for articles matching that topic.
-    Returns (title, text) or (None, None) on failure.
+    Parameters
+    ----------
+    source : str
+        Content source identifier ("wikipedia", "news").
+    topic : str or None
+        Topic to search/filter by.
+    config : dict or None
+        Full config.json contents. Loaded from disk if None.
+
+    Returns
+    -------
+    (title, text) or (None, None) on failure.
     """
-    fetcher_path = os.path.join(SCRIPT_DIR, "wikipedia_fetcher.py")
-    cmd = [sys.executable, fetcher_path, "--config", CONFIG_PATH]
-    if topic:
-        cmd.append(topic)
+    if config is None:
+        config = load_config()
 
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
-        )
-        if result.returncode != 0:
-            print(f"Fetcher error: {result.stderr.strip()}")
-            return None, None
+    # Import router here to keep orchestrator lightweight
+    from fetch_router import fetch_article as route_fetch
 
-        data = json.loads(result.stdout)
-        if data.get("error"):
-            print(f"Fetcher returned error: {data['error']}")
-            return None, None
-
-        title = data.get("title", "Unknown")
-        text = data.get("text", "")
-
-        return title, text
-    except subprocess.TimeoutExpired:
-        print("Fetcher timed out after 60s")
-        return None, None
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse fetcher output: {e}")
-        print(f"Raw output: {result.stdout[:500]}")
-        return None, None
-    except Exception as e:
-        print(f"Fetcher exception: {e}")
-        return None, None
+    return route_fetch(source, topic, config)
 
 
 def main():
@@ -116,13 +98,15 @@ def main():
         import random
         topic = random.choice(profile["topics"])
 
+    source = profile.get("source", "wikipedia")
     print(f"Profile: {profile_name}")
+    print(f"Source: {source}")
     print(f"Target Topic: {topic}")
     print(f"Languages: {profile['source_lang']} -> {profile['target_lang_name']}")
 
-    # Step 1: Fetch a real Wikipedia article
-    print("\nFetching random Wikipedia article from Kiwix...")
-    title, content = fetch_random_wiki_article(topic, config)
+    # Step 1: Fetch an article via the router
+    print(f"\nFetching article from {source}...")
+    title, content = fetch_article(source=source, topic=topic, config=config)
 
     if not content:
         print("WARNING: Could not fetch article, using fallback.")
@@ -137,6 +121,7 @@ def main():
     print("\n---PAYLOAD_START---")
     payload = {
         "profile": profile_name,
+        "source": source,
         "title": title,
         "content": content,
         "topic": topic,
