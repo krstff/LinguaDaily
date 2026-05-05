@@ -101,7 +101,7 @@ class KiwixClient:
 
         for _ in range(max_attempts):
             letter = random.choice(string.ascii_lowercase)
-            titles = self.search(letter, count=20)
+            titles = self.search(letter, count=50)
             if not titles:
                 continue
 
@@ -381,7 +381,7 @@ def main():
     with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
         if search_query:
             # Search mode
-            titles = client.search(search_query, count=5)
+            titles = client.search(search_query, count=50)
             if not titles:
                 print(json.dumps({"error": f"No results for '{search_query}'"}))
                 sys.exit(1)

@@ -54,7 +54,12 @@ Configuration in `config.json` (shared global setting):
       "source_lang": "en",
       "target_lang": "de",
       "target_lang_name": "German",
-      "topics": ["Technology", "Culture", "Science"],
+      "source": "wikipedia",
+      "topics": [
+        "Technology", "Science", "Mathematics",
+        "History", "Art", "Music",
+        "Philosophy", "Literature", "Architecture"
+      ],
       "article_filter": {
         "min_words": 250,
         "target_words": 400,
@@ -63,15 +68,13 @@ Configuration in `config.json` (shared global setting):
       "schedule": {
         "time": "08:00",
         "tz": "Europe/Berlin"
-      },
-      "delivery": {
-        "channel": "telegram",
-        "to": "8218069709"
       }
     }
   }
 }
 ```
+
+> **Note:** Delivery routing (channel, recipient) is configured in your OpenClaw cron job — not in this file. Keep `config.json` clean for public repos.
 
 ### Per-profile settings
 
@@ -80,12 +83,13 @@ Configuration in `config.json` (shared global setting):
 | `source_lang` | Source language code (default: `en`) |
 | `target_lang` | Target language code |
 | `target_lang_name` | Display name (e.g. `German`) |
+| `source` | Content source (`wikipedia` now; planned: `news`, `custom`) |
 | `topics` | Topics to search for (random pick per run) |
 | `article_filter` | Word count thresholds for article filtering |
 | `schedule.time` | Daily lesson delivery time |
 | `schedule.tz` | Timezone for scheduling |
-| `delivery.channel` | Delivery channel (`telegram`, `whatsapp`, etc.) |
-| `delivery.to` | Target recipient ID |
+
+> **Delivery** is configured in your OpenClaw cron job (`delivery.channel`, `delivery.to`), not here.
 
 ### Adding a new user
 
