@@ -32,27 +32,26 @@ FEED_CATALOGUE = {
     ],
     "Science": [
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        "https://www.newscientist.com/feed/",
     ],
     "Mathematics": [
-        # Math-specific news is rare; fall back to science + education
+        # Math-specific news is rare; fall back to science
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     ],
     "History": [
-        "https://feeds.bbci.co.uk/news/history/rss.xml",
+        "https://feeds.bbci.co.uk/news/world/rss.xml",
     ],
     "Art": [
-        "https://feeds.bbci.co.uk/news/entertainment_arts/rss.xml",
+        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     ],
     "Music": [
-        "https://feeds.bbci.co.uk/news/entertainment_arts/rss.xml",
+        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     ],
     "Philosophy": [
         # Philosophy news is rare; general culture/science overlap
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     ],
     "Literature": [
-        "https://feeds.bbci.co.uk/news/entertainment_arts/rss.xml",
+        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     ],
     "Architecture": [
         "https://feeds.bbci.co.uk/news/world/rss.xml",
@@ -88,7 +87,7 @@ FEED_CATALOGUE = {
         "https://feeds.bbci.co.uk/news/health/rss.xml",
     ],
     "Culture": [
-        "https://feeds.bbci.co.uk/news/entertainment_arts/rss.xml",
+        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     ],
 }
 
