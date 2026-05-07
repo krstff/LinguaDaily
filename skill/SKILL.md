@@ -5,9 +5,14 @@ Language immersion tutor — fetches real Wikipedia articles from a local Kiwix 
 ## Architecture
 
 ```
-orchestrator.py  →  wikipedia_fetcher.py  →  processor.py  →  data/<profile>/vocabulary.md
-     (entry)          (Kiwix client)         (prep for LLM)          (per-user vocab DB)
+orchestrator.py  →  wikipedia_fetcher.py  →  tts.py  →  output/<profile>/lingua_*.wav
+     (entry)          (Kiwix client, lang-aware)   (OmniVoice TTS)
+                                              ↓
+                                    processor.py  →  data/<profile>/vocabulary.md
+                                         (prep for LLM)          (per-user vocab DB)
 ```
+
+**Flow:** Fetch native-language article → generate TTS audio → Agent adds translation + glossary → deliver text + voice message.
 
 ## Multi-User Profiles
 
@@ -45,15 +50,28 @@ Configuration in `config.json` (shared global setting):
 ```json
 {
   "default_profile": "krystof",
-  "kiwix": {
-    "base_url": "http://192.168.100.52:8080",
-    "zim_name": "wikipedia_en_all_maxi_2026-02"
+  "kiwix_servers": {
+    "en": {
+      "base_url": "http://192.168.100.52:8080",
+      "zim_name": "wikipedia_en_all_maxi_2026-02"
+    },
+    "de": {
+      "base_url": "http://192.168.100.52:8080",
+      "zim_name": "wikipedia_de_all_maxi_2026-04"
+    }
+  },
+  "tts": {
+    "base_url": "http://localhost:8080/v1",
+    "api_key": "***",
+    "model": "omnivoice",
+    "default_voice": "female"
   },
   "profiles": {
     "krystof": {
       "source_lang": "en",
       "target_lang": "de",
       "target_lang_name": "German",
+      "content_lang": "de",
       "source": "wikipedia",
       "topics": [
         "Technology", "Science", "Mathematics",
@@ -75,6 +93,20 @@ Configuration in `config.json` (shared global setting):
 ```
 
 > **Note:** Delivery routing (channel, recipient) is configured in your OpenClaw cron job — not in this file. Keep `config.json` clean for public repos.
+
+### kiwix_servers
+
+Maps language codes → Kiwix server config. The orchestrator picks the right server based on each profile's `content_lang`. Add entries for every language you have a ZIM file for.
+
+### tts
+
+Global TTS settings for OmniVoice. All profiles share these unless overridden later.
+
+### Per-profile: content_lang
+
+`content_lang` specifies which language the fetched article should be in. This is the language the learner is studying — the TTS reads it aloud, and the Agent translates *into* the user's native language (`source_lang`).
+
+Example: Krystof speaks English (`source_lang: en`) and is learning German (`target_lang: de`). So `content_lang: de` — articles are fetched in German, read aloud in German, and translated to English.
 
 ### Per-profile settings
 
@@ -158,11 +190,12 @@ All thresholds are controlled per-profile via `article_filter` in `config.json`.
 
 ## Capabilities
 
-- **Fetch Content**: Local Kiwix server (offline Wikipedia ZIM files).
-- **Translate**: LLM translates fetched article into target language.
+- **Fetch Content**: Local Kiwix server (offline Wikipedia ZIM files) or RSS news feeds. Multi-language support via `kiwix_servers` map.
+- **TTS Audio**: Generates voice readings of the fetched article using local OmniVoice server — no tokens, fast.
+- **Translate**: LLM provides native-language glossary/summary (not full translation) since content is already in the target language.
 - **Vocabulary Tracking**: Auto-updates per-profile `data/<profile>/vocabulary.md`.
-- **Dual-Language Delivery**: Original + translated text for comparison learning.
-- **Multi-User**: Separate profiles with independent vocab, topics, and schedules.
+- **Dual-Language Delivery**: Original text + translated summary + voice message for immersive learning.
+- **Multi-User**: Separate profiles with independent vocab, topics, schedules, and language pairs.
 
 ## Cron Integration
 
@@ -175,7 +208,10 @@ Command: python3 src/orchestrator.py --profile <profile_name>
 Delivery: announce to <profile.delivery.channel>:<profile.delivery.to>
 ```
 
-The Agent reads the JSON payload, translates via LLM using the profile's target language, and delivers the dual-language lesson to the correct recipient.
+The Agent reads the JSON payload and:
+1. **Translates** the article from `content_lang` into the user's native language (`source_lang`) — providing a glossary/summary rather than a full translation.
+2. **Attaches** the TTS audio file using `MEDIA:<wav_path>` so the recipient gets a voice message alongside the text lesson.
+3. Updates the vocabulary database.
 
 ## Payload Format
 
@@ -185,16 +221,19 @@ The orchestrator outputs a JSON payload with profile context:
 {
   "profile": "krystof",
   "title": "Some Article",
-  "content": "...",
+  "content": "... (in content_lang) ...",
   "topic": "Technology",
+  "content_lang": "de",
   "source_lang": "en",
   "target_lang": "de",
   "target_lang_name": "German",
-  "vocab_path": "/absolute/path/to/data/krystof/vocabulary.md"
+  "vocab_path": "/absolute/path/to/data/krystof/vocabulary.md",
+  "wav_path": "/absolute/path/to/output/krystof/lingua_a1b2c3d4.wav"
 }
 ```
 
 The Agent uses this to:
-1. Translate in the correct target language
-2. Update the right vocabulary file
-3. Route delivery to the correct recipient
+1. **Translate** the article from `content_lang` into the user's native language (`source_lang`)
+2. **Attach** the TTS audio via `MEDIA:<wav_path>` (if `wav_path` is present)
+3. Update the vocabulary database
+4. Route delivery to the correct recipient

@@ -15,7 +15,7 @@ import sys
 import os
 
 
-def fetch_article(source, topic, config):
+def fetch_article(source, topic, config, content_lang=None):
     """
     Fetch an article from the given content source.
 
@@ -27,29 +27,45 @@ def fetch_article(source, topic, config):
         Topic string to search/filter by.
     config : dict
         Full config.json contents.
+    content_lang : str or None
+        Language code for the desired content (used to pick the right
+        Kiwix server when source is wikipedia).
 
     Returns
     -------
     (title, text) or (None, None) on failure.
     """
     if source == "wikipedia":
-        return _fetch_wikipedia(topic, config)
+        return _fetch_wikipedia(topic, config, content_lang=content_lang)
     elif source == "news":
         return _fetch_news(topic, config)
     else:
         print(f"Warning: unknown source '{source}', falling back to wikipedia.")
-        return _fetch_wikipedia(topic, config)
+        return _fetch_wikipedia(topic, config, content_lang=content_lang)
 
 
 # ── Wikipedia (Kiwix) ───────────────────────────────────────────────
 
-def _fetch_wikipedia(topic, config):
-    """Fetch via the existing Kiwix-based Wikipedia fetcher (subprocess)."""
+def _fetch_wikipedia(topic, config, content_lang=None):
+    """Fetch via the existing Kiwix-based Wikipedia fetcher (subprocess).
+
+    Parameters
+    ----------
+    topic : str
+        Topic to search for.
+    config : dict
+        Full config.json contents.
+    content_lang : str or None
+        Language code of the desired content (e.g. "de", "en").
+        If given, resolves Kiwix server from kiwix_servers[content_lang].
+    """
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     fetcher_path = os.path.join(SCRIPT_DIR, "wikipedia_fetcher.py")
     config_path = os.path.join(SCRIPT_DIR, "..", "config.json")
 
     cmd = [sys.executable, fetcher_path, "--config", config_path]
+    if content_lang:
+        cmd.extend(["--content-lang", content_lang])
     if topic:
         cmd.append(topic)
 

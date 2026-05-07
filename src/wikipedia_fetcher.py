@@ -28,18 +28,54 @@ DEFAULT_ARTICLE_FILTER = {"min_words": 250, "target_words": 400, "max_words": 60
 class KiwixClient:
     """Thin client for a Kiwix Server (ZIM reader)."""
 
+    # Patterns to skip — English + common translations (DE, ES, IT, HU, FR, PL)
     SKIP_PATTERNS = [
+        # English
         "List of", "list of", "List_of",
         "Glossary", "Glossary_of",
         "Index of", "index of", "Index_of",
         "Table of", "Table_of",
         "Bibliography", "Bibliography_of",
         "Outline of", "Outline_of",
+        # German
+        "Liste der", "Liste von", "Liste (",
+        "Begriffsklärung", "Siehe auch",
+        "Tafel der", "Verzeichnis",
+        # Spanish
+        "Lista de", "Anexo:Lista",
+        "Glosario", "Índice de",
+        "Tabla de",
+        # Italian
+        "Elenco di", "Elenco dei",
+        "Glossario", "Indice di",
+        # Hungarian
+        "Listája", "-listák", "Jegyzék",
+        "Táblázat", "Szójegyzék",
+        # French
+        "Liste de", "Liste des",
+        "Glossaire", "Index de",
+        "Table de",
+        # Polish
+        "Lista", "Wykaz", "Słownik",
     ]
+    # Footer noise — English + translations (DE, ES, IT, HU, FR, PL)
     FOOTER_MARKERS = [
+        # English
         "This article is issued from Wikipedia",
         "Creative Commons",
         "Additional terms may apply",
+        # German
+        "Dieser Artikel wurde aus Wikipedia extrahiert",
+        # Spanish
+        "Este artículo fue extraído de Wikipedia",
+        # Italian
+        "Questo articolo è stato estratto da Wikipedia",
+        # Hungarian
+        "Ez a szócikk a Wikipédiából származik",
+        # French
+        "Cet article est issu de Wikipédia",
+        # Polish
+        "Artykuł pochodzi z Wikipedii",
     ]
     CONTENT_SELECTOR = "#mw-content-text, #bodyContent, .mw-parser-output"
 
@@ -51,10 +87,10 @@ class KiwixClient:
 
     # ── HTTP helpers ──────────────────────────────────────────────
 
-    def _get(self, path, params=None, timeout=15):
+    def _get(self, path, params=None, timeout=15, allow_redirects=True):
         """GET a Kiwix endpoint and return the response."""
         url = f"{self.base_url}{path}"
-        return self.session.get(url, params=params, timeout=timeout)
+        return self.session.get(url, params=params, timeout=timeout, allow_redirects=allow_redirects)
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -87,35 +123,60 @@ class KiwixClient:
         resp.raise_for_status()
         return resp
 
-    # ── Random article ────────────────────────────────────────────
+    # ── Random article (via /random endpoint) ────────────────────
 
     def get_random_article(self, max_attempts=10, min_words=250, target_words=400, max_words=600):
         """
         Fetch a random readable article suitable for language learning.
 
-        Filters out lists, glossaries, disambiguation pages, and stubs.
-        Prefers articles in the target word range; smart-truncates longer ones
-        to complete sections so the result reads coherently.
+        Uses the Kiwix /random endpoint (follows 302 redirect to get the
+        actual article path). Filters out lists, glossaries, disambiguation
+        pages, and stubs. Prefers articles in the target word range;
+        smart-truncates longer ones to complete sections.
         """
-        import string
-
         for _ in range(max_attempts):
-            letter = random.choice(string.ascii_lowercase)
-            titles = self.search(letter, count=50)
-            if not titles:
+            # Kiwix /random?content=ZIMNAME returns a 302 redirect to the article
+            resp = self._get("/random", params={"content": self.zim_name}, timeout=15, allow_redirects=False)
+            if resp.status_code == 404:
+                return "Error", "/random endpoint not available on this Kiwix server."
+
+            # Follow the redirect — Location header contains the article path
+            location = resp.headers.get("Location", "")
+            if not location:
                 continue
 
-            chosen = random.choice(titles)
+            # Extract title from the redirect URL: /content/ZIMNAME/Title
+            prefix = f"/content/{self.zim_name}/"
+            if location.startswith(prefix):
+                title_raw = location[len(prefix):]
+            elif location.startswith("/"):
+                # Some versions return just /Title
+                title_raw = location.lstrip("/")
+            else:
+                title_raw = location
+
+            # URL-decode the title
+            from urllib.parse import unquote
+            title = unquote(title_raw)
 
             # Quick title filter
-            if any(skip in chosen for skip in self.SKIP_PATTERNS):
+            if any(skip in title for skip in self.SKIP_PATTERNS):
                 continue
 
-            resp = self.get_article(chosen)
-            text = extract_wiki_text(resp.text)
+            # Fetch the full article HTML via content endpoint
+            article_resp = self.get_article(title)
+            text = extract_wiki_text(article_resp.text)
 
-            # Disambiguation page filter
-            if "may refer to" in text[:500]:
+            # Disambiguation page filter (multi-language patterns)
+            disambig_patterns = [
+                "may refer to",          # EN
+                "kann sich beziehen auf",  # DE
+                "puede referirse a",      # ES
+                "può riferirsi a",        # IT
+                "lehet több jelentése is", # HU
+                "peut faire référence à",  # FR
+            ]
+            if any(pat in text[:500] for pat in disambig_patterns):
                 continue
 
             word_count = len(text.split())
@@ -126,14 +187,14 @@ class KiwixClient:
 
             # Perfect length — keep as-is
             if word_count <= max_words:
-                title = _get_title_from_html(resp.text)
-                return title or chosen, text
+                html_title = _get_title_from_html(article_resp.text)
+                return html_title or title, text
 
             # Too long — smart-truncate to a coherent chunk
             truncated = smart_truncate(text, target_words=target_words, max_words=max_words, min_words=min_words)
             if truncated:
-                title = _get_title_from_html(resp.text)
-                return title or chosen, truncated
+                html_title = _get_title_from_html(article_resp.text)
+                return html_title or title, truncated
 
         return "Error", "Could not fetch a suitable random article after multiple attempts."
 
@@ -329,18 +390,40 @@ def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
 
 def parse_cli_args(args):
     config_path = None
+    content_lang = None
     search_query = None
-    for i, arg in enumerate(args):
+    i = 0
+    positional_args = []
+    while i < len(args):
+        arg = args[i]
         if arg.startswith("--config="):
             config_path = arg.split("=", 1)[1]
         elif arg == "--config" and i + 1 < len(args):
             config_path = args[i + 1]
+            i += 1
+        elif arg == "--content-lang" and i + 1 < len(args):
+            content_lang = args[i + 1]
+            i += 1
         elif not arg.startswith("-"):
-            search_query = arg
-    return config_path, search_query
+            positional_args.append(arg)
+        i += 1
+    search_query = positional_args[0] if positional_args else None
+    return config_path, content_lang, search_query
 
 
-def load_fetcher_config(config_path=None):
+def load_fetcher_config(config_path=None, content_lang=None):
+    """
+    Load fetcher configuration from config.json.
+
+    Parameters
+    ----------
+    config_path : str or None
+        Path to config.json. Defaults to project root.
+    content_lang : str or None
+        Language code (e.g. "de", "en"). If given, resolves Kiwix server
+        from kiwix_servers[content_lang]. Falls back to legacy top-level
+        'kiwix' block if not found.
+    """
     if config_path is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(script_dir, "..", "config.json")
@@ -355,7 +438,15 @@ def load_fetcher_config(config_path=None):
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
-        wiki_cfg = config.get("kiwix", {})
+        # Resolve Kiwix server: prefer kiwix_servers[content_lang], fall back to legacy 'kiwix'
+        wiki_cfg = {}
+        if content_lang and "kiwix_servers" in config:
+            wiki_cfg = config["kiwix_servers"].get(content_lang, {})
+
+        # Fall back to legacy top-level kiwix block
+        if not wiki_cfg:
+            wiki_cfg = config.get("kiwix", {})
+
         settings["base_url"] = wiki_cfg.get("base_url", settings["base_url"])
         settings["zim_name"] = wiki_cfg.get("zim_name", settings["zim_name"])
 
@@ -369,8 +460,8 @@ def load_fetcher_config(config_path=None):
 # ── CLI entry point ─────────────────────────────────────────────────
 
 def main():
-    config_path, search_query = parse_cli_args(sys.argv[1:])
-    settings = load_fetcher_config(config_path)
+    config_path, content_lang, search_query = parse_cli_args(sys.argv[1:])
+    settings = load_fetcher_config(config_path, content_lang=content_lang)
 
     base_url = settings["base_url"]
     zim_name = settings["zim_name"]

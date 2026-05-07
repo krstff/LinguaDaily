@@ -42,7 +42,7 @@ def get_profile(config, profile_name=None):
     raise ValueError("No profiles defined in config.json")
 
 
-def fetch_article(source="wikipedia", topic=None, config=None):
+def fetch_article(source="wikipedia", topic=None, config=None, content_lang=None):
     """
     Fetch an article from the given content source via the router.
 
@@ -54,6 +54,9 @@ def fetch_article(source="wikipedia", topic=None, config=None):
         Topic to search/filter by.
     config : dict or None
         Full config.json contents. Loaded from disk if None.
+    content_lang : str or None
+        Language code for the desired content (used to pick the right
+        Kiwix server when source is wikipedia).
 
     Returns
     -------
@@ -65,7 +68,7 @@ def fetch_article(source="wikipedia", topic=None, config=None):
     # Import router here to keep orchestrator lightweight
     from fetch_router import fetch_article as route_fetch
 
-    return route_fetch(source, topic, config)
+    return route_fetch(source, topic, config, content_lang=content_lang)
 
 
 def main():
@@ -99,20 +102,43 @@ def main():
         topic = random.choice(profile["topics"])
 
     source = profile.get("source", "wikipedia")
+    content_lang = profile.get("content_lang", profile.get("target_lang", "en"))
+
     print(f"Profile: {profile_name}")
     print(f"Source: {source}")
+    print(f"Content Language: {content_lang}")
     print(f"Target Topic: {topic}")
-    print(f"Languages: {profile['source_lang']} -> {profile['target_lang_name']}")
+    print(f"Languages: {profile['source_lang']} (native) -> {profile['target_lang_name']} (learning)")
 
     # Step 1: Fetch an article via the router
     print(f"\nFetching article from {source}...")
-    title, content = fetch_article(source=source, topic=topic, config=config)
+    title, content = fetch_article(source=source, topic=topic, config=config, content_lang=content_lang)
 
     if not content:
         print("WARNING: Could not fetch article, using fallback.")
         content = f"A Wikipedia article about {topic} could not be retrieved from the local server."
 
     print(f"Fetched: {title} ({len(content.split())} words)")
+
+    # Step 1.5: Generate TTS audio of the fetched content
+    wav_path = None
+    if config.get("tts"):
+        print(f"\nGenerating TTS (language: {content_lang})...")
+        try:
+            from tts import synthesize
+            output_dir = os.path.join(PROJECT_DIR, "output", profile_name)
+            wav_path = synthesize(
+                text=content,
+                language_id=content_lang,
+                config=config,
+                output_dir=output_dir,
+            )
+            if wav_path:
+                print(f"TTS audio: {wav_path}")
+            else:
+                print("WARNING: TTS generation returned no file.")
+        except Exception as e:
+            print(f"WARNING: TTS error (lesson will be delivered without audio): {e}")
 
     # Step 2: Output structured payload for the Agent/Processor
     vocab_dir = os.path.join(PROJECT_DIR, "data", profile_name)
@@ -125,10 +151,12 @@ def main():
         "title": title,
         "content": content,
         "topic": topic,
+        "content_lang": content_lang,
         "source_lang": profile["source_lang"],
         "target_lang": profile["target_lang"],
         "target_lang_name": profile["target_lang_name"],
         "vocab_path": vocab_path,
+        "wav_path": wav_path,
     }
     print(json.dumps(payload, ensure_ascii=False))
     print("---PAYLOAD_END---")
