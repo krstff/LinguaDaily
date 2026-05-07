@@ -100,9 +100,13 @@ class KiwixClient:
     # ── Public API ────────────────────────────────────────────────
 
     def search(self, pattern, count=5, offset=0):
-        """Search the ZIM file. Returns list of article titles."""
+        """Search the ZIM file. Returns list of article titles.
+
+        Uses 'content=' instead of 'book=' to avoid Kiwix's
+        'confusion-of-tongues' error when multiple language ZIMs are loaded.
+        """
         params = {
-            "book": self.zim_name,
+            "content": self.zim_name,
             "pattern": pattern,
             "offset": str(offset),
             "count": str(count),

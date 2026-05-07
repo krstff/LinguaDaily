@@ -22,12 +22,16 @@ DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
 
 
 def _get_client(config):
-    """Build an OpenAI-compatible client from config."""
+    """Build an OpenAI-compatible client from config.
+
+    Returns None if the openai package is not installed (so callers can
+    gracefully skip TTS instead of crashing).
+    """
     try:
         from openai import OpenAI
     except ImportError:
-        print("Error: 'openai' package not installed. Run: pip install openai", file=sys.stderr)
-        sys.exit(1)
+        print("Warning: 'openai' package not installed, skipping TTS.", file=sys.stderr)
+        return None
 
     tts_cfg = config.get("tts", {})
     base_url = tts_cfg.get("base_url", "http://llama-swap:8080/v1")
@@ -85,6 +89,8 @@ def synthesize(text, language_id="de", config=None, output_dir=None):
 
     try:
         client = _get_client(config)
+        if client is None:
+            return None
         with client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
