@@ -57,6 +57,9 @@ class KiwixClient:
         "Table de",
         # Polish
         "Lista", "Wykaz", "Słownik",
+        # Czech
+        "Seznam", "Seznamy", "Přehled", "Tabulka",
+        "Glosář", "Rejstřík",
     ]
     # Footer noise — English + translations (DE, ES, IT, HU, FR, PL)
     FOOTER_MARKERS = [
@@ -76,6 +79,8 @@ class KiwixClient:
         "Cet article est issu de Wikipédia",
         # Polish
         "Artykuł pochodzi z Wikipedii",
+        # Czech
+        "Tento článek byl extrahován z Wikipedie",
     ]
     CONTENT_SELECTOR = "#mw-content-text, #bodyContent, .mw-parser-output"
 
@@ -169,12 +174,14 @@ class KiwixClient:
 
             # Disambiguation page filter (multi-language patterns)
             disambig_patterns = [
-                "may refer to",          # EN
-                "kann sich beziehen auf",  # DE
-                "puede referirse a",      # ES
-                "può riferirsi a",        # IT
-                "lehet több jelentése is", # HU
-                "peut faire référence à",  # FR
+                "may refer to",              # EN
+                "kann sich beziehen auf",     # DE
+                "puede referirse a",          # ES
+                "può riferirsi a",            # IT
+                "lehet több jelentése is",    # HU
+                "peut faire référence à",     # FR
+                "může znamenat",              # CS
+                "viz rozcestník",             # CS (disambiguation page)
             ]
             if any(pat in text[:500] for pat in disambig_patterns):
                 continue
