@@ -23,14 +23,18 @@ OpenClaw-Lingua automates the process of language learning by:
 ```
 config.json                          → shared config + per-user profiles
 kiwix server (shared)
+tts server (OmniVoice / local llama)
 data/
   krystof/
     vocabulary.md                    → Krystof's vocab
   anna/
     vocabulary.md                    → Anna's vocab
+output/
+  krystof/
+    lingua_*.wav                     → TTS audio per run
 
-orchestrator.py  →  wikipedia_fetcher.py  →  processor.py  →  vocabulary.md
-     (entry)          (Kiwix client)         (prep for LLM)    (per-user DB)
+orchestrator.py  →  wikipedia_fetcher.py  →  tts.py  →  processor.py  →  vocabulary.md
+     (entry)          (Kiwix client)         (speech gen)   (prep for LLM)    (per-user DB)
 ```
 
 ## Quick Start
@@ -90,6 +94,18 @@ cd /path/to/openclaw-lingua
 python3 src/orchestrator.py --profile krystof
 ```
 
+#### Running locally (outside Docker)
+
+The TTS server defaults to `http://llama-swap:8080/v1` (internal Docker DNS). When running on your host machine, override it:
+
+```bash
+# Full pipeline with local TTS URL:
+python3 src/orchestrator.py --profile krystof --tts-url http://192.168.100.60:8080/v1
+
+# Standalone TTS test:
+python3 src/tts.py --tts-url http://192.168.100.60:8080/v1 --lang de "Hallo Welt"
+```
+
 ### 4. Set up cron jobs
 
 Create one cron job per profile in OpenClaw, targeting the profile's scheduled time and delivery channel. See [SKILL.md](skill/SKILL.md) for details.
@@ -140,6 +156,36 @@ All thresholds are controlled per-profile from `config.json`:
 | `src/processor.py` | Passes text through unchanged |
 
 > **Note:** If you adjust the targets, only edit `config.json`. No code changes needed.
+
+## TTS Configuration
+
+Speech is generated via a local OmniVoice-compatible server (LLaMA.cpp with Omnivoice model).
+
+### Per-Profile Voice Selection
+
+Each profile can choose its own voice in `config.json`:
+
+```json
+{
+  "profiles": {
+    "krystof": {
+      "tts_voice": "male"
+    },
+    "anna": {
+      "tts_voice": "female"
+    }
+  }
+}
+```
+
+Default voice is **male** when not specified.
+
+### CLI Overrides
+
+| Flag | Script | Purpose |
+|------|--------|---------|
+| `--tts-url <url>` | orchestrator, tts.py | Override TTS server address (for local runs) |
+| `--voice <name>` | tts.py | Override voice for a single run |
 
 ## Documentation
 
