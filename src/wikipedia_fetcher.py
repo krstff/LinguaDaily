@@ -268,7 +268,7 @@ def extract_wiki_text(html):
     # Get clean text
     text = content.get_text(separator="\n", strip=True)
 
-    # Collapse blank lines
+    # Collapse blank lines → keep paragraph boundaries as double-newlines
     lines = text.split("\n")
     cleaned = []
     prev_blank = False
@@ -278,10 +278,17 @@ def extract_wiki_text(html):
             prev_blank = True
         else:
             if prev_blank:
-                cleaned.append("")
+                cleaned.append("")  # blank line creates \n\n boundary when joined
             cleaned.append(stripped)
             prev_blank = False
     text = "\n".join(cleaned)
+
+    # Post-process: Wikipedia HTML often produces single-newline boundaries
+    # between paragraphs (no real blank lines). Insert double-newlines after
+    # sentence-ending punctuation followed by a newline and an uppercase letter,
+    # so smart_truncate can split on paragraph boundaries.
+    import re
+    text = re.sub(r'([.!?])\n([A-Z\u00C0\u0104\u0126\u0138\u015A\u017D\u0181\u0182\u0184\u0186\u0193\u01A0\u01A2\u01B5\u01BF\u01C5\u01C7\u01C9\u01CA\u01CC\u01CE\u01D0\u01D2\u01D4\u01D6\u01D8\u01DA\u01DC\u01DE\u01E0\u01E2\u01E4\u01E6\u01E8\u01EA\u01EC\u01EE\u01F1\u01F3\u01F5\u01F7\u01F9\u01FB\u01FD\u01FF])', r'\1\n\n\2', text)
 
     # Remove footer noise
     for marker in KiwixClient.FOOTER_MARKERS:
@@ -298,11 +305,12 @@ def smart_truncate(text, target_words=400, max_words=600, min_words=250):
     """
     Truncate article text to a coherent chunk of roughly target_words.
 
-    Strategy (two-pass):
+    Strategy (three-pass):
       1. Split on Wikipedia section markers ("==...==" lines) and greedily
          accumulate complete sections until hitting target_words.
       2. If the first section itself is too long, fall back to splitting on
          blank-line-separated paragraphs and accumulating those instead.
+      3. Last resort: split on sentence boundaries and accumulate sentences.
 
     Returns the truncated text, or None if no usable chunk >= min_words
     could be produced.
@@ -315,6 +323,12 @@ def smart_truncate(text, target_words=400, max_words=600, min_words=250):
     # Pass 2: paragraph-level splitting (fallback for articles with no
     # section markers or a single huge lead section)
     result = _accumulate_by_paragraphs(text, target_words, max_words, min_words)
+    if result:
+        return result
+
+    # Pass 3: sentence-level splitting (last resort for dense text with
+    # no paragraph breaks — e.g. bibliography-heavy Wikipedia articles)
+    result = _accumulate_by_sentences(text, target_words, max_words, min_words)
     return result
 
 
@@ -374,6 +388,32 @@ def _accumulate_by_sections(text, target_words, max_words, min_words):
     return None
 
 
+def _accumulate_by_sentences(text, target_words, max_words, min_words):
+    """Accumulate sentences (split on [.!?]\s+) until near target_words."""
+    import re
+    # Split on sentence-ending punctuation followed by whitespace/newline
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = [s.strip() for s in sentences if s.strip()]
+    if not sentences:
+        return None
+
+    accumulated = []
+    total = 0
+    for sent in sentences:
+        sent_words = len(sent.split())
+
+        if total + sent_words > max_words:
+            break
+
+        accumulated.append(sent)
+        total += sent_words
+
+    result = " ".join(accumulated).strip()
+    if total >= min_words:
+        return result
+    return None
+
+
 def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
     """Accumulate complete paragraphs (blank-line separated) until near target_words."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -403,6 +443,7 @@ def parse_cli_args(args):
     config_path = None
     content_lang = None
     search_query = None
+    overrides = {}
     i = 0
     positional_args = []
     while i < len(args):
@@ -415,11 +456,14 @@ def parse_cli_args(args):
         elif arg == "--content-lang" and i + 1 < len(args):
             content_lang = args[i + 1]
             i += 1
+        elif arg in ("--min-words", "--target-words", "--max-words") and i + 1 < len(args):
+            overrides[arg.lstrip("-")] = int(args[i + 1])
+            i += 1
         elif not arg.startswith("-"):
             positional_args.append(arg)
         i += 1
     search_query = positional_args[0] if positional_args else None
-    return config_path, content_lang, search_query
+    return config_path, content_lang, search_query, overrides
 
 
 def load_fetcher_config(config_path=None, content_lang=None):
@@ -471,14 +515,18 @@ def load_fetcher_config(config_path=None, content_lang=None):
 # ── CLI entry point ─────────────────────────────────────────────────
 
 def main():
-    config_path, content_lang, search_query = parse_cli_args(sys.argv[1:])
+    config_path, content_lang, search_query, overrides = parse_cli_args(sys.argv[1:])
     settings = load_fetcher_config(config_path, content_lang=content_lang)
 
     base_url = settings["base_url"]
     zim_name = settings["zim_name"]
-    min_words = settings["article_filter"]["min_words"]
-    target_words = settings["article_filter"]["target_words"]
-    max_words = settings["article_filter"]["max_words"]
+    af = settings["article_filter"]
+    # CLI overrides take precedence
+    if overrides:
+        af.update(overrides)
+    min_words = af["min_words"]
+    target_words = af["target_words"]
+    max_words = af["max_words"]
 
     with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
         if search_query:

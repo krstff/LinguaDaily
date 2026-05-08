@@ -15,7 +15,7 @@ import sys
 import os
 
 
-def fetch_article(source, topic, config, content_lang=None):
+def fetch_article(source, topic, config, content_lang=None, article_filter=None):
     """
     Fetch an article from the given content source.
 
@@ -30,23 +30,26 @@ def fetch_article(source, topic, config, content_lang=None):
     content_lang : str or None
         Language code for the desired content (used to pick the right
         Kiwix server when source is wikipedia).
+    article_filter : dict or None
+        Per-profile article filter overrides ({min_words, target_words, max_words}).
+        Falls back to top-level config's article_filter, then built-in defaults.
 
     Returns
     -------
     (title, text) or (None, None) on failure.
     """
     if source == "wikipedia":
-        return _fetch_wikipedia(topic, config, content_lang=content_lang)
+        return _fetch_wikipedia(topic, config, content_lang=content_lang, article_filter=article_filter)
     elif source == "news":
-        return _fetch_news(topic, config)
+        return _fetch_news(topic, config, article_filter=article_filter)
     else:
         print(f"Warning: unknown source '{source}', falling back to wikipedia.")
-        return _fetch_wikipedia(topic, config, content_lang=content_lang)
+        return _fetch_wikipedia(topic, config, content_lang=content_lang, article_filter=article_filter)
 
 
 # ── Wikipedia (Kiwix) ───────────────────────────────────────────────
 
-def _fetch_wikipedia(topic, config, content_lang=None):
+def _fetch_wikipedia(topic, config, content_lang=None, article_filter=None):
     """Fetch via the existing Kiwix-based Wikipedia fetcher (subprocess).
 
     Parameters
@@ -58,6 +61,8 @@ def _fetch_wikipedia(topic, config, content_lang=None):
     content_lang : str or None
         Language code of the desired content (e.g. "de", "en").
         If given, resolves Kiwix server from kiwix_servers[content_lang].
+    article_filter : dict or None
+        Per-profile article filter overrides.
     """
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     fetcher_path = os.path.join(SCRIPT_DIR, "wikipedia_fetcher.py")
@@ -66,6 +71,11 @@ def _fetch_wikipedia(topic, config, content_lang=None):
     cmd = [sys.executable, fetcher_path, "--config", config_path]
     if content_lang:
         cmd.extend(["--content-lang", content_lang])
+    if article_filter:
+        for key in ("min_words", "target_words", "max_words"):
+            val = article_filter.get(key)
+            if val is not None:
+                cmd.extend([f"--{key}", str(val)])
     if topic:
         cmd.append(topic)
 
@@ -94,15 +104,15 @@ def _fetch_wikipedia(topic, config, content_lang=None):
 
 # ── News (RSS) ──────────────────────────────────────────────────────
 
-def _fetch_news(topic, config):
+def _fetch_news(topic, config, article_filter=None):
     """Fetch via RSS-based news fetcher."""
     from news_fetcher import NewsFetcher
 
     sources_cfg = config.get("sources", {})
     news_cfg = sources_cfg.get("news", {})
 
-    # Article filter from profile-level or global defaults
-    af = config.get("article_filter", {})
+    # Article filter: profile-level > global config > defaults
+    af = article_filter or config.get("article_filter", {})
     min_words = af.get("min_words", 250)
     target_words = af.get("target_words", 400)
     max_words = af.get("max_words", 600)

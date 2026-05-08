@@ -112,7 +112,14 @@ def main():
 
     # Step 1: Fetch an article via the router
     print(f"\nFetching article from {source}...")
-    title, content = fetch_article(source=source, topic=topic, config=config, content_lang=content_lang)
+    article_filter = profile.get("article_filter", None)
+    title, content = fetch_article(
+        source=source,
+        topic=topic,
+        config=config,
+        content_lang=content_lang,
+        article_filter=article_filter,
+    )
 
     if not content:
         print("WARNING: Could not fetch article, using fallback.")
