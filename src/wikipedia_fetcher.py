@@ -125,9 +125,13 @@ class KiwixClient:
 
     def get_article(self, title):
         """Fetch full article HTML for a given title. Returns a Response."""
-        # URL-encode the title (handles spaces, underscores, special chars)
-        from urllib.parse import quote
-        encoded = quote(title, safe="")
+        # URL-encode the title (handles spaces, underscores, special chars).
+        # Titles from Kiwix search results are already URL-encoded, so first
+        # decode to get the raw title, then re-encode to avoid double-encoding
+        # (%C3%A4 → %25C3%25A4) which causes 404 errors.
+        from urllib.parse import quote, unquote
+        raw = unquote(title)
+        encoded = quote(raw, safe="_")
         resp = self._get(f"/content/{self.zim_name}/{encoded}")
         resp.raise_for_status()
         return resp
@@ -389,7 +393,7 @@ def _accumulate_by_sections(text, target_words, max_words, min_words):
 
 
 def _accumulate_by_sentences(text, target_words, max_words, min_words):
-    """Accumulate sentences (split on [.!?]\s+) until near target_words."""
+    r"""Accumulate sentences (split on [.!?]\s+) until near target_words."""
     import re
     # Split on sentence-ending punctuation followed by whitespace/newline
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
