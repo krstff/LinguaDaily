@@ -93,9 +93,19 @@ class KiwixClient:
     # ── HTTP helpers ──────────────────────────────────────────────
 
     def _get(self, path, params=None, timeout=15, allow_redirects=True):
-        """GET a Kiwix endpoint and return the response."""
+        """GET a Kiwix endpoint and return the response.
+
+        Kiwix Server omits the charset parameter in its Content-Type header,
+        so requests defaults to ISO-8859-1 (HTTP/1.1 fallback) even though
+        the actual content is UTF-8. Force UTF-8 after each request to avoid
+        mojibake on non-ASCII characters.
+        """
         url = f"{self.base_url}{path}"
-        return self.session.get(url, params=params, timeout=timeout, allow_redirects=allow_redirects)
+        resp = self.session.get(url, params=params, timeout=timeout, allow_redirects=allow_redirects)
+        # Force UTF-8 — Kiwix serves ZIM content as UTF-8 but doesn't declare
+        # it in Content-Type, so requests defaults to ISO-8859-1 (HTTP/1.1 fallback).
+        resp.encoding = 'utf-8'
+        return resp
 
     # ── Public API ────────────────────────────────────────────────
 

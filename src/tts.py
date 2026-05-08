@@ -12,6 +12,7 @@ Usage (CLI):
 
 import json
 import os
+import re
 import sys
 import uuid
 
@@ -19,6 +20,78 @@ import uuid
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
 DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
+
+
+def sanitize_for_tts(text):
+    """
+    Clean text extracted from Wikipedia/Kiwix for TTS consumption.
+
+    Wikipedia articles contain infobox data, reference markers, special
+    symbols, and non-breaking spaces that make TTS output sound garbled.
+    This function strips or normalises those artifacts.
+
+    Returns cleaned text suitable for speech synthesis.
+    """
+    if not text:
+        return text
+
+    # 1. Remove inline reference markers: [1], [2], [a], [b], etc.
+    text = re.sub(r'\[[\da-zA-Z]+\]', '', text)
+
+    # 2. Replace non-breaking spaces with regular spaces
+    text = text.replace('\xa0', ' ')
+
+    # 3. Remove common Wikipedia artifacts that TTS can't pronounce:
+    #    - Up/down arrows (↑ ↓) from edit links / section anchors
+    #    - Other control/symbol Unicode that makes no sense spoken aloud
+    text = re.sub(r'[\u2190-\u2195\u21A8-\u21B5]', '', text)
+
+    # 4. Remove common infobox labels (standalone short lines that are just
+    #    table headers like "Rechtsform", "ISIN", "Website", etc.)
+    #    These appear as isolated single-word lines followed by a value.
+    #    Strategy: remove lines that are purely uppercase/accented single words
+    #    at the very beginning of the article (infobox region).
+    lines = text.split('\n')
+    cleaned_lines = []
+    in_infobox = False
+    infobox_end_found = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Detect infobox region: sequence of short label-value pairs before
+        # the first proper paragraph (≥ 15 words) or section header.
+        if not infobox_end_found:
+            word_count = len(stripped.split())
+            # Proper content starts when we see a reasonably long line
+            # or a blank line followed by a long line
+            if word_count >= 15:
+                in_infobox = False
+                infobox_end_found = True
+                cleaned_lines.append(line)
+                continue
+            # Check if this looks like an infobox label-value pair
+            # (very short line, often just 1-4 words, no sentence-ending punctuation)
+            elif word_count <= 6 and not re.search(r'[.!?…]$' , stripped):
+                in_infobox = True
+                continue  # skip infobox line
+            else:
+                # Ambiguous — keep it (could be early content)
+                cleaned_lines.append(line)
+                if word_count >= 10:
+                    infobox_end_found = True
+        else:
+            cleaned_lines.append(line)
+
+    text = '\n'.join(cleaned_lines)
+
+    # 5. Collapse multiple blank lines into at most two
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 6. Strip leading/trailing whitespace
+    text = text.strip()
+
+    return text
 
 
 def _get_client(config):
@@ -63,6 +136,11 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
         Absolute path to the generated WAV file, or None on failure.
     """
     if not text or not text.strip():
+        return None
+
+    # Clean Wikipedia artifacts before sending to TTS
+    text = sanitize_for_tts(text)
+    if not text.strip():
         return None
 
     if config is None:
