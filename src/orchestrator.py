@@ -42,7 +42,7 @@ def get_profile(config, profile_name=None):
     raise ValueError("No profiles defined in config.json")
 
 
-def fetch_article(source="wikipedia", topic=None, config=None, content_lang=None):
+def fetch_article(source="wikipedia", topic=None, config=None, content_lang=None, article_filter=None):
     """
     Fetch an article from the given content source via the router.
 
@@ -68,7 +68,7 @@ def fetch_article(source="wikipedia", topic=None, config=None, content_lang=None
     # Import router here to keep orchestrator lightweight
     from fetch_router import fetch_article as route_fetch
 
-    return route_fetch(source, topic, config, content_lang=content_lang)
+    return route_fetch(source, topic, config, content_lang=content_lang, article_filter=article_filter)
 
 
 def main():
