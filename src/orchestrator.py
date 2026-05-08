@@ -132,6 +132,7 @@ def main():
                 language_id=content_lang,
                 config=config,
                 output_dir=output_dir,
+                voice=profile.get("tts_voice", "female"),
             )
             if wav_path:
                 print(f"TTS audio: {wav_path}")

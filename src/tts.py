@@ -40,7 +40,7 @@ def _get_client(config):
     return OpenAI(base_url=base_url, api_key=api_key or "none")
 
 
-def synthesize(text, language_id="de", config=None, output_dir=None):
+def synthesize(text, language_id="de", config=None, output_dir=None, voice=None):
     """
     Generate speech from text using the local OmniVoice server.
 
@@ -54,6 +54,8 @@ def synthesize(text, language_id="de", config=None, output_dir=None):
         Full config.json contents. Loaded from default path if None.
     output_dir : str or None
         Directory to write the WAV file. Defaults to project/output/.
+    voice : str or None
+        Voice name (e.g. "male", "female"). Falls back to config tts.default_voice.
 
     Returns
     -------
@@ -82,7 +84,8 @@ def synthesize(text, language_id="de", config=None, output_dir=None):
 
     tts_cfg = config.get("tts", {})
     model = tts_cfg.get("model", "omnivoice")
-    voice = tts_cfg.get("default_voice", "female")
+    if voice is None:
+        voice = tts_cfg.get("default_voice", "female")
 
     filename = f"lingua_{uuid.uuid4().hex[:8]}.wav"
     filepath = os.path.join(output_dir, filename)
@@ -95,7 +98,7 @@ def synthesize(text, language_id="de", config=None, output_dir=None):
             model=model,
             voice=voice,
             input=text,
-            extra_body={"language_id": language_id},
+            extra_body={"language_id": language_id, "num_step": 16},
         ) as response:
             response.stream_to_file(filepath)
 
@@ -124,6 +127,7 @@ def main():
     parser.add_argument("--lang", "-l", default="de", help="Language code for TTS")
     parser.add_argument("--config", "-c", default=None, help="Path to config.json")
     parser.add_argument("--output-dir", "-o", default=None, help="Output directory")
+    parser.add_argument("--voice", "-v", default=None, help="Voice name (e.g. male, female)")
     args = parser.parse_args()
 
     if args.config:
@@ -135,7 +139,7 @@ def main():
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
-    wav_path = synthesize(args.text, language_id=args.lang, config=config, output_dir=args.output_dir)
+    wav_path = synthesize(args.text, language_id=args.lang, config=config, output_dir=args.output_dir, voice=args.voice)
 
     if wav_path:
         print(json.dumps({"wav_path": wav_path}))
