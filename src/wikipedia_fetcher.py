@@ -188,6 +188,11 @@ class KiwixClient:
 
             # Fetch the full article HTML via content endpoint
             article_resp = self.get_article(title)
+
+            # Skip articles that are mostly tables/infoboxes with no prose
+            if not _has_enough_prose(article_resp.text):
+                continue
+
             text = extract_wiki_text(article_resp.text)
 
             # Disambiguation page filter (multi-language patterns)
@@ -204,6 +209,10 @@ class KiwixClient:
             if any(pat in text[:500] for pat in disambig_patterns):
                 continue
 
+            # Skip articles that are mostly table/infobox data (short lines)
+            if _is_table_heavy(text):
+                continue
+
             word_count = len(text.split())
 
             # Too short — skip
@@ -211,7 +220,17 @@ class KiwixClient:
                 continue
 
             # Perfect length — keep as-is
+            if word_count <= min_words:
+                html_title = _get_title_from_html(article_resp.text)
+                return html_title or title, text
+
+            # In range but above min — smart-truncate to target
             if word_count <= max_words:
+                truncated = smart_truncate(text, target_words=target_words, max_words=max_words, min_words=min_words)
+                if truncated:
+                    html_title = _get_title_from_html(article_resp.text)
+                    return html_title or title, truncated
+                # If truncation failed, return as-is
                 html_title = _get_title_from_html(article_resp.text)
                 return html_title or title, text
 
@@ -250,12 +269,62 @@ def _get_title_from_html(html):
     return None
 
 
-def extract_wiki_text(html):
+def _has_enough_prose(html, min_paragraphs=5):
+    """
+    Check if the article has enough prose paragraphs (not just tables/infoboxes).
+
+    Looks for <p> tags with meaningful text (>= 15 words) to determine if
+    the article is suitable for language learning.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    content = None
+    for selector in [
+        "#mw-content-text > .mw-parser-output",
+        "#mw-content-text",
+        "#bodyContent",
+    ]:
+        content = soup.select_one(selector)
+        if content:
+            break
+    if not content:
+        content = soup
+
+    prose_paras = 0
+    for p in content.find_all("p"):
+        text = p.get_text(strip=True)
+        if len(text.split()) >= 15:
+            prose_paras += 1
+    return prose_paras >= min_paragraphs
+
+
+def _is_table_heavy(text, min_prose_lines=8):
+    """
+    Check if the extracted text is mostly short lines (indicating table/infobox data).
+
+    Returns True if there are fewer than min_prose_lines of lines with >= 10 words.
+    This catches pure lists/tables while allowing articles with many wiki-links.
+    """
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not lines:
+        return True
+    prose_lines = sum(1 for l in lines if len(l.split()) >= 10)
+    return prose_lines < min_prose_lines
+
+
+def extract_wiki_text(html, skip_infoboxes=True):
     """
     Extract readable text from Wikipedia/Kiwix HTML.
 
     Targets the main content area to avoid navigation chrome, then strips
     common footer noise.
+
+    Parameters
+    ----------
+    html : str
+        Raw article HTML.
+    skip_infoboxes : bool
+        If True, removes infoboxes and data-heavy tables so that only
+        prose paragraphs are returned. Use False to get everything.
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -278,6 +347,33 @@ def extract_wiki_text(html):
     # Remove script/style/nav/sidebar noise
     for tag in content.find_all(["script", "style", "noscript", "nav", ".mw-hidden-catlinks", ".reflist", ".mw-references-wrap"]):
         tag.decompose()
+
+    if skip_infoboxes:
+        # Remove infoboxes (they produce vertical one-word-per-line noise)
+        for table in content.find_all("table"):
+            if table is None:
+                continue
+            try:
+                classes = table.get("class", []) or []
+                if any(cls.startswith(("infobox", "vcard", "navbox", "ambox", "metadata")) for cls in classes):
+                    table.decompose()
+            except Exception:
+                pass
+
+        # Remove data-heavy tables (tables with many rows but little prose)
+        for table in content.find_all("table"):
+            if table is None:
+                continue
+            try:
+                rows = table.find_all("tr")
+                if len(rows) > 10:
+                    cell_count = len(table.find_all(["td", "th"]))
+                    if cell_count > 0:
+                        short_cells = sum(1 for c in table.find_all(["td", "th"]) if len(c.get_text(strip=True).split()) < 8)
+                        if short_cells / cell_count > 0.7:
+                            table.decompose()
+            except Exception:
+                pass
 
     # Get clean text
     text = content.get_text(separator="\n", strip=True)
@@ -471,7 +567,7 @@ def parse_cli_args(args):
             content_lang = args[i + 1]
             i += 1
         elif arg in ("--min-words", "--target-words", "--max-words") and i + 1 < len(args):
-            overrides[arg.lstrip("-")] = int(args[i + 1])
+            overrides[arg.lstrip("-").replace("-", "_")] = int(args[i + 1])
             i += 1
         elif not arg.startswith("-"):
             positional_args.append(arg)
@@ -544,15 +640,53 @@ def main():
 
     with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
         if search_query:
-            # Search mode
+            # Search mode — try up to 15 results until we find a prose-rich article
             titles = client.search(search_query, count=50)
             if not titles:
                 print(json.dumps({"error": f"No results for '{search_query}'"}))
                 sys.exit(1)
-            chosen = random.choice(titles)
-            resp = client.get_article(chosen)
-            text = extract_wiki_text(resp.text)
-            title = _get_title_from_html(resp.text) or chosen
+
+            title = None
+            text = ""
+            random.shuffle(titles)
+            for attempt, chosen in enumerate(titles):
+                # Quick title filter
+                if any(skip in chosen for skip in KiwixClient.SKIP_PATTERNS):
+                    continue
+                resp = client.get_article(chosen)
+
+                # Skip articles that are mostly tables/infoboxes with no prose
+                if not _has_enough_prose(resp.text):
+                    continue
+
+                text = extract_wiki_text(resp.text)
+                disambig_patterns = [
+                    "may refer to",              # EN
+                    "kann sich beziehen auf",     # DE
+                    "puede referirse a",          # ES
+                    "può riferirsi a",            # IT
+                    "lehet több jelentése is",    # HU
+                    "peut faire référence à",     # FR
+                    "může znamenat",              # CS
+                    "viz rozcestník",             # CS
+                ]
+                if any(pat in text[:500] for pat in disambig_patterns):
+                    continue
+
+                # Skip articles that are mostly table/infobox data (short lines)
+                if _is_table_heavy(text):
+                    continue
+
+                word_count = len(text.split())
+                if word_count < min_words:
+                    continue
+
+                title = _get_title_from_html(resp.text) or chosen
+                break
+
+            if not title:
+                print(json.dumps({"error": f"No suitable prose article found for '{search_query}' after trying {len(titles)} results."}))
+                sys.exit(1)
 
             # Smart-truncate if needed
             word_count = len(text.split())

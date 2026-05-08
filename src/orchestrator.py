@@ -9,8 +9,10 @@ PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
 CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
 
 
-def load_config():
-    with open(CONFIG_PATH, 'r') as f:
+def load_config(path=None):
+    """Load config from a JSON file. Defaults to config.json in project root."""
+    target = path or CONFIG_PATH
+    with open(target, 'r') as f:
         return json.load(f)
 
 
@@ -82,6 +84,8 @@ def main():
     """
     parser = argparse.ArgumentParser(description="OpenClaw-Lingua orchestrator")
     parser.add_argument("--profile", "-p", help="User profile name (default: config's default_profile)")
+    parser.add_argument("--config", "-c", default=CONFIG_PATH,
+        help="Path to config file (default: config.json in project root)")
     parser.add_argument("--tts-url", default=None,
         help="Override TTS base_url for local runs (e.g. http://192.168.100.60:8080/v1)")
     parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
@@ -90,7 +94,8 @@ def main():
     print("--- OpenClaw-Lingua: Task Execution Started ---")
 
     try:
-        config = load_config()
+        config = load_config(args.config)
+
     except Exception as e:
         print(f"Error loading config: {e}")
         sys.exit(1)
@@ -131,7 +136,8 @@ def main():
 
     # Step 1.5: Generate TTS audio of the fetched content
     wav_path = None
-    if config.get("tts"):
+    use_tts = profile.get("use_tts", True)  # default True for backwards compat
+    if use_tts and config.get("tts"):
         print(f"\nGenerating TTS (language: {content_lang})...")
         try:
             from tts import synthesize
@@ -151,6 +157,8 @@ def main():
                 print("WARNING: TTS generation returned no file.")
         except Exception as e:
             print(f"WARNING: TTS error (lesson will be delivered without audio): {e}")
+    elif not use_tts:
+        print(f"\nTTS disabled for profile '{profile_name}' — skipping audio generation.")
 
     # Step 2: Output structured payload for the Agent/Processor
     vocab_dir = os.path.join(PROJECT_DIR, "data", profile_name)
