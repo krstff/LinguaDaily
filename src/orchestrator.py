@@ -82,6 +82,8 @@ def main():
     """
     parser = argparse.ArgumentParser(description="OpenClaw-Lingua orchestrator")
     parser.add_argument("--profile", "-p", help="User profile name (default: config's default_profile)")
+    parser.add_argument("--tts-url", default=None,
+        help="Override TTS base_url for local runs (e.g. http://192.168.100.60:8080/v1)")
     parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
     args = parser.parse_args()
 
@@ -134,12 +136,14 @@ def main():
         try:
             from tts import synthesize
             output_dir = os.path.join(PROJECT_DIR, "output", profile_name)
+            if args.tts_url:
+                config.setdefault("tts", {})["base_url"] = args.tts_url
             wav_path = synthesize(
                 text=content,
                 language_id=content_lang,
                 config=config,
                 output_dir=output_dir,
-                voice=profile.get("tts_voice", "female"),
+                voice=profile.get("tts_voice", "male"),
             )
             if wav_path:
                 print(f"TTS audio: {wav_path}")
