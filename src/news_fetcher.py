@@ -113,7 +113,7 @@ class NewsFetcher:
         self._feeds = feeds or FEED_CATALOGUE
         self._session = requests.Session()
         self._session.headers.update({
-            "User-Agent": "OpenClaw-Lingua/1.0 (language-learning)"
+            "User-Agent": "LinguaDaily/1.0 (language-learning)"
         })
 
     # ── Topic → feeds ──────────────────────────────────────────────

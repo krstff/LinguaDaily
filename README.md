@@ -1,195 +1,155 @@
-# OpenClaw-Lingua
+# LinguaDaily
 
-An autonomous multi-user language immersion agent for OpenClaw.
-
-## Overview
-
-OpenClaw-Lingua automates the process of language learning by:
-1. **Fetching** daily content from a local Kiwix/Wikipedia ZIM server.
-2. **Translating** content into each user's target language.
-3. **Tracking** vocabulary usage via per-user Markdown databases.
-4. **Delivering** lessons to each user on their schedule.
-
-## Features
-
-- **Automated Daily Lessons** (via OpenClaw Cron — one per user)
-- **Per-User Vocabulary Tracking** (separate `data/<profile>/vocabulary.md`)
-- **Multi-Channel Delivery** (Telegram, WhatsApp — per user)
-- **Contextual Tutoring** (Interactive Q&A via OpenClaw Agent)
-- **Multi-User Profiles** (independent language pairs, topics, schedules)
+A standalone language-learning daemon that delivers daily lessons via Telegram — fetching articles, translating them with a local LLM, generating TTS audio, and providing interactive tutoring.
 
 ## Architecture
 
 ```
-config.json                          → shared config + per-user profiles
-kiwix server (shared)
-tts server (OmniVoice / local llama)
-data/
-  krystof/
-    vocabulary.md                    → Krystof's vocab
-  anna/
-    vocabulary.md                    → Anna's vocab
-output/
-  krystof/
-    lingua_*.wav                     → TTS audio per run
-
-orchestrator.py  →  wikipedia_fetcher.py  →  tts.py  →  processor.py  →  vocabulary.md
-     (entry)          (Kiwix client)         (speech gen)   (prep for LLM)    (per-user DB)
+┌─────────────────────────────────────────────────────┐
+│                  main.py (daemon)                    │
+│                                                      │
+│  ┌──────────────────┐    ┌──────────────────────┐   │
+│  │   scheduler.py   │    │   telegram_bot.py    │   │
+│  │                  │    │                      │   │
+│  │  per-profile     │    │  • lesson delivery   │   │
+│  │  daily cron jobs │────▶• tutor chat          │   │
+│  │                  │    │  • /register         │   │
+│  └────────┬─────────┘    │  • /status           │   │
+│           │              └──────────┬───────────┘   │
+│           ▼                         │               │
+│  ┌──────────────────────────────┐   │               │
+│  │     Lesson Pipeline          │◀──┘               │
+│  │                              │                   │
+│  │  1. fetch_router.py          │                   │
+│  │     → wikipedia_fetcher      │                   │
+│  │     → news_fetcher           │                   │
+│  │                              │                   │
+│  │  2. orchestrator.clean()     │                   │
+│  │                              │                   │
+│  │  3. tts.py (OmniVoice)       │                   │
+│  │                              │                   │
+│  │  4. llama_client.py          │                   │
+│  │     → translate              │                   │
+│  │     → extract_vocab          │                   │
+│  └──────────────────────────────┘                   │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
-### 1. Configure profiles
+### 1. Install dependencies
 
-Edit `config.json`:
+```bash
+conda create -n lingua python=3.11 -y
+conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler
+```
+
+### 2. Configure `config.json`
 
 ```json
 {
-  "default_profile": "krystof",
-  "kiwix": {
-    "base_url": "http://192.168.100.52:8080",
-    "zim_name": "wikipedia_en_all_maxi_2026-02"
+  "llm": {
+    "base_url": "http://localhost:8080/v1",
+    "default_model": "gemma4-26b"
+  },
+  "tts": {
+    "base_url": "http://localhost:8080/v1",
+    "model": "omnivoice"
+  },
+  "telegram": {
+    "bot_token": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
   },
   "profiles": {
     "krystof": {
       "source_lang": "en",
       "target_lang": "de",
       "target_lang_name": "German",
+      "content_lang": "de",
       "source": "wikipedia",
-      "topics": [
-        "Technology", "Science", "Mathematics",
-        "History", "Art", "Music",
-        "Philosophy", "Literature", "Architecture"
-      ],
+      "topics": ["Technology", "Science", "History"],
       "article_filter": {
-        "min_words": 250,
-        "target_words": 400,
-        "max_words": 600
+        "min_words": 50,
+        "max_words": 300
       },
       "schedule": {
         "time": "08:00",
         "tz": "Europe/Berlin"
-      }
+      },
+      "use_tts": true,
+      "tts_voice": "male",
+      "telegram_chat_id": 111222333
     }
   }
 }
 ```
 
-> **Note:** Delivery routing (channel, recipient) is configured in your OpenClaw cron job — not in this file. Keep `config.json` clean for public repos.
-
-### 2. Add a new user
+### 3. Start the daemon
 
 ```bash
-# Create data directory for the new user
-mkdir -p data/anna
-
-# Add profile to config.json profiles map
-# Set up a cron job (see below)
+conda run -n lingua python src/main.py --config config.json
 ```
 
-### 3. Test a run
+The startup banner shows all configured profiles, schedules, and service status:
+
+```
+============================================================
+  LinguaDaily Standalone Daemon
+============================================================
+  Config:     /workspace/config.json
+  Profiles:   1 (krystof)
+  Scheduled:  1 daily lesson(s)
+    • krystof          08:00 (Europe/Berlin) → German
+  Telegram:   ✅ configured (token: ...ST-TOKEN)
+  LLM:        gemma4-26b @ http://localhost:8080/v1
+============================================================
+```
+
+## Testing Individual Components
+
+See [TESTING.md](docs/testing.md) for standalone commands to test each component without the full daemon.
+
+Quick examples:
 
 ```bash
-cd /path/to/openclaw-lingua
-python3 src/orchestrator.py --profile krystof
+# Test LLM endpoint health (no real model calls in tests)
+conda run -n lingua python src/llama_client.py health --config config.json
+
+# Run a single lesson pipeline manually
+conda run -n lingua python src/orchestrator.py --profile krystof
+
+# List scheduled profiles
+conda run -n lingua python src/scheduler.py --list
+
+# Run the Telegram bot standalone (for testing)
+conda run -n lingua python src/telegram_bot.py --config config.json
 ```
 
-#### Running locally (outside Docker)
-
-The TTS server defaults to `http://llama-swap:8080/v1` (internal Docker DNS). When running on your host machine, override it:
-
-```bash
-# Full pipeline with local TTS URL:
-python3 src/orchestrator.py --profile krystof --tts-url http://192.168.100.60:8080/v1
-
-# Standalone TTS test:
-python3 src/tts.py --tts-url http://192.168.100.60:8080/v1 --lang de "Hallo Welt"
-```
-
-### 4. Set up cron jobs
-
-Create one cron job per profile in OpenClaw, targeting the profile's scheduled time and delivery channel. See [SKILL.md](skill/SKILL.md) for details.
-
-## Article Length & Smart Truncation
-
-Wikipedia articles are filtered and truncated so learners get coherent, bite-sized passages (~research-paper abstract length) instead of walls of text or mid-sentence cuts.
-
-### How it works
-
-`wikipedia_fetcher.py` uses a **two-pass smart truncation** strategy:
-
-1. **Section-level** — Splits the article on Wikipedia section headers (`==Section==`) and greedily accumulates complete sections until reaching `max_words`. This preserves the article's structure and headings.
-2. **Paragraph-level (fallback)** — If the first section alone is too long (common with lead/intro sections), falls back to splitting on blank-line-separated paragraphs and accumulating those instead.
-
-Articles that are too short (< `min_words`) are skipped entirely.
-
-### Configuring word targets
-
-All thresholds are controlled per-profile from `config.json`:
-
-```json
-{
-  "profiles": {
-    "krystof": {
-      "article_filter": {
-        "min_words": 250,
-        "target_words": 400,
-        "max_words": 600
-      }
-    }
-  }
-}
-```
-
-| Setting | Meaning |
-|---------|---------|
-| `min_words` | Articles shorter than this are **skipped** (stubs, disambiguation pages) |
-| `target_words` | The ideal length the truncation aims for |
-| `max_words` | Hard ceiling — truncation stops before exceeding this |
-
-### Where truncation happens
+## Components
 
 | File | Role |
 |------|------|
-| `src/wikipedia_fetcher.py` | **Only place** that does truncation — `smart_truncate()` + `get_random_article()` |
-| `src/orchestrator.py` | Calls the fetcher; no length logic here |
-| `src/processor.py` | Passes text through unchanged |
-
-> **Note:** If you adjust the targets, only edit `config.json`. No code changes needed.
-
-## TTS Configuration
-
-Speech is generated via a local OmniVoice-compatible server (LLaMA.cpp with Omnivoice model).
-
-### Per-Profile Voice Selection
-
-Each profile can choose its own voice in `config.json`:
-
-```json
-{
-  "profiles": {
-    "krystof": {
-      "tts_voice": "male"
-    },
-    "anna": {
-      "tts_voice": "female"
-    }
-  }
-}
-```
-
-Default voice is **male** when not specified.
-
-### CLI Overrides
-
-| Flag | Script | Purpose |
-|------|--------|---------|
-| `--tts-url <url>` | orchestrator, tts.py | Override TTS server address (for local runs) |
-| `--voice <name>` | tts.py | Override voice for a single run |
+| `src/main.py` | Daemon entry — wires scheduler + Telegram bot, signal handling |
+| `src/scheduler.py` | APScheduler daily lessons per profile (fetch → translate → deliver) |
+| `src/telegram_bot.py` | aiogram 3.x bot — lesson delivery + interactive tutor chat |
+| `src/llama_client.py` | Local LLM client — translate, extract vocab, tutor chat |
+| `src/orchestrator.py` | Content fetching pipeline (article → clean → TTS → payload) |
+| `src/fetch_router.py` | Routes fetch requests to wikipedia or news sources |
+| `src/wikipedia_fetcher.py` | Kiwix/ZIM client for offline Wikipedia articles |
+| `src/news_fetcher.py` | RSS feed fetching for current events |
+| `src/tts.py` | OmniVoice TTS wrapper (OpenAI-compatible API) |
+| `src/processor.py` | Vocab tracking and Markdown generation |
 
 ## Documentation
 
 - [Daemon (main.py)](docs/daemon.md) — Startup, service wiring, signal handling, systemd/Docker
 - [Telegram Bot Guide](docs/telegram-bot.md) — Setup, registration, commands, tutor chat
 - [Lesson Scheduler Guide](docs/scheduler.md) — Pipeline steps, config, delivery callback API
-- [SKILL.md](skill/SKILL.md) — Full usage, API reference, and cron integration details
+- [Testing Guide](docs/testing.md) — Run and test each component standalone
+
+## Tests
+
+```bash
+conda run -n lingua pytest tests/ -v
+```
+
+All new components are fully tested (88 tests, all mocked — zero real LLM calls during testing).

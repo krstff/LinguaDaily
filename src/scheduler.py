@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lesson scheduler for OpenClaw-Lingua standalone daemon.
+Lesson scheduler for LinguaDaily standalone daemon.
 
 Schedules per-profile lesson runs using APScheduler. Each profile with a
 `schedule.time` / `schedule.tz` gets a daily cron job that fires the full
@@ -385,7 +385,7 @@ def main():
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="OpenClaw-Lingua Lesson Scheduler")
+    parser = argparse.ArgumentParser(description="LinguaDaily Lesson Scheduler")
     parser.add_argument("--config", "-c", default=CONFIG_PATH,
                         help="Path to config.json")
     parser.add_argument("--list", "-l", action="store_true",

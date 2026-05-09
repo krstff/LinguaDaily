@@ -140,14 +140,14 @@ def fetch_article(source="wikipedia", topic=None, config=None, content_lang=None
 
 def main():
     """
-    Called by the OpenClaw Agent to fetch content and prepare it for translation.
+    Fetch content, translate, and prepare a lesson. Originally called by an external agent; now used standalone.
 
     Usage:
         python3 src/orchestrator.py                      # default profile, random topic
         python3 src/orchestrator.py --profile krystof    # specific profile
         python3 src/orchestrator.py --profile anna "quantum physics"  # profile + topic
     """
-    parser = argparse.ArgumentParser(description="OpenClaw-Lingua orchestrator")
+    parser = argparse.ArgumentParser(description="LinguaDaily orchestrator")
     parser.add_argument("--profile", "-p", help="User profile name (default: config's default_profile)")
     parser.add_argument("--config", "-c", default=CONFIG_PATH,
         help="Path to config file (default: config.json in project root)")
@@ -156,7 +156,7 @@ def main():
     parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
     args = parser.parse_args()
 
-    print("--- OpenClaw-Lingua: Task Execution Started ---")
+    print("--- LinguaDaily: Task Execution Started ---")
 
     try:
         config = load_config(args.config)

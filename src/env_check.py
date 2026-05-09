@@ -5,7 +5,7 @@ import json
 
 
 def check_env():
-    print("--- 🛠️ OpenClaw-Lingua: Environment Health Check ---")
+    print("--- 🛠️ LinguaDaily: Environment Health Check ---")
     errors = []
     warnings = []
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram bot for OpenClaw-Lingua standalone daemon.
+Telegram bot for LinguaDaily standalone daemon.
 
 Handles two flows:
   1. Lesson delivery — receives a lesson dict from the scheduler/orchestrator,
@@ -503,7 +503,7 @@ def main():
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="OpenClaw-Lingua Telegram Bot")
+    parser = argparse.ArgumentParser(description="LinguaDaily Telegram Bot")
     parser.add_argument("--config", "-c", default=CONFIG_PATH,
                         help="Path to config.json")
     args = parser.parse_args()

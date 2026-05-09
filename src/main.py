@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenClaw-Lingua standalone daemon entry point.
+LinguaDaily standalone daemon entry point.
 
 Wires together the Telegram bot (interactive tutor + lesson delivery) and
 the lesson scheduler (daily automated pipeline). Runs both concurrently as
@@ -79,7 +79,7 @@ class LinguaDaemon:
                      if p.get("schedule") and p["schedule"].get("time")]
 
         print("=" * 60)
-        print("  OpenClaw-Lingua Standalone Daemon")
+        print("  LinguaDaily Standalone Daemon")
         print("=" * 60)
         print(f"  Config:     {CONFIG_PATH}")
         print(f"  Profiles:   {len(profiles)} ({', '.join(profiles.keys())})")
@@ -235,7 +235,7 @@ def main():
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="OpenClaw-Lingua Daemon")
+    parser = argparse.ArgumentParser(description="LinguaDaily Daemon")
     parser.add_argument("--config", "-c", default=CONFIG_PATH,
                         help="Path to config.json")
     parser.add_argument("--verbose", "-v", action="store_true",

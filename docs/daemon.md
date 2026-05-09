@@ -6,7 +6,7 @@
 
 ```
 ============================================================
-  OpenClaw-Lingua Standalone Daemon
+  LinguaDaily Standalone Daemon
 ============================================================
   Config:     /workspace/config.json
   Profiles:   2 (krystof, anna)
@@ -100,7 +100,7 @@ The daemon validates config on startup:
 
 ```ini
 [Unit]
-Description=OpenClaw-Lingua Daemon
+Description=LinguaDaily Daemon
 After=network.target
 
 [Service]

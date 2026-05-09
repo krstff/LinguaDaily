@@ -88,7 +88,7 @@ class KiwixClient:
         self.base_url = base_url.rstrip("/")
         self.zim_name = zim_name
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "OpenClaw-Lingua/1.0"})
+        self.session.headers.update({"User-Agent": "LinguaDaily/1.0"})
 
     # ── HTTP helpers ──────────────────────────────────────────────
 

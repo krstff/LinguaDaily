@@ -93,7 +93,7 @@ class TestPrintBanner:
             daemon._print_banner()
 
         output = capsys.readouterr().out
-        assert "OpenClaw-Lingua" in output
+        assert "LinguaDaily" in output
         assert "Profiles:   2" in output
         assert "Scheduled:  2" in output
         assert "08:00" in output
