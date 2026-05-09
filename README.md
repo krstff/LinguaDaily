@@ -189,4 +189,5 @@ Default voice is **male** when not specified.
 
 ## Documentation
 
-See [SKILL.md](skill/SKILL.md) for full usage, API reference, and cron integration details.
+- [Telegram Bot Guide](docs/telegram-bot.md) — Setup, registration, commands, tutor chat
+- [SKILL.md](skill/SKILL.md) — Full usage, API reference, and cron integration details
