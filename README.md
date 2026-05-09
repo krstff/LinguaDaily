@@ -189,5 +189,7 @@ Default voice is **male** when not specified.
 
 ## Documentation
 
+- [Daemon (main.py)](docs/daemon.md) — Startup, service wiring, signal handling, systemd/Docker
 - [Telegram Bot Guide](docs/telegram-bot.md) — Setup, registration, commands, tutor chat
+- [Lesson Scheduler Guide](docs/scheduler.md) — Pipeline steps, config, delivery callback API
 - [SKILL.md](skill/SKILL.md) — Full usage, API reference, and cron integration details
