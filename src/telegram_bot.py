@@ -180,9 +180,22 @@ class TelegramBot:
 
     # ── Lesson delivery ────────────────────────────────────────────
 
+    # Telegram message size limit
+    _TG_MAX_MSG_LEN = 4096
+    _TG_SAFE_TRUNCATE = 3900  # leave room for appended suffixes
+
+    def _truncate_for_telegram(self, text: str, suffix: str = "\n…") -> str:
+        """Truncate text to fit Telegram's 4096 char limit."""
+        if len(text) <= self._TG_MAX_MSG_LEN:
+            return text
+        return text[:self._TG_SAFE_TRUNCATE] + suffix
+
     async def deliver_lesson(self, profile_name: str, lesson: dict):
         """
-        Deliver a completed lesson to the user's Telegram chat.
+        Deliver a completed lesson to the user's Telegram chat as three messages:
+          1. Original article text (content language)
+          2. Translation + vocabulary list
+          3. TTS audio sent as a voice message
 
         Parameters
         ----------
@@ -190,7 +203,7 @@ class TelegramBot:
             Profile whose Telegram chat receives this lesson.
         lesson : dict
             Lesson payload with keys: title, content (translated text),
-            wav_path (optional audio file path).
+            original_content, vocab, wav_path (optional audio file path).
         """
         chat_id = self.profile_to_chat_id.get(profile_name)
         if not chat_id:
@@ -203,43 +216,81 @@ class TelegramBot:
             logger.error("Telegram bot not initialized — cannot deliver lesson")
             return
 
-        # Build message text
         title = lesson.get("title", "Language Lesson")
-        content = lesson.get("content", "")
+        original_content = lesson.get("original_content", "")
+        translated_content = lesson.get("content", "")
+        vocab = lesson.get("vocab", [])
+        wav_path = lesson.get("wav_path")
         source_lang = lesson.get("source_lang", "?")
         target_lang = lesson.get("target_lang_name", "?")
+        content_lang = lesson.get("content_lang", "?")
 
-        # Truncate for Telegram (4096 char limit per message)
-        if len(content) > 3800:
-            content = content[:3800] + "\n\n... (continued)"
-
-        text = f"📖 *{title}*\n\n"
-        text += f"_{target_lang} lesson ({source_lang} → {target_lang})_\n\n"
-        text += content
+        # ── Message 1: Original text ──────────────────────────────
+        msg1 = f"📰 *{title}*\n\n"
+        msg1 += f"_Original ({content_lang})_\n\n"
+        msg1 += self._truncate_for_telegram(original_content)
 
         try:
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-            logger.info("Delivered lesson '%s' to chat %d", title, chat_id)
+            await bot.send_message(
+                chat_id=chat_id, text=msg1, parse_mode="Markdown")
+            logger.info("Delivered original text for '%s' to chat %d",
+                        title, chat_id)
         except Exception as e:
-            logger.error("Failed to send lesson message: %s", e)
+            logger.error("Failed to send original text: %s", e)
 
-        # Send audio if available
-        wav_path = lesson.get("wav_path")
+        # ── Message 2: Translation + Vocabulary ───────────────────
+        msg2 = f"🌐 *Translation ({target_lang})*\n\n"
+        msg2 += self._truncate_for_telegram(translated_content, "\n…")
+
+        if vocab:
+            # Build compact vocabulary block
+            vocab_lines = []
+            for entry in vocab:
+                if isinstance(entry, dict):
+                    word = entry.get("word", "")
+                    meaning = entry.get("meaning", entry.get("definition", ""))
+                    vocab_lines.append(f"  • {word} — {meaning}")
+                else:
+                    vocab_lines.append(f"  • {entry}")
+            if vocab_lines:
+                msg2 += f"\n\n📝 *Vocabulary*\n"
+                # Truncate vocab if combined message is too long
+                remaining = self._TG_MAX_MSG_LEN - len(msg2)
+                vocab_text = "\n".join(vocab_lines)
+                if len(vocab_text) > remaining - 20:
+                    vocab_text = vocab_text[:remaining - 43] + "\n…"
+                msg2 += vocab_text
+
+        # Check final length — Telegram hard limit is 4096
+        if len(msg2) > self._TG_MAX_MSG_LEN:
+            logger.warning("Message 2 exceeds Telegram limit for '%s', truncating",
+                           title)
+            # Strip vocab first, then truncate content if still too long
+            msg2 = msg2[:self._TG_SAFE_TRUNCATE] + "\n…"
+
+        try:
+            await bot.send_message(
+                chat_id=chat_id, text=msg2, parse_mode="Markdown")
+            logger.info("Delivered translation for '%s' to chat %d",
+                        title, chat_id)
+        except Exception as e:
+            logger.error("Failed to send translation message: %s", e)
+
+        # ── Message 3: TTS audio as voice message ─────────────────
         if wav_path and os.path.isfile(wav_path):
             try:
-                from aiogram.types import InputMediaAudio
                 with open(wav_path, "rb") as f:
-                    audio_file = await bot.request(
-                        "sendAudio",
+                    await bot.request(
+                        "sendVoice",
                         {
                             "chat_id": chat_id,
-                            "audio": f,
-                            "caption": f"🔊 Audio: {title}",
+                            "voice": f,
                         },
                     )
-                logger.info("Delivered audio for '%s' to chat %d", title, chat_id)
+                logger.info("Delivered voice message for '%s' to chat %d",
+                            title, chat_id)
             except Exception as e:
-                # Fallback: send as document
+                # Fallback: send as regular audio
                 try:
                     await bot.send_document(
                         chat_id=chat_id,

@@ -386,6 +386,18 @@ class Orchestrator:
 
     # ── Main pipeline ──────────────────────────────────────────────
 
+    async def _generate_tts_async(self, profile_name, content, content_lang):
+        """Async wrapper for TTS generation (runs in executor thread)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._generate_tts, profile_name, content, content_lang)
+
+    async def _translate_async(self, profile_name, content, source_lang, target_lang):
+        """Async wrapper for translation (runs in executor thread)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._translate, profile_name, content, source_lang, target_lang)
+
     async def run_lesson(self, profile_name: str, topic: Optional[str] = None,
                          delivery_callback: Optional[Callable] = None) -> Optional[dict]:
         """
@@ -394,8 +406,7 @@ class Orchestrator:
         Steps:
           1. Fetch article (random topic from profile if not specified)
           2. Clean content
-          3. Generate TTS audio (if enabled)
-          4. Translate via LLM
+          3+4. Generate TTS audio AND Translate via LLM (in parallel)
           5. Extract vocabulary via LLM and save to markdown
           6. Deliver via callback (if provided)
 
@@ -436,15 +447,16 @@ class Orchestrator:
             title, content, source, content_lang = self._fetch_and_clean(
                 profile_name, topic=topic)
 
-            # Step 3: TTS
-            wav_path = self._generate_tts(profile_name, content, content_lang)
+            # Step 3+4: TTS and Translate in parallel (both need only original content)
+            logger.info("[%s] Running TTS + Translation in parallel...", profile_name)
+            wav_path, translated = await asyncio.gather(
+                self._generate_tts_async(profile_name, content, content_lang),
+                self._translate_async(profile_name, content,
+                                      source_lang=content_lang,
+                                      target_lang=source_lang),
+            )
 
-            # Step 4: Translate
-            translated = self._translate(
-                profile_name, content, source_lang=content_lang,
-                target_lang=source_lang)
-
-            # Step 5: Extract and save vocab
+            # Step 5: Extract and save vocab (depends on translated text)
             vocab = self._extract_and_save_vocab(
                 profile_name, content, translated,
                 source_lang=source_lang, target_lang=target_lang)

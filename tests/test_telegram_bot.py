@@ -209,18 +209,29 @@ class TestDeliverLesson:
         lesson = {
             "title": "Python Basics",
             "content": "Python is a programming language.",
+            "original_content": "Das ist Python.",
             "source_lang": "en",
             "target_lang_name": "German",
+            "content_lang": "de",
         }
 
         await bot.deliver_lesson("krystof", lesson)
 
-        # Should have called send_message on chat 111222333
-        mock_aiogram.send_message.assert_called_once()
-        call_kwargs = mock_aiogram.send_message.call_args[1]
-        assert call_kwargs["chat_id"] == 111222333
-        assert "Python Basics" in call_kwargs["text"]
-        assert "German" in call_kwargs["text"]
+        # Should have called send_message twice: original + translation
+        assert mock_aiogram.send_message.call_count == 2
+        calls = mock_aiogram.send_message.call_args_list
+
+        # Message 1: original text
+        msg1_kwargs = calls[0][1]
+        assert msg1_kwargs["chat_id"] == 111222333
+        assert "Python Basics" in msg1_kwargs["text"]
+        assert "Original" in msg1_kwargs["text"]
+
+        # Message 2: translation + vocabulary
+        msg2_kwargs = calls[1][1]
+        assert msg2_kwargs["chat_id"] == 111222333
+        assert "Translation" in msg2_kwargs["text"]
+        assert "German" in msg2_kwargs["text"]
 
         bot.db.close()
 
@@ -246,15 +257,20 @@ class TestDeliverLesson:
         lesson = {
             "title": "Long Article",
             "content": "A" * 5000,
+            "original_content": "B" * 5000,
             "source_lang": "en",
             "target_lang_name": "German",
+            "content_lang": "de",
         }
 
         await bot.deliver_lesson("krystof", lesson)
 
-        call_kwargs = mock_aiogram.send_message.call_args[1]
-        # Should be truncated with ellipsis
-        assert "... (continued)" in call_kwargs["text"]
+        assert mock_aiogram.send_message.call_count == 2
+        # Both messages should be under Telegram limit
+        for call in mock_aiogram.send_message.call_args_list:
+            text = call[1]["text"]
+            assert len(text) <= 4096
+            assert "\u2026" in text or "..." in text  # truncated
         bot.db.close()
 
 
@@ -492,7 +508,7 @@ class TestBotLifecycle:
 
     @pytest.mark.asyncio
     async def test_deliver_lesson_no_audio(self, sample_config, mock_aiogram):
-        """Lesson without wav_path should still deliver text."""
+        """Lesson without wav_path should still deliver text (2 messages)."""
         from src.telegram_bot import TelegramBot
         config = sample_config[0]
         bot = TelegramBot(config=config)
@@ -500,13 +516,16 @@ class TestBotLifecycle:
         lesson = {
             "title": "No Audio",
             "content": "Just text.",
+            "original_content": "Original text.",
             "source_lang": "en",
             "target_lang_name": "German",
+            "content_lang": "de",
             # no wav_path
         }
 
         await bot.deliver_lesson("krystof", lesson)
-        mock_aiogram.send_message.assert_called_once()  # only text, no audio call
+        # Two text messages: original + translation (no audio call)
+        assert mock_aiogram.send_message.call_count == 2
         bot.db.close()
 
 
