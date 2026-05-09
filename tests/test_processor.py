@@ -1,8 +1,7 @@
-"""Tests for src/processor.py — content processing, vocabulary tracking."""
+"""Tests for src/processor.py — vocabulary file management."""
 
 import os
 import pytest
-from unittest.mock import patch
 
 
 class TestProcessorInit:
@@ -26,31 +25,6 @@ class TestProcessorInit:
         monkeypatch.setattr("src.processor.__file__", str(tmp_path / "processor.py"))
         proc = LinguaProcessor(profile="test_user")
         assert "test_user" in proc.vocab_path
-
-
-class TestProcessDailyContent:
-    """Test content processing for LLM translation."""
-
-    def test_process_returns_structured_data(self):
-        from src.processor import LinguaProcessor
-        proc = LinguaProcessor(target_lang_name="German", profile="test")
-        result = proc.process_daily_content("Hello world", source_lang="en", title="Test")
-        assert "source_text" in result
-        assert result["source_text"] == "Hello world"
-        assert result["target_lang"] == "German"
-        assert "instruction" in result
-
-    def test_instruction_contains_target_lang(self):
-        from src.processor import LinguaProcessor
-        proc = LinguaProcessor(target_lang_name="French", profile="test")
-        result = proc.process_daily_content("Bonjour", source_lang="en")
-        assert "French" in result["instruction"]
-
-    def test_preserves_title(self):
-        from src.processor import LinguaProcessor
-        proc = LinguaProcessor(profile="test")
-        result = proc.process_daily_content("Content", title="My Title")
-        assert result["title"] == "My Title"
 
 
 class TestVocabFile:
@@ -141,3 +115,23 @@ class TestUpdateVocab:
         processor.update_vocab(["hello"])  # same word, different case
         vocab = processor._read_existing_vocab()
         assert len(vocab) == 1
+        assert "hello" in vocab
+
+    def test_multiple_words_batch(self, processor):
+        processor._ensure_vocab_file()
+        processor.update_vocab([
+            {"word": "Haus", "meaning": "house"},
+            {"word": "Auto", "meaning": "car"},
+            {"word": "Buch", "meaning": "book"},
+        ])
+        vocab = processor._read_existing_vocab()
+        assert len(vocab) == 3
+
+    def test_todays_date_recorded(self, processor):
+        from datetime import date
+        processor._ensure_vocab_file()
+        processor.update_vocab([{"word": "test", "meaning": "test"}])
+
+        with open(processor.vocab_path) as f:
+            content = f.read()
+        assert date.today().isoformat() in content

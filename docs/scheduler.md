@@ -1,6 +1,6 @@
 # Lesson Scheduler Guide
 
-The scheduler runs daily lessons automatically using APScheduler. Each profile with a `schedule` section gets its own cron job that fires the full lesson pipeline and delivers the result via Telegram.
+The scheduler manages daily cron jobs using APScheduler. Each profile with a `schedule` section gets its own job. When a job fires, it delegates the full lesson pipeline to `Orchestrator.run_lesson()`.
 
 ## Architecture
 
@@ -8,15 +8,19 @@ The scheduler runs daily lessons automatically using APScheduler. Each profile w
 Scheduler (APScheduler)
     │
     ├── 08:00 Europe/Berlin → krystof
-    │   └── fetch → clean → TTS → translate → vocab → deliver_lesson()
+    │   └── Orchestrator.run_lesson("krystof")
+    │       └── fetch → clean → TTS → translate → vocab → deliver_lesson()
     │
     └── 10:30 Europe/Madrid → anna
-        └── fetch → clean → skip TTS → translate → vocab → deliver_lesson()
+        └── Orchestrator.run_lesson("anna")
+            └── fetch → clean → skip TTS → translate → vocab → deliver_lesson()
 ```
 
-## Pipeline Steps
+The scheduler is **thin** — it only handles cron scheduling and profile discovery. All pipeline logic lives in `Orchestrator`.
 
-When a scheduled job fires, it runs these steps in order:
+## Pipeline Steps (delegated to Orchestrator)
+
+See [Orchestrator Guide](orchestrator.md) for full details. When a scheduled job fires:
 
 | Step | Source | What happens on failure |
 |------|--------|------------------------|
@@ -94,7 +98,7 @@ await scheduler.start()
 
 ### Lesson dict structure
 
-The callback receives this dict:
+The callback receives this dict (returned by `Orchestrator.run_lesson()`):
 
 ```python
 {
@@ -147,9 +151,6 @@ scheduler = LessonScheduler(
 # Inspect scheduled profiles
 scheduled = scheduler.get_scheduled_profiles()
 # → [("krystof", {...}), ("anna", {...})]
-
-# Run a single lesson manually (for testing)
-lesson = await scheduler.run_lesson("krystof")
 
 # Start/stop
 await scheduler.start()   # blocks until cancelled

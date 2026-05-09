@@ -4,8 +4,8 @@ Lesson scheduler for LinguaDaily standalone daemon.
 
 Schedules per-profile lesson runs using APScheduler. Each profile with a
 `schedule.time` / `schedule.tz` gets a daily cron job that fires the full
-lesson pipeline (fetch → clean → TTS → translate) and delivers the result
-via a pluggable callback (e.g., TelegramBot.deliver_lesson).
+lesson pipeline via Orchestrator.run_lesson() and delivers the result via
+a pluggable callback (e.g., TelegramBot.deliver_lesson).
 
 Config shape:
     {
@@ -33,9 +33,7 @@ import asyncio
 import json
 import logging
 import os
-import random
 import sys
-from datetime import datetime
 from typing import Callable, Optional
 
 # Resolve paths
@@ -47,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 class LessonScheduler:
-    """Schedules and runs daily lessons per profile."""
+    """Schedules daily lessons per profile via APScheduler."""
 
     def __init__(
         self,
@@ -95,181 +93,6 @@ class LessonScheduler:
                 results.append((name, profile))
         return results
 
-    # ── Lesson pipeline ────────────────────────────────────────────
-
-    async def run_lesson(self, profile_name: str) -> Optional[dict]:
-        """
-        Run the full lesson pipeline for one profile.
-
-        Steps:
-          1. Fetch an article (random topic from profile)
-          2. Clean content (strip wiki artifacts)
-          3. Generate TTS audio (if enabled)
-          4. Translate via LLM
-          5. Extract vocabulary via LLM
-          6. Return lesson dict
-
-        Parameters
-        ----------
-        profile_name : str
-            Profile to run the lesson for.
-
-        Returns
-        -------
-        dict or None
-            Lesson payload ready for delivery, or None on failure.
-        """
-        profiles = self.config.get("profiles", {})
-        if profile_name not in profiles:
-            logger.error("Profile '%s' not found — skipping", profile_name)
-            return None
-
-        profile = profiles[profile_name]
-
-        # ── Step 1: Pick topic and fetch article ───────────────────
-        topics = profile.get("topics", [])
-        if topics:
-            topic = random.choice(topics)
-        else:
-            topic = None
-
-        source = profile.get("source", "wikipedia")
-        content_lang = profile.get(
-            "content_lang", profile.get("target_lang", "en")
-        )
-        article_filter = profile.get("article_filter")
-
-        logger.info("[%s] Fetching %s article (topic: %s)...",
-                    profile_name, source, topic or "random")
-
-        title = None
-        content = None
-
-        try:
-            from fetch_router import fetch_article as route_fetch
-            title, content = route_fetch(
-                source=source,
-                topic=topic,
-                config=self.config,
-                content_lang=content_lang,
-                article_filter=article_filter,
-            )
-        except Exception as e:
-            logger.error("[%s] Article fetch failed: %s", profile_name, e)
-
-        if not content:
-            logger.warning("[%s] No article fetched — using fallback",
-                          profile_name)
-            title = f"Article about {topic or 'general topic'}"
-            content = (f"A {source} article about {topic or 'a general topic'} "
-                      "could not be retrieved from the local server.")
-
-        word_count = len(content.split())
-        logger.info("[%s] Fetched '%s' (%d words)", profile_name, title, word_count)
-
-        # ── Step 2: Clean content ──────────────────────────────────
-        try:
-            from orchestrator import clean_content
-            content = clean_content(content)
-        except Exception as e:
-            logger.warning("[%s] Content cleaning failed: %s", profile_name, e)
-
-        # ── Step 3: Generate TTS audio ─────────────────────────────
-        wav_path = None
-        use_tts = profile.get("use_tts", True)
-        if use_tts and self.config.get("tts"):
-            logger.info("[%s] Generating TTS (lang: %s)...",
-                       profile_name, content_lang)
-            try:
-                from tts import synthesize
-                output_dir = os.path.join(PROJECT_DIR, "output", profile_name)
-                os.makedirs(output_dir, exist_ok=True)
-
-                wav_path = synthesize(
-                    text=content,
-                    language_id=content_lang,
-                    config=self.config,
-                    output_dir=output_dir,
-                    voice=profile.get("tts_voice", "male"),
-                )
-                if wav_path:
-                    logger.info("[%s] TTS audio: %s", profile_name, wav_path)
-            except Exception as e:
-                logger.warning("[%s] TTS failed (lesson continues without audio): %s",
-                              profile_name, e)
-        elif not use_tts:
-            logger.info("[%s] TTS disabled — skipping", profile_name)
-
-        # ── Step 4: Translate via LLM ──────────────────────────────
-        translated = content  # fallback: original text
-        source_lang = profile.get("source_lang", "en")
-        target_lang = profile.get("target_lang", "de")
-        target_lang_name = profile.get("target_lang_name", "?")
-
-        if self.config.get("llm"):
-            logger.info("[%s] Translating (%s → %s)...",
-                       profile_name, source_lang, target_lang)
-            try:
-                from llama_client import LlamaClient
-                client = LlamaClient(
-                    config=self.config, profile_name=profile_name
-                )
-                # Translate from content_lang (article language) to target_lang
-                translated = client.translate(
-                    text=content,
-                    source_lang=content_lang,
-                    target_lang=target_lang,
-                )
-                if translated:
-                    logger.info("[%s] Translation complete", profile_name)
-                else:
-                    logger.warning("[%s] LLM translation returned empty — "
-                                  "using original text", profile_name)
-            except Exception as e:
-                logger.warning("[%s] Translation failed (using original): %s",
-                              profile_name, e)
-
-        # ── Step 5: Extract vocabulary ─────────────────────────────
-        vocab = []
-        if self.config.get("llm"):
-            try:
-                from llama_client import LlamaClient
-                client = LlamaClient(
-                    config=self.config, profile_name=profile_name
-                )
-                vocab = client.extract_vocab(
-                    original_text=content,
-                    translated_text=translated,
-                    source_lang=target_lang,
-                    target_lang=source_lang,
-                    max_words=15,
-                )
-                if vocab:
-                    logger.info("[%s] Extracted %d vocabulary words",
-                               profile_name, len(vocab))
-            except Exception as e:
-                logger.warning("[%s] Vocab extraction failed: %s",
-                              profile_name, e)
-
-        # ── Build lesson dict ──────────────────────────────────────
-        lesson = {
-            "profile": profile_name,
-            "title": title or "Language Lesson",
-            "content": translated,
-            "original_content": content,
-            "topic": topic,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "target_lang_name": target_lang_name,
-            "content_lang": content_lang,
-            "wav_path": wav_path,
-            "vocab": vocab,
-            "word_count": word_count,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-        return lesson
-
     # ── APScheduler integration ────────────────────────────────────
 
     def _build_job(self, profile_name: str, profile: dict):
@@ -279,19 +102,25 @@ class LessonScheduler:
             logger.info("SCHEDULED LESSON — Profile: %s", profile_name)
             logger.info("=" * 60)
 
-            lesson = await self.run_lesson(profile_name)
+            # Delegate full pipeline to Orchestrator
+            from orchestrator import Orchestrator
+            orch = Orchestrator(config=self.config)
 
-            if lesson and self.delivery_callback:
-                try:
-                    await self.delivery_callback(profile_name, lesson)
-                    logger.info("[%s] Lesson delivered successfully",
-                              profile_name)
-                except Exception as e:
-                    logger.error("[%s] Delivery failed: %s",
-                               profile_name, e)
-            elif lesson:
-                logger.info("[%s] Lesson prepared (no delivery callback)",
-                          profile_name)
+            lesson = await orch.run_lesson(
+                profile_name,
+                delivery_callback=self.delivery_callback,
+            )
+
+            if lesson:
+                logger.info("[%s] Lesson prepared: '%s' (%d words, %d vocab)",
+                           profile_name,
+                           lesson.get("title", "?"),
+                           lesson.get("word_count", 0),
+                           len(lesson.get("vocab", [])),
+                           )
+            else:
+                logger.error("[%s] Lesson pipeline returned no result",
+                            profile_name)
 
         return job
 

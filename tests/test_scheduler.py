@@ -1,10 +1,10 @@
-"""Tests for src/scheduler.py — scheduling, lesson pipeline, CLI."""
+"""Tests for src/scheduler.py — scheduling, job building, CLI."""
 
 import asyncio
 import json
 import os
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, call
+from unittest.mock import patch, MagicMock, AsyncMock
 
 
 @pytest.fixture
@@ -100,107 +100,6 @@ class TestGetScheduledProfiles:
         assert names == ["full"]
 
 
-class TestRunLessonPipeline:
-    """Test the full lesson pipeline with mocked dependencies."""
-
-    @patch("llama_client.LlamaClient")
-    @patch("tts.synthesize")
-    @patch("fetch_router.fetch_article")
-    def test_full_pipeline(self, mock_fetch, mock_tts, mock_llama_cls, sample_config):
-        from src.scheduler import LessonScheduler
-
-        # Mock article fetch
-        mock_fetch.return_value = ("Python Basics", "Python is a great language.")
-
-        # Mock TTS
-        mock_tts.return_value = "/tmp/output/krystof/test.wav"
-
-        # Mock LLM client
-        mock_client = MagicMock()
-        mock_client.translate.return_value = "Python ist eine großartige Sprache."
-        mock_client.extract_vocab.return_value = [
-            {"word": "Sprache", "meaning": "language"}
-        ]
-        mock_llama_cls.return_value = mock_client
-
-        scheduler = LessonScheduler(config=sample_config[0])
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("krystof")
-        )
-
-        assert lesson is not None
-        assert lesson["title"] == "Python Basics"
-        assert lesson["profile"] == "krystof"
-        assert lesson["content"] == "Python ist eine großartige Sprache."
-        assert lesson["wav_path"] == "/tmp/output/krystof/test.wav"
-        assert len(lesson["vocab"]) == 1
-        assert lesson["target_lang_name"] == "German"
-        assert "timestamp" in lesson
-
-    @patch("src.fetch_router.fetch_article")
-    def test_fallback_when_fetch_fails(self, mock_fetch, sample_config):
-        from src.scheduler import LessonScheduler
-
-        mock_fetch.side_effect = Exception("network error")
-
-        scheduler = LessonScheduler(config=sample_config[0])
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("krystof")
-        )
-
-        assert lesson is not None
-        assert "could not be retrieved" in lesson["original_content"]
-
-    @patch("src.fetch_router.fetch_article")
-    def test_empty_profile_returns_none(self, mock_fetch, sample_config):
-        from src.scheduler import LessonScheduler
-
-        scheduler = LessonScheduler(config=sample_config[0])
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("nonexistent")
-        )
-
-        assert lesson is None
-
-    @patch("src.fetch_router.fetch_article")
-    def test_tts_disabled_skips_audio(self, mock_fetch, sample_config):
-        from src.scheduler import LessonScheduler
-
-        mock_fetch.return_value = ("Test", "Some content here.")
-
-        scheduler = LessonScheduler(config=sample_config[0])
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("anna")  # use_tts: False
-        )
-
-        assert lesson is not None
-        assert lesson["wav_path"] is None
-        # TTS should NOT have been called for anna
-        from src.tts import synthesize
-        # We can't easily check if it was called since we didn't mock it,
-        # but the pipeline path for use_tts=False skips the tts import
-
-    @patch("llama_client.LlamaClient")
-    @patch("fetch_router.fetch_article")
-    def test_no_llm_config_skips_translation(self, mock_fetch, mock_llama_cls, sample_config):
-        from src.scheduler import LessonScheduler
-
-        config = dict(sample_config[0])
-        del config["llm"]  # no LLM configured
-
-        mock_fetch.return_value = ("Test", "Original text.")
-
-        scheduler = LessonScheduler(config=config)
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("krystof")
-        )
-
-        assert lesson is not None
-        # Content should be the original (no translation attempted)
-        assert lesson["content"] == "Original text."
-        mock_llama_cls.assert_not_called()
-
-
 class TestDeliveryCallback:
     """Test that lessons are delivered via callback."""
 
@@ -219,15 +118,27 @@ class TestDeliveryCallback:
         )
 
         # Build and run a job manually
-        profile_name, profile = sample_config[0]["profiles"]["krystof"], sample_config[0]["profiles"]["krystof"]
+        profile = sample_config[0]["profiles"]["krystof"]
         job = scheduler._build_job("krystof", profile)
 
-        with patch.object(scheduler, "run_lesson", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = {
-                "title": "Test",
-                "content": "Translated.",
-                "profile": "krystof",
-            }
+        mock_lesson = {
+            "title": "Test",
+            "content": "Translated.",
+            "profile": "krystof",
+            "word_count": 10,
+            "vocab": [],
+        }
+
+        async def fake_run_lesson(pname, delivery_callback=None):
+            # Simulate Orchestrator.run_lesson calling the delivery callback
+            if delivery_callback:
+                await delivery_callback(pname, mock_lesson)
+            return mock_lesson
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = fake_run_lesson
+            MockOrch.return_value = mock_orch
             await job()
 
         assert len(delivery_log) == 1
@@ -246,10 +157,32 @@ class TestDeliveryCallback:
             delivery_callback=failing_delivery,
         )
 
-        job = scheduler._build_job("krystof", sample_config[0]["profiles"]["krystof"])
+        profile = sample_config[0]["profiles"]["krystof"]
+        job = scheduler._build_job("krystof", profile)
 
-        with patch.object(scheduler, "run_lesson", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = {"title": "Test", "content": "text"}
+        mock_lesson = {
+            "title": "Test",
+            "content": "text",
+            "profile": "krystof",
+            "word_count": 10,
+            "vocab": [],
+        }
+
+        async def fake_run_lesson(pname, delivery_callback=None):
+            try:
+                if delivery_callback:
+                    await delivery_callback(pname, mock_lesson)
+            except Exception as e:
+                # Orchestrator.run_lesson catches delivery errors internally
+                import logging
+                logger = logging.getLogger("src.scheduler")
+                logger.error("[%s] Delivery failed: %s", pname, e)
+            return mock_lesson
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = fake_run_lesson
+            MockOrch.return_value = mock_orch
             await job()  # should not raise
 
         assert "Delivery failed" in caplog.text or "Telegram unreachable" in caplog.text
@@ -321,7 +254,8 @@ class TestJobBuild:
 
         assert asyncio.iscoroutinefunction(job)
 
-    def test_job_runs_pipeline_and_delivers(self, sample_config):
+    @pytest.mark.asyncio
+    async def test_job_runs_orchestrator_and_delivers(self, sample_config):
         from src.scheduler import LessonScheduler
 
         delivered = []
@@ -337,37 +271,31 @@ class TestJobBuild:
         profile = sample_config[0]["profiles"]["krystof"]
         job = scheduler._build_job("krystof", profile)
 
-        # Run the job with mocked run_lesson
-        loop = asyncio.get_event_loop()
+        mock_lesson = {
+            "title": "Math",
+            "content": "1+1=2",
+            "profile": "krystof",
+            "word_count": 5,
+            "vocab": [],
+        }
 
-        async def test():
-            with patch.object(scheduler, "run_lesson", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = {"title": "Math", "content": "1+1=2"}
-                await job()
+        async def fake_run_lesson(pname, delivery_callback=None):
+            if delivery_callback:
+                await delivery_callback(pname, mock_lesson)
+            return mock_lesson
 
-        loop.run_until_complete(test())
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = fake_run_lesson
+            MockOrch.return_value = mock_orch
+            await job()
+
         assert len(delivered) == 1
         assert delivered[0][0] == "krystof"
 
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
-
-    @patch("src.fetch_router.fetch_article")
-    def test_profile_with_no_topics(self, mock_fetch, sample_config):
-        from src.scheduler import LessonScheduler
-
-        config = dict(sample_config[0])
-        config["profiles"]["krystof"]["topics"] = []  # empty topics
-        mock_fetch.return_value = ("Random", "Some text.")
-
-        scheduler = LessonScheduler(config=config)
-        lesson = asyncio.get_event_loop().run_until_complete(
-            scheduler.run_lesson("krystof")
-        )
-
-        assert lesson is not None
-        assert lesson["topic"] is None
 
     def test_load_config_from_path(self, sample_config):
         from src.scheduler import LessonScheduler
@@ -376,10 +304,53 @@ class TestEdgeCases:
         scheduler = LessonScheduler(config_path=config_path)
         assert "krystof" in scheduler.config["profiles"]
 
-    def test_stop_without_scheduler_is_safe(self, sample_config):
+    @pytest.mark.asyncio
+    async def test_stop_without_scheduler_is_safe(self, sample_config):
         from src.scheduler import LessonScheduler
 
         scheduler = LessonScheduler(config=sample_config[0])
         # _scheduler is None — stop should not raise
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(scheduler.stop())
+        await scheduler.stop()
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_failure_logs_error(self, sample_config, caplog):
+        from src.scheduler import LessonScheduler
+
+        scheduler = LessonScheduler(config=sample_config[0])
+        profile = sample_config[0]["profiles"]["krystof"]
+        job = scheduler._build_job("krystof", profile)
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = AsyncMock(return_value=None)
+            MockOrch.return_value = mock_orch
+            await job()
+
+        assert "returned no result" in caplog.text
+
+
+class TestSchedulerConfig:
+    """Test scheduler configuration handling."""
+
+    def test_init_with_config(self, sample_config):
+        from src.scheduler import LessonScheduler
+        scheduler = LessonScheduler(config=sample_config[0])
+        assert "krystof" in scheduler.config["profiles"]
+
+    def test_init_loads_from_path(self, sample_config):
+        from src.scheduler import LessonScheduler
+        _, config_path = sample_config
+        scheduler = LessonScheduler(config_path=config_path)
+        assert "anna" in scheduler.config["profiles"]
+
+    def test_delivery_callback_stored(self, sample_config):
+        from src.scheduler import LessonScheduler
+
+        async def callback(profile_name, lesson):
+            pass
+
+        scheduler = LessonScheduler(
+            config=sample_config[0],
+            delivery_callback=callback,
+        )
+        assert scheduler.delivery_callback is callback

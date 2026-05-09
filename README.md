@@ -5,34 +5,31 @@ A standalone language-learning daemon that delivers daily lessons via Telegram �
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  main.py (daemon)                    │
-│                                                      │
-│  ┌──────────────────┐    ┌──────────────────────┐   │
-│  │   scheduler.py   │    │   telegram_bot.py    │   │
-│  │                  │    │                      │   │
-│  │  per-profile     │    │  • lesson delivery   │   │
-│  │  daily cron jobs │────▶• tutor chat          │   │
-│  │                  │    │  • /register         │   │
-│  └────────┬─────────┘    │  • /status           │   │
-│           │              └──────────┬───────────┘   │
-│           ▼                         │               │
-│  ┌──────────────────────────────┐   │               │
-│  │     Lesson Pipeline          │◀──┘               │
-│  │                              │                   │
-│  │  1. fetch_router.py          │                   │
-│  │     → wikipedia_fetcher      │                   │
-│  │     → news_fetcher           │                   │
-│  │                              │                   │
-│  │  2. orchestrator.clean()     │                   │
-│  │                              │                   │
-│  │  3. tts.py (OmniVoice)       │                   │
-│  │                              │                   │
-│  │  4. llama_client.py          │                   │
-│  │     → translate              │                   │
-│  │     → extract_vocab          │                   │
-│  └──────────────────────────────┘                   │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                    main.py (daemon)                        │
+│                                                           │
+│  ┌─────────────────────┐    ┌──────────────────────────┐ │
+│  │   scheduler.py      │    │   telegram_bot.py        │ │
+│  │                     │    │                          │ │
+│  │  per-profile cron   │    │  • lesson delivery       │ │
+│  │  jobs (APScheduler) │    │  • tutor chat (SQLite)   │ │
+│  │                     │    │  • /register, /status    │ │
+│  └─────────┬───────────┘    └──────────┬───────────────┘ │
+│            │                           │                 │
+│            ▼                           │                 │
+│  ┌─────────────────────────────────────┤◀────────────────┘ │
+│  │         orchestrator.py             │                   │
+│  │                                     │                   │
+│  │  Orchestrator.run_lesson():         │                   │
+│  │    1. fetch_router → article        │                   │
+│  │    2. clean_content()               │                   │
+│  │    3. tts.py (OmniVoice)            │                   │
+│  │    4. llama_client.translate()      │                   │
+│  │    5. llama_client.extract_vocab()  │                   │
+│  │    6. processor.update_vocab()      │                   │
+│  │    7. delivery_callback()           │                   │
+│  └─────────────────────────────────────┘                   │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -106,12 +103,10 @@ The startup banner shows all configured profiles, schedules, and service status:
 
 ## Testing Individual Components
 
-See [TESTING.md](docs/testing.md) for standalone commands to test each component without the full daemon.
-
 Quick examples:
 
 ```bash
-# Test LLM endpoint health (no real model calls in tests)
+# Test LLM endpoint health
 conda run -n lingua python src/llama_client.py health --config config.json
 
 # Run a single lesson pipeline manually
@@ -129,22 +124,23 @@ conda run -n lingua python src/telegram_bot.py --config config.json
 | File | Role |
 |------|------|
 | `src/main.py` | Daemon entry — wires scheduler + Telegram bot, signal handling |
-| `src/scheduler.py` | APScheduler daily lessons per profile (fetch → translate → deliver) |
+| `src/orchestrator.py` | **Lesson pipeline** — fetch → clean → TTS → translate → vocab → deliver |
+| `src/scheduler.py` | APScheduler daily lessons per profile (delegates to orchestrator) |
 | `src/telegram_bot.py` | aiogram 3.x bot — lesson delivery + interactive tutor chat |
 | `src/llama_client.py` | Local LLM client — translate, extract vocab, tutor chat |
-| `src/orchestrator.py` | Content fetching pipeline (article → clean → TTS → payload) |
+| `src/processor.py` | Vocabulary persistence — markdown file management |
 | `src/fetch_router.py` | Routes fetch requests to wikipedia or news sources |
 | `src/wikipedia_fetcher.py` | Kiwix/ZIM client for offline Wikipedia articles |
 | `src/news_fetcher.py` | RSS feed fetching for current events |
 | `src/tts.py` | OmniVoice TTS wrapper (OpenAI-compatible API) |
-| `src/processor.py` | Vocab tracking and Markdown generation |
 
 ## Documentation
 
 - [Daemon (main.py)](docs/daemon.md) — Startup, service wiring, signal handling, systemd/Docker
+- [Orchestrator Guide](docs/orchestrator.md) — Pipeline steps, utility functions, CLI usage
+- [Processor (Vocabulary)](docs/processor.md) — Vocab markdown file management
+- [Lesson Scheduler Guide](docs/scheduler.md) — Schedule config, delivery callback API
 - [Telegram Bot Guide](docs/telegram-bot.md) — Setup, registration, commands, tutor chat
-- [Lesson Scheduler Guide](docs/scheduler.md) — Pipeline steps, config, delivery callback API
-- [Testing Guide](docs/testing.md) — Run and test each component standalone
 
 ## Tests
 
@@ -152,4 +148,13 @@ conda run -n lingua python src/telegram_bot.py --config config.json
 conda run -n lingua pytest tests/ -v
 ```
 
-All new components are fully tested (88 tests, all mocked — zero real LLM calls during testing).
+122 passing tests across 6 test files (all mocked — zero real LLM calls during testing).
+
+| Test file | Count | What it covers |
+|-----------|-------|----------------|
+| `test_llama_client.py` | 20 | Model resolution, translate, vocab extraction, tutor chat, health check |
+| `test_telegram_bot.py` | 29 | Bot init, lesson delivery, tutor chat, commands, history DB |
+| `test_scheduler.py` | 20 | Schedule discovery, job building, delivery callback, CLI |
+| `test_main.py` | 20 | Daemon startup, service wiring, signal handling, CLI |
+| `test_orchestrator.py` | 18 | Config/profile utils, clean_content, full pipeline, CLI |
+| `test_processor.py` | 15 | Vocab file init, read/update/dedup, markdown persistence |
