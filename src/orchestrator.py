@@ -518,6 +518,16 @@ def main():
         print(f"   Vocab: {len(lesson.get('vocab', []))} words extracted")
         if lesson.get("wav_path"):
             print(f"   Audio: {lesson['wav_path']}")
+
+        # Show original text snippet
+        original = lesson.get("original_content", "")[:300]
+        print(f"\n📄 Original ({lesson.get('content_lang', '?')}):")
+        print(f"   {original}{'...' if len(original) == 300 else ''}")
+
+        # Show translated text snippet
+        translated = lesson.get("content", "")[:300]
+        print(f"\n🌐 Translated ({lesson.get('source_lang', '?')}):")
+        print(f"   {translated}{'...' if len(translated) == 300 else ''}")
     else:
         print("\n❌ Lesson pipeline failed — check logs for details.")
 

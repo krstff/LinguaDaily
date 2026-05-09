@@ -17,8 +17,9 @@ Config structure in config.json:
     {
       "llm": {
         "base_url": "http://localhost:8080/v1",
-        "default_model": "gemma4-26b",
-        "api_key": ""
+        "default_model": "gemma-4-26B-language",
+        "api_key": "",
+        "timeout": 600
       },
       "profiles": {
         "krystof": {
@@ -98,9 +99,14 @@ class LlamaClient:
             "base_url", os.environ.get("LLAMA_BASE_URL", "http://localhost:8080/v1")
         )
         self.default_model = self.llm_cfg.get(
-            "default_model", os.environ.get("LLAMA_MODEL", "gemma4-26b")
+            "default_model", os.environ.get("LLAMA_MODEL", "gemma-4-26B-language")
         )
         self.api_key = self.llm_cfg.get("api_key", "") or "none"
+
+        # Timeout for LLM requests (model swap can be slow with large models)
+        self.timeout = float(self.llm_cfg.get(
+            "timeout", os.environ.get("LLAMA_TIMEOUT", "600")
+        ))
 
         # Resolve profile-level overrides
         self.profile = {}
@@ -161,6 +167,7 @@ class LlamaClient:
             self._client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
+                timeout=self.timeout,
             )
         return self._client
 
