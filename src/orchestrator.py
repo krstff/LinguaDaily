@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import json
 import argparse
 
@@ -14,6 +15,70 @@ def load_config(path=None):
     target = path or CONFIG_PATH
     with open(target, 'r') as f:
         return json.load(f)
+
+
+def clean_content(text):
+    """Clean up extracted article text for display and TTS.
+
+    Strips Wikipedia reference markers ([5], [ 1 ], etc.), removes wiki
+    footer sections (Siehe auch, Literatur, Weblinks …), fixes missing
+    spaces from link-adjacent words, and normalizes whitespace.
+    """
+    # ── Remove inline citation/reference markers like [5], [ 1 ] ──
+    text = re.sub(r'\s*\[\s*\d+\s*\]\s*', '', text)
+
+    # ── Strip Wikipedia footer sections and everything after them ──
+    footer_headers = [
+        'Siehe auch', 'Literatur', 'Weblinks', 'Quellen',
+        'Einzelnachweise', 'Fußnoten', 'Anmerkungen',
+        'Commons :',
+        # English
+        'See also', 'References', 'External links', 'Notes',
+        'Bibliography', 'Further reading',
+    ]
+    for header in footer_headers:
+        idx = text.find(header)
+        if idx != -1:
+            text = text[:idx]
+            break
+
+    # ── Fix missing spaces from adjacent wiki links ──
+    # lower+Upper ("vergebenund" → "vergeben und")
+    text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
+    # punctuation without trailing space ("gestartet,das" → "gestartet, das")
+    text = re.sub(r'([,.:;!?)\»])([A-Za-zÄÖÜäöü])', r'\1 \2', text)
+
+    # ── Normalize whitespace ──
+    # 1. Collapse 3+ newlines into double newline (paragraph boundary)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 2. Within each paragraph block, join lines broken by wiki HTML links.
+    #    Only join if the preceding line ends mid-sentence (no terminal punctuation).
+    paragraphs = text.split('\n\n')
+    cleaned_paragraphs = []
+    for para in paragraphs:
+        lines = [l.strip() for l in para.split('\n') if l.strip()]
+        if len(lines) <= 1:
+            cleaned_paragraphs.append(para.strip())
+            continue
+
+        joined_lines = [lines[0]]
+        for line in lines[1:]:
+            prev = joined_lines[-1]
+            # Join if previous line does NOT end with sentence-ending punctuation
+            if not re.search(r'[.!?\"\)\»]$' , prev):
+                joined_lines[-1] = prev + " " + line
+            else:
+                joined_lines.append(line)
+        cleaned_paragraphs.append(" ".join(joined_lines))
+
+    text = '\n\n'.join(cleaned_paragraphs)
+
+    # 3. Collapse multiple spaces into single spaces.
+    text = re.sub(r' {2,}', ' ', text)
+    text = text.strip()
+
+    return text
 
 
 def get_profile(config, profile_name=None):
@@ -133,6 +198,9 @@ def main():
         content = f"A Wikipedia article about {topic} could not be retrieved from the local server."
 
     print(f"Fetched: {title} ({len(content.split())} words)")
+
+    # Step 1.2: Clean up formatting (strip wiki references, normalize whitespace)
+    content = clean_content(content)
 
     # Step 1.5: Generate TTS audio of the fetched content
     wav_path = None

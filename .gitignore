@@ -4,6 +4,7 @@
 /data/*
 .vcode/
 output/
+.pi
 
 ### Linux ###
 *~
