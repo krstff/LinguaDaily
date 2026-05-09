@@ -219,26 +219,24 @@ class KiwixClient:
             if word_count < min_words:
                 continue
 
-            # Perfect length — keep as-is
-            if word_count <= min_words:
-                html_title = _get_title_from_html(article_resp.text)
-                return html_title or title, text
+            html_title = _get_title_from_html(article_resp.text) or title
 
-            # In range but above min — smart-truncate to target
+            # In range (min_words < word_count <= max_words) — try to trim toward target
             if word_count <= max_words:
-                truncated = smart_truncate(text, target_words=target_words, max_words=max_words, min_words=min_words)
+                truncated = smart_truncate(text, target_words=target_words,
+                                           max_words=max_words, min_words=min_words)
                 if truncated:
-                    html_title = _get_title_from_html(article_resp.text)
-                    return html_title or title, truncated
-                # If truncation failed, return as-is
-                html_title = _get_title_from_html(article_resp.text)
-                return html_title or title, text
+                    return html_title, truncated
+                # smart_truncate failed — hard-truncate to max_words as safety net
+                return html_title, hard_truncate(text, max_words=max_words)
 
             # Too long — smart-truncate to a coherent chunk
-            truncated = smart_truncate(text, target_words=target_words, max_words=max_words, min_words=min_words)
+            truncated = smart_truncate(text, target_words=target_words,
+                                       max_words=max_words, min_words=min_words)
             if truncated:
-                html_title = _get_title_from_html(article_resp.text)
-                return html_title or title, truncated
+                return html_title, truncated
+            # smart_truncate failed — hard-truncate to max_words as safety net
+            return html_title, hard_truncate(text, max_words=max_words)
 
         return "Error", "Could not fetch a suitable random article after multiple attempts."
 
@@ -410,6 +408,19 @@ def extract_wiki_text(html, skip_infoboxes=True):
 
 
 # ── Smart truncation ──────────────────────────────────────────────
+
+def hard_truncate(text, max_words=600):
+    """
+    Hard-truncate text to max_words at a word boundary.
+
+    Last-resort fallback when smart_truncate fails — guarantees the output
+    never exceeds max_words, even if it cuts mid-sentence.
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+    return " ".join(words[:max_words]) + "..."
+
 
 def smart_truncate(text, target_words=400, max_words=600, min_words=250):
     """
@@ -688,12 +699,14 @@ def main():
                 print(json.dumps({"error": f"No suitable prose article found for '{search_query}' after trying {len(titles)} results."}))
                 sys.exit(1)
 
-            # Smart-truncate if needed
+            # Truncate if needed — try smart first, hard fallback
             word_count = len(text.split())
             if word_count > max_words:
                 truncated = smart_truncate(text, target_words, max_words, min_words)
                 if truncated:
                     text = truncated
+                else:
+                    text = hard_truncate(text, max_words=max_words)
         else:
             # Random mode
             title, text = client.get_random_article(

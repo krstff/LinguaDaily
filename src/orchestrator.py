@@ -300,8 +300,10 @@ class Orchestrator:
                        profile_name)
             return content
 
-        logger.info("[%s] Translating (%s → %s)...",
-                    profile_name, source_lang, target_lang)
+        word_count = len(content.split())
+        model = self._get_llama_client(profile_name).resolve_model("translate")
+        logger.info("[%s] Translating (%s → %s, %d words, model: %s)...",
+                    profile_name, source_lang, target_lang, word_count, model)
         try:
             client = self._get_llama_client(profile_name)
             translated = client.translate(
@@ -310,7 +312,8 @@ class Orchestrator:
                 target_lang=target_lang,
             )
             if translated:
-                logger.info("[%s] Translation complete", profile_name)
+                logger.info("[%s] Translation complete (%d words output)",
+                           profile_name, len(translated.split()))
                 return translated
         except Exception as e:
             logger.warning("[%s] Translation failed (using original): %s",
@@ -327,7 +330,11 @@ class Orchestrator:
                        profile_name)
             return []
 
-        logger.info("[%s] Extracting vocabulary...", profile_name)
+        orig_words = len(original_content.split())
+        trans_words = len(translated_content.split()) if translated_content else 0
+        model = self._get_llama_client(profile_name).resolve_model("vocab")
+        logger.info("[%s] Extracting vocabulary (orig: %d words, trans: %d words, model: %s)...",
+                    profile_name, orig_words, trans_words, model)
         try:
             client = self._get_llama_client(profile_name)
             # source_lang for vocab = language the user is learning (= target_lang of profile)
@@ -484,6 +491,12 @@ def main():
     parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
     args = parser.parse_args()
 
+    # Configure logging for CLI runs
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)-7s %(message)s",
+    )
+
     print("--- LinguaDaily: Task Execution Started ---")
 
     try:
@@ -503,6 +516,17 @@ def main():
     print(f"Target Topic: {args.topic or '(random from profile)'}")
     print(f"Languages: {profile['source_lang']} (native) → "
           f"{profile['target_lang_name']} (learning)")
+
+    # Show LLM config
+    llm_cfg = config.get("llm", {})
+    if llm_cfg:
+        orch_temp = Orchestrator(config=config)
+        client_temp = orch_temp._get_llama_client(profile_name)
+        print(f"LLM: {client_temp.default_model} @ {client_temp.base_url}")
+        print(f"   translate model: {client_temp.resolve_model('translate')}")
+        print(f"   vocab model:     {client_temp.resolve_model('vocab')}")
+    else:
+        print("LLM: not configured")
 
     # Run the pipeline (async)
     orch = Orchestrator(config=config)
