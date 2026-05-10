@@ -257,6 +257,19 @@ class Orchestrator:
         # Clean content
         content = clean_content(content)
         word_count = len(content.split())
+
+        # Re-enforce max_words after cleaning (cleaning can inflate word count
+        # by splitting merged tokens from wiki links / adjacent capitalized words)
+        max_words = article_filter.get("max_words") if article_filter else None
+        if max_words and word_count > max_words:
+            logger.info("[%s] Post-clean word count %d exceeds max %d — re-truncating",
+                        profile_name, word_count, max_words)
+            from wikipedia_fetcher import smart_truncate, hard_truncate
+            min_words = article_filter.get("min_words", 50) if article_filter else 50
+            content = smart_truncate(content, max_words=max_words, min_words=min_words) or \
+                      hard_truncate(content, max_words=max_words)
+            word_count = len(content.split())
+
         logger.info("[%s] Fetched '%s' (%d words)", profile_name, title, word_count)
 
         return title, content, source, content_lang

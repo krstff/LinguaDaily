@@ -1,4 +1,12 @@
-"""Tests for src/wikipedia_fetcher.py — Kiwix client, HTML extraction, smart truncation."""
+"""Tests for src/wikipedia_fetcher.py — Kiwix client, HTML extraction, smart truncation.
+
+Run integration tests (require live Kiwix server) with:
+    pytest tests/test_wikipedia_fetcher.py -m integration
+"""
+
+import json
+import os
+import sys
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -145,3 +153,115 @@ class TestKiwixClient:
         from src.wikipedia_fetcher import KiwixClient
         with KiwixClient() as client:
             assert client is not None
+
+
+class TestOrchestratorPipelineIntegration:
+    """Integration tests — fetch real articles from Kiwix and run the full
+    orchestrator pipeline (fetch → clean → re-enforce max_words).
+
+    Requires a live Kiwix server. Marked with @pytest.mark.integration so they
+    are skipped by default in CI.
+    """
+
+    def _load_config(self):
+        """Load the real project config.json."""
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(script_dir, "config.json")
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    @pytest.mark.integration
+    def test_fetch_clean_truncate_within_limit(self):
+        """Fetch several random articles and verify they are within the word limit
+        after the full orchestrator pipeline: fetch → clean → post-clean truncation.
+        """
+        from src.wikipedia_fetcher import KiwixClient, smart_truncate, hard_truncate
+        from src.orchestrator import clean_content
+
+        config = self._load_config()
+
+        # Use the same article_filter as krystof/johi profiles
+        max_words = 300
+        min_words = 50
+        content_lang = "de"  # test with German Wikipedia
+
+        kiwix_cfg = config.get("kiwix_servers", {}).get(content_lang, {})
+        base_url = kiwix_cfg.get("base_url", "http://192.168.100.52:8080")
+        zim_name = kiwix_cfg.get("zim_name", "wikipedia_de_all_nopic_2026-01")
+
+        client = KiwixClient(base_url=base_url, zim_name=zim_name)
+
+        # Fetch 5 random articles and run through the full pipeline
+        num_articles = 5
+        for i in range(num_articles):
+            title, text = client.get_random_article(
+                min_words=min_words,
+                max_words=max_words,
+            )
+
+            assert title != "Error", f"Attempt {i+1}: failed to fetch article"
+            pre_clean_words = len(text.split())
+
+            # Step: clean content (orchestrator step)
+            cleaned = clean_content(text)
+            post_clean_words = len(cleaned.split())
+
+            # Step: re-enforce max_words after cleaning (orchestrator step)
+            if post_clean_words > max_words:
+                truncated = smart_truncate(
+                    cleaned, max_words=max_words, min_words=min_words
+                ) or hard_truncate(cleaned, max_words=max_words)
+            else:
+                truncated = cleaned
+
+            final_words = len(truncated.split())
+
+            # max_words is the hard guarantee — cleaning can slightly reduce words
+            # below min_words (removes references, footers) but that's fine.
+            assert final_words <= max_words, (
+                f"Article {i+1} ('{title}') has {final_words} words "
+                f"(pre-clean: {pre_clean_words}, post-clean: {post_clean_words}), "
+                f"expected ≤ {max_words}"
+            )
+
+        client.close()
+
+    @pytest.mark.integration
+    def test_fetch_clean_truncate_italian(self):
+        """Same pipeline test but with Italian Wikipedia (johi profile)."""
+        from src.wikipedia_fetcher import KiwixClient, smart_truncate, hard_truncate
+        from src.orchestrator import clean_content
+
+        config = self._load_config()
+
+        max_words = 300
+        min_words = 50
+        content_lang = "it"
+
+        kiwix_cfg = config.get("kiwix_servers", {}).get(content_lang, {})
+        base_url = kiwix_cfg.get("base_url", "http://192.168.100.52:8080")
+        zim_name = kiwix_cfg.get("zim_name", "wikipedia_it_all_nopic_2026-02")
+
+        client = KiwixClient(base_url=base_url, zim_name=zim_name)
+
+        for i in range(5):
+            title, text = client.get_random_article(
+                min_words=min_words,
+                max_words=max_words,
+            )
+
+            assert title != "Error", f"Attempt {i+1}: failed to fetch article"
+
+            cleaned = clean_content(text)
+            final = (
+                smart_truncate(cleaned, max_words=max_words, min_words=min_words)
+                or hard_truncate(cleaned, max_words=max_words)
+            )
+            final_words = len(final.split())
+
+            assert final_words <= max_words, (
+                f"Article {i+1} ('{title}') has {final_words} words, "
+                f"expected ≤ {max_words}"
+            )
+
+        client.close()
