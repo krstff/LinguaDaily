@@ -23,15 +23,16 @@ def fetch_article(source, topic, config, content_lang=None, article_filter=None)
     ----------
     source : str
         Content source identifier (e.g. "wikipedia", "news").
-    topic : str
-        Topic string to search/filter by.
+    topic : str or None
+        Topic string — used only for news RSS feeds; ignored for wikipedia
+        which uses the /random endpoint.
     config : dict
         Full config.json contents.
     content_lang : str or None
         Language code for the desired content (used to pick the right
         Kiwix server when source is wikipedia).
     article_filter : dict or None
-        Per-profile article filter overrides ({min_words, target_words, max_words}).
+        Per-profile article filter overrides ({min_words, max_words}).
         Falls back to top-level config's article_filter, then built-in defaults.
 
     Returns
@@ -39,30 +40,30 @@ def fetch_article(source, topic, config, content_lang=None, article_filter=None)
     (title, text) or (None, None) on failure.
     """
     if source == "wikipedia":
-        return _fetch_wikipedia(topic, config, content_lang=content_lang, article_filter=article_filter)
+        return _fetch_wikipedia(config, content_lang=content_lang,
+                                article_filter=article_filter)
     elif source == "news":
         return _fetch_news(topic, config, article_filter=article_filter)
     else:
         print(f"Warning: unknown source '{source}', falling back to wikipedia.")
-        return _fetch_wikipedia(topic, config, content_lang=content_lang, article_filter=article_filter)
+        return _fetch_wikipedia(config, content_lang=content_lang,
+                                article_filter=article_filter)
 
 
 # ── Wikipedia (Kiwix) ───────────────────────────────────────────────
 
-def _fetch_wikipedia(topic, config, content_lang=None, article_filter=None):
-    """Fetch via the existing Kiwix-based Wikipedia fetcher (subprocess).
+def _fetch_wikipedia(config, content_lang=None, article_filter=None):
+    """Fetch a random Wikipedia article via Kiwix (subprocess).
 
     Parameters
     ----------
-    topic : str
-        Topic to search for.
     config : dict
         Full config.json contents.
     content_lang : str or None
         Language code of the desired content (e.g. "de", "en").
         If given, resolves Kiwix server from kiwix_servers[content_lang].
     article_filter : dict or None
-        Per-profile article filter overrides.
+        Per-profile article filter overrides ({min_words, max_words}).
     """
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     fetcher_path = os.path.join(SCRIPT_DIR, "wikipedia_fetcher.py")
@@ -72,12 +73,10 @@ def _fetch_wikipedia(topic, config, content_lang=None, article_filter=None):
     if content_lang:
         cmd.extend(["--content-lang", content_lang])
     if article_filter:
-        for key in ("min_words", "target_words", "max_words"):
+        for key in ("min_words", "max_words"):
             val = article_filter.get(key)
             if val is not None:
                 cmd.extend([f"--{key}", str(val)])
-    if topic:
-        cmd.append(topic)
 
     try:
         import subprocess
@@ -114,7 +113,6 @@ def _fetch_news(topic, config, article_filter=None):
     # Article filter: profile-level > global config > defaults
     af = article_filter or config.get("article_filter", {})
     min_words = af.get("min_words", 250)
-    target_words = af.get("target_words", 400)
     max_words = af.get("max_words", 600)
 
     fetcher = NewsFetcher(
@@ -124,7 +122,6 @@ def _fetch_news(topic, config, article_filter=None):
     return fetcher.fetch_by_topic(
         topic,
         min_words=min_words,
-        target_words=target_words,
         max_words=max_words,
     )
 
@@ -137,7 +134,8 @@ def main():
     parser = argparse.ArgumentParser(description="Content-fetch router")
     parser.add_argument("--config", "-c", default=None, help="Path to config.json")
     parser.add_argument("--source", "-s", default="wikipedia", help="Content source (wikipedia, news)")
-    parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
+    parser.add_argument("topic", nargs="?", default=None,
+                        help="Topic (used only for news source; ignored for wikipedia)")
     args = parser.parse_args()
 
     # Load config

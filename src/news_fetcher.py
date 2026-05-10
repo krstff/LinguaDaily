@@ -230,7 +230,7 @@ class NewsFetcher:
 
     # ── Public API ─────────────────────────────────────────────────
 
-    def fetch_by_topic(self, topic, min_words=250, target_words=400, max_words=600):
+    def fetch_by_topic(self, topic, min_words=250, max_words=600):
         """
         Fetch a random news article matching the given topic.
 

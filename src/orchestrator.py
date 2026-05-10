@@ -140,6 +140,8 @@ def clean_content(text):
 
 # ── Article fetching wrapper ────────────────────────────────────────
 
+# ── Article fetching wrapper ────────────────────────────────────
+
 def fetch_article(source="wikipedia", topic=None, config=None,
                   content_lang=None, article_filter=None):
     """
@@ -150,12 +152,15 @@ def fetch_article(source="wikipedia", topic=None, config=None,
     source : str
         Content source identifier ("wikipedia", "news").
     topic : str or None
-        Topic to search/filter by.
+        Topic — used only for news RSS feeds; ignored for wikipedia
+        which uses the /random endpoint.
     config : dict or None
         Full config.json contents. Loaded from disk if None.
     content_lang : str or None
         Language code for the desired content (used to pick the right
         Kiwix server when source is wikipedia).
+    article_filter : dict or None
+        Per-profile article filter overrides ({min_words, max_words}).
 
     Returns
     -------
@@ -219,8 +224,8 @@ class Orchestrator:
 
     # ── Pipeline steps ─────────────────────────────────────────────
 
-    def _fetch_and_clean(self, profile_name, topic=None):
-        """Step 1+2: Fetch article and clean content."""
+    def _fetch_and_clean(self, profile_name):
+        """Step 1+2: Fetch a random article and clean content."""
         profiles = self.config.get("profiles", {})
         profile = profiles.get(profile_name)
         if not profile:
@@ -232,12 +237,11 @@ class Orchestrator:
         )
         article_filter = profile.get("article_filter")
 
-        logger.info("[%s] Fetching %s article (topic: %s)...",
-                    profile_name, source, topic or "random")
+        logger.info("[%s] Fetching random %s article...",
+                    profile_name, source)
 
         title, content = fetch_article(
             source=source,
-            topic=topic,
             config=self.config,
             content_lang=content_lang,
             article_filter=article_filter,
@@ -246,9 +250,9 @@ class Orchestrator:
         if not content:
             logger.warning("[%s] No article fetched — using fallback",
                           profile_name)
-            title = f"Article about {topic or 'general topic'}"
-            content = (f"A {source} article about {topic or 'a general topic'} "
-                      "could not be retrieved from the local server.")
+            title = "Random Article"
+            content = (f"A {source} article could not be retrieved "
+                      "from the local server.")
 
         # Clean content
         content = clean_content(content)
@@ -363,7 +367,7 @@ class Orchestrator:
         return []
 
     def _build_lesson(self, profile_name, title, original_content,
-                      translated_content, topic, source_lang, target_lang,
+                      translated_content, source_lang, target_lang,
                       content_lang, wav_path, vocab):
         """Build the final lesson dict."""
         from datetime import datetime
@@ -373,7 +377,6 @@ class Orchestrator:
             "title": title or "Language Lesson",
             "content": translated_content,
             "original_content": original_content,
-            "topic": topic,
             "source_lang": source_lang,
             "target_lang": target_lang,
             "target_lang_name": profile.get("target_lang_name", "?"),
@@ -398,13 +401,13 @@ class Orchestrator:
         return await loop.run_in_executor(
             None, self._translate, profile_name, content, source_lang, target_lang)
 
-    async def run_lesson(self, profile_name: str, topic: Optional[str] = None,
+    async def run_lesson(self, profile_name: str,
                          delivery_callback: Optional[Callable] = None) -> Optional[dict]:
         """
         Run the full lesson pipeline for one profile.
 
         Steps:
-          1. Fetch article (random topic from profile if not specified)
+          1. Fetch a random article
           2. Clean content
           3+4. Generate TTS audio AND Translate via LLM (in parallel)
           5. Extract vocabulary via LLM and save to markdown
@@ -414,8 +417,6 @@ class Orchestrator:
         ----------
         profile_name : str
             Profile to run the lesson for.
-        topic : str or None
-            Override topic. Picks random from profile topics if None.
         delivery_callback : callable or None
             Async callable(profile_name: str, lesson: dict) -> None.
 
@@ -435,17 +436,13 @@ class Orchestrator:
 
         profile = profiles[profile_name]
 
-        # Resolve topic
-        if topic is None and profile.get("topics"):
-            topic = random.choice(profile["topics"])
-
         source_lang = profile.get("source_lang", "en")
         target_lang = profile.get("target_lang", "de")
 
         try:
             # Step 1+2: Fetch and clean
             title, content, source, content_lang = self._fetch_and_clean(
-                profile_name, topic=topic)
+                profile_name)
 
             # Step 3+4: TTS and Translate in parallel (both need only original content)
             logger.info("[%s] Running TTS + Translation in parallel...", profile_name)
@@ -463,7 +460,7 @@ class Orchestrator:
 
             # Build lesson dict
             lesson = self._build_lesson(
-                profile_name, title, content, translated, topic,
+                profile_name, title, content, translated,
                 source_lang, target_lang, content_lang, wav_path, vocab)
 
             # Step 6: Deliver via callback
@@ -487,12 +484,11 @@ class Orchestrator:
 
 def main():
     """
-    Standalone orchestrator run — fetch content, translate, and deliver a lesson.
+    Standalone orchestrator run — fetch a random article, translate, and deliver.
 
     Usage:
-        python3 src/orchestrator.py                      # default profile, random topic
+        python3 src/orchestrator.py                      # default profile
         python3 src/orchestrator.py --profile krystof    # specific profile
-        python3 src/orchestrator.py --profile anna "quantum physics"  # profile + topic
     """
     parser = argparse.ArgumentParser(description="LinguaDaily orchestrator")
     parser.add_argument("--profile", "-p", help="User profile name")
@@ -500,7 +496,6 @@ def main():
                         help="Path to config file")
     parser.add_argument("--tts-url", default=None,
                         help="Override TTS base_url")
-    parser.add_argument("topic", nargs="?", default=None, help="Topic to search for")
     args = parser.parse_args()
 
     # Configure logging for CLI runs
@@ -525,7 +520,6 @@ def main():
     print(f"Profile: {profile_name}")
     print(f"Source: {profile.get('source', 'wikipedia')}")
     print(f"Content Language: {profile.get('content_lang', 'en')}")
-    print(f"Target Topic: {args.topic or '(random from profile)'}")
     print(f"Languages: {profile['source_lang']} (native) → "
           f"{profile['target_lang_name']} (learning)")
 
@@ -544,7 +538,7 @@ def main():
     orch = Orchestrator(config=config)
 
     async def _run():
-        return await orch.run_lesson(profile_name, topic=args.topic)
+        return await orch.run_lesson(profile_name)
 
     lesson = asyncio.run(_run())
 

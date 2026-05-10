@@ -101,7 +101,7 @@ class TestFetchNews:
         from src.fetch_router import _fetch_news
         config = {
             "sources": {"news": {"feeds": {}, "categories": {}}},
-            "article_filter": {"min_words": 250, "target_words": 400, "max_words": 600},
+            "article_filter": {"min_words": 250, "max_words": 600},
         }
 
         with patch("src.news_fetcher.NewsFetcher") as mock_nf:

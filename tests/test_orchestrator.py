@@ -26,7 +26,6 @@ def sample_config(tmp_path):
                 "target_lang_name": "German",
                 "content_lang": "de",
                 "source": "wikipedia",
-                "topics": ["Technology", "Science"],
                 "article_filter": {"min_words": 50, "max_words": 300},
                 "use_tts": True,
                 "tts_voice": "male",
@@ -38,7 +37,6 @@ def sample_config(tmp_path):
                 "target_lang_name": "French",
                 "content_lang": "fr",
                 "source": "news",
-                "topics": ["Politics"],
                 "use_tts": False,
             },
         },
@@ -138,7 +136,7 @@ class TestFetchArticle:
         # orchestrator does: from fetch_router import fetch_article as route_fetch
         with patch("fetch_router.fetch_article") as mock_route:
             mock_route.return_value = ("Test Title", "Test content here.")
-            title, text = fetch_article(source="wikipedia", topic="Tech", config=config)
+            title, text = fetch_article(source="wikipedia", config=config)
 
         assert title == "Test Title"
         mock_route.assert_called_once()
@@ -192,7 +190,7 @@ class TestOrchestratorRunLesson:
 
         with patch("fetch_router.fetch_article", return_value=(None, None)):
             orch = Orchestrator(config=sample_config[0])
-            lesson = await orch.run_lesson("test_user", topic="AI")
+            lesson = await orch.run_lesson("test_user")
 
         assert lesson is not None
         assert "could not be retrieved" in lesson["original_content"]

@@ -18,7 +18,7 @@ class TestSmartTruncate:
         st, ss, sa_s, sa_p = self._get_func()
         # Use ==Header== format (no spaces around text) to match wiki regex
         text = "==Intro==\n" + "A " * 200 + "\n\n==Details==\n" + "B " * 500 + "\n\n==Outro==\n" + "C " * 100
-        result = st(text, target_words=300, max_words=400, min_words=250)
+        result = st(text, max_words=400, min_words=250)
         assert result is not None
         words = len(result.split())
         assert 250 <= words <= 400
@@ -27,7 +27,7 @@ class TestSmartTruncate:
         st, ss, sa_s, sa_p = self._get_func()
         # No section headers — should fall back to paragraph splitting
         text = "\n\n".join(["Word " * (30 + i) for i in range(10)])
-        result = st(text, target_words=200, max_words=250, min_words=100)
+        result = st(text, max_words=250, min_words=100)
         assert result is not None
         words = len(result.split())
         assert 100 <= words <= 250
@@ -35,7 +35,7 @@ class TestSmartTruncate:
     def test_too_short_returns_none(self):
         st, ss, sa_s, sa_p = self._get_func()
         text = "Short text"
-        result = st(text, target_words=400, max_words=600, min_words=250)
+        result = st(text, max_words=600, min_words=250)
         assert result is None
 
     def test_split_sections(self):
@@ -56,19 +56,19 @@ class TestSmartTruncate:
     def test_accumulate_by_sections(self):
         st, ss, sa_s, sa_p = self._get_func()
         text = "==S1==\n" + "A " * 100 + "\n\n==S2==\n" + "B " * 200
-        result = sa_s(text, target_words=150, max_words=200, min_words=50)
+        result = sa_s(text, max_words=200, min_words=50)
         assert result is not None
         assert "==S1==" in result
 
     def test_accumulate_by_paragraphs(self):
         st, ss, sa_s, sa_p = self._get_func()
         text = "\n\n".join(["Para " + str(i) + " word" * 20 for i in range(5)])
-        result = sa_p(text, target_words=100, max_words=150, min_words=50)
+        result = sa_p(text, max_words=150, min_words=50)
         assert result is not None
 
     def test_empty_text(self):
         st, ss, sa_s, sa_p = self._get_func()
-        assert st("", target_words=400, max_words=600, min_words=250) is None
+        assert st("", max_words=600, min_words=250) is None
 
 
 class TestExtractWikiText:

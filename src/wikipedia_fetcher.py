@@ -14,13 +14,14 @@ import json
 import os
 import random
 import sys
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
 
 DEFAULT_BASE_URL = "http://192.168.100.52:8080"
 DEFAULT_ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
-DEFAULT_ARTICLE_FILTER = {"min_words": 250, "target_words": 400, "max_words": 600}
+DEFAULT_ARTICLE_FILTER = {"min_words": 250, "max_words": 600}
 
 
 # ── Kiwix client ────────────────────────────────────────────────────
@@ -126,11 +127,19 @@ class KiwixClient:
 
         soup = BeautifulSoup(resp.text, "html.parser")
         prefix = f"/content/{self.zim_name}/"
+        seen = set()
         titles = []
         for anchor in soup.find_all("a", href=True):
             href = anchor["href"]
             if href.startswith(prefix):
-                titles.append(href[len(prefix):])
+                title_encoded = href[len(prefix):]
+                # Decode to human-readable form so skip_titles comparison works
+                # (history stores decoded titles like "50 Tore in 50 Spielen",
+                #  but Kiwix returns URL-encoded ones like "50_Tore_in_50_Spielen")
+                title = unquote(title_encoded)
+                if title not in seen:
+                    seen.add(title)
+                    titles.append(title)
         return titles
 
     def get_article(self, title):
@@ -139,7 +148,7 @@ class KiwixClient:
         # Titles from Kiwix search results are already URL-encoded, so first
         # decode to get the raw title, then re-encode to avoid double-encoding
         # (%C3%A4 → %25C3%25A4) which causes 404 errors.
-        from urllib.parse import quote, unquote
+        from urllib.parse import quote
         raw = unquote(title)
         encoded = quote(raw, safe="_")
         resp = self._get(f"/content/{self.zim_name}/{encoded}")
@@ -148,14 +157,14 @@ class KiwixClient:
 
     # ── Random article (via /random endpoint) ────────────────────
 
-    def get_random_article(self, max_attempts=10, min_words=250, target_words=400, max_words=600):
+    def get_random_article(self, max_attempts=10, min_words=250, max_words=600):
         """
         Fetch a random readable article suitable for language learning.
 
         Uses the Kiwix /random endpoint (follows 302 redirect to get the
         actual article path). Filters out lists, glossaries, disambiguation
-        pages, and stubs. Prefers articles in the target word range;
-        smart-truncates longer ones to complete sections.
+        pages, and stubs. Truncates longer articles to max_words using
+        coherent section/paragraph boundaries.
         """
         for _ in range(max_attempts):
             # Kiwix /random?content=ZIMNAME returns a 302 redirect to the article
@@ -179,7 +188,6 @@ class KiwixClient:
                 title_raw = location
 
             # URL-decode the title
-            from urllib.parse import unquote
             title = unquote(title_raw)
 
             # Quick title filter
@@ -221,21 +229,15 @@ class KiwixClient:
 
             html_title = _get_title_from_html(article_resp.text) or title
 
-            # In range (min_words < word_count <= max_words) — try to trim toward target
+            # Within max_words — return as-is (no truncation needed)
             if word_count <= max_words:
-                truncated = smart_truncate(text, target_words=target_words,
-                                           max_words=max_words, min_words=min_words)
-                if truncated:
-                    return html_title, truncated
-                # smart_truncate failed — hard-truncate to max_words as safety net
-                return html_title, hard_truncate(text, max_words=max_words)
+                return html_title, text.strip()
 
-            # Too long — smart-truncate to a coherent chunk
-            truncated = smart_truncate(text, target_words=target_words,
-                                       max_words=max_words, min_words=min_words)
+            # Too long — truncate at a coherent boundary
+            truncated = smart_truncate(text, max_words=max_words, min_words=min_words)
             if truncated:
                 return html_title, truncated
-            # smart_truncate failed — hard-truncate to max_words as safety net
+            # hard-truncate as last resort
             return html_title, hard_truncate(text, max_words=max_words)
 
         return "Error", "Could not fetch a suitable random article after multiple attempts."
@@ -422,34 +424,32 @@ def hard_truncate(text, max_words=600):
     return " ".join(words[:max_words]) + "..."
 
 
-def smart_truncate(text, target_words=400, max_words=600, min_words=250):
+def smart_truncate(text, max_words=600, min_words=250):
     """
-    Truncate article text to a coherent chunk of roughly target_words.
+    Truncate article text to at most max_words at a coherent boundary.
 
-    Strategy (three-pass):
-      1. Split on Wikipedia section markers ("==...==" lines) and greedily
-         accumulate complete sections until hitting target_words.
-      2. If the first section itself is too long, fall back to splitting on
-         blank-line-separated paragraphs and accumulating those instead.
-      3. Last resort: split on sentence boundaries and accumulate sentences.
+    Strategy (three-pass): tries sections → paragraphs → sentences.
+    Each pass greedily accumulates chunks until adding the next one would
+    exceed max_words. The first pass that produces >= min_words wins.
+    This gives the best structural fidelity while staying under the cap.
 
     Returns the truncated text, or None if no usable chunk >= min_words
     could be produced.
     """
-    # Pass 1: section-level splitting
-    result = _accumulate_by_sections(text, target_words, max_words, min_words)
+    # Pass 1: section-level splitting (best structural coherence)
+    result = _accumulate_by_sections(text, max_words, min_words)
     if result:
         return result
 
     # Pass 2: paragraph-level splitting (fallback for articles with no
     # section markers or a single huge lead section)
-    result = _accumulate_by_paragraphs(text, target_words, max_words, min_words)
+    result = _accumulate_by_paragraphs(text, max_words, min_words)
     if result:
         return result
 
     # Pass 3: sentence-level splitting (last resort for dense text with
     # no paragraph breaks — e.g. bibliography-heavy Wikipedia articles)
-    result = _accumulate_by_sentences(text, target_words, max_words, min_words)
+    result = _accumulate_by_sentences(text, max_words, min_words)
     return result
 
 
@@ -482,8 +482,8 @@ def _split_sections(text):
     return sections
 
 
-def _accumulate_by_sections(text, target_words, max_words, min_words):
-    """Accumulate complete sections until near target_words."""
+def _accumulate_by_sections(text, max_words, min_words):
+    """Accumulate complete sections until hitting max_words."""
     sections = _split_sections(text)
     if not sections:
         return None
@@ -509,8 +509,8 @@ def _accumulate_by_sections(text, target_words, max_words, min_words):
     return None
 
 
-def _accumulate_by_sentences(text, target_words, max_words, min_words):
-    r"""Accumulate sentences (split on [.!?]\s+) until near target_words."""
+def _accumulate_by_sentences(text, max_words, min_words):
+    r"""Accumulate sentences (split on [.!?]\s+) until hitting max_words."""
     import re
     # Split on sentence-ending punctuation followed by whitespace/newline
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
@@ -535,8 +535,8 @@ def _accumulate_by_sentences(text, target_words, max_words, min_words):
     return None
 
 
-def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
-    """Accumulate complete paragraphs (blank-line separated) until near target_words."""
+def _accumulate_by_paragraphs(text, max_words, min_words):
+    """Accumulate complete paragraphs (blank-line separated) until hitting max_words."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     if not paragraphs:
         return None
@@ -563,10 +563,8 @@ def _accumulate_by_paragraphs(text, target_words, max_words, min_words):
 def parse_cli_args(args):
     config_path = None
     content_lang = None
-    search_query = None
     overrides = {}
     i = 0
-    positional_args = []
     while i < len(args):
         arg = args[i]
         if arg.startswith("--config="):
@@ -577,14 +575,11 @@ def parse_cli_args(args):
         elif arg == "--content-lang" and i + 1 < len(args):
             content_lang = args[i + 1]
             i += 1
-        elif arg in ("--min-words", "--target-words", "--max-words") and i + 1 < len(args):
+        elif arg in ("--min-words", "--max-words") and i + 1 < len(args):
             overrides[arg.lstrip("-").replace("-", "_")] = int(args[i + 1])
             i += 1
-        elif not arg.startswith("-"):
-            positional_args.append(arg)
         i += 1
-    search_query = positional_args[0] if positional_args else None
-    return config_path, content_lang, search_query, overrides
+    return config_path, content_lang, overrides
 
 
 def load_fetcher_config(config_path=None, content_lang=None):
@@ -636,7 +631,7 @@ def load_fetcher_config(config_path=None, content_lang=None):
 # ── CLI entry point ─────────────────────────────────────────────────
 
 def main():
-    config_path, content_lang, search_query, overrides = parse_cli_args(sys.argv[1:])
+    config_path, content_lang, overrides = parse_cli_args(sys.argv[1:])
     settings = load_fetcher_config(config_path, content_lang=content_lang)
 
     base_url = settings["base_url"]
@@ -646,74 +641,13 @@ def main():
     if overrides:
         af.update(overrides)
     min_words = af["min_words"]
-    target_words = af["target_words"]
     max_words = af["max_words"]
 
     with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
-        if search_query:
-            # Search mode — try up to 15 results until we find a prose-rich article
-            titles = client.search(search_query, count=50)
-            if not titles:
-                print(json.dumps({"error": f"No results for '{search_query}'"}))
-                sys.exit(1)
-
-            title = None
-            text = ""
-            random.shuffle(titles)
-            for attempt, chosen in enumerate(titles):
-                # Quick title filter
-                if any(skip in chosen for skip in KiwixClient.SKIP_PATTERNS):
-                    continue
-                resp = client.get_article(chosen)
-
-                # Skip articles that are mostly tables/infoboxes with no prose
-                if not _has_enough_prose(resp.text):
-                    continue
-
-                text = extract_wiki_text(resp.text)
-                disambig_patterns = [
-                    "may refer to",              # EN
-                    "kann sich beziehen auf",     # DE
-                    "puede referirse a",          # ES
-                    "può riferirsi a",            # IT
-                    "lehet több jelentése is",    # HU
-                    "peut faire référence à",     # FR
-                    "může znamenat",              # CS
-                    "viz rozcestník",             # CS
-                ]
-                if any(pat in text[:500] for pat in disambig_patterns):
-                    continue
-
-                # Skip articles that are mostly table/infobox data (short lines)
-                if _is_table_heavy(text):
-                    continue
-
-                word_count = len(text.split())
-                if word_count < min_words:
-                    continue
-
-                title = _get_title_from_html(resp.text) or chosen
-                break
-
-            if not title:
-                print(json.dumps({"error": f"No suitable prose article found for '{search_query}' after trying {len(titles)} results."}))
-                sys.exit(1)
-
-            # Truncate if needed — try smart first, hard fallback
-            word_count = len(text.split())
-            if word_count > max_words:
-                truncated = smart_truncate(text, target_words, max_words, min_words)
-                if truncated:
-                    text = truncated
-                else:
-                    text = hard_truncate(text, max_words=max_words)
-        else:
-            # Random mode
-            title, text = client.get_random_article(
-                min_words=min_words,
-                target_words=target_words,
-                max_words=max_words,
-            )
+        title, text = client.get_random_article(
+            min_words=min_words,
+            max_words=max_words,
+        )
 
         # Output as structured payload
         result = {
