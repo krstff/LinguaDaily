@@ -2,10 +2,11 @@
 """
 Lesson scheduler for LinguaDaily standalone daemon.
 
-Schedules per-profile lesson runs using APScheduler. Each profile with a
-`schedule.time` / `schedule.tz` gets a daily cron job that fires the full
-lesson pipeline via Orchestrator.run_lesson() and delivers the result via
-a pluggable callback (e.g., TelegramBot.deliver_lesson).
+Schedules per-profile lesson runs using APScheduler with a **serial FIFO queue**.
+Each profile with `schedule.time` / `schedule.tz` gets a daily cron trigger. When
+a trigger fires the profile is pushed onto an internal queue, and a single
+background worker processes lessons **one at a time**. This guarantees no overlap
+even when multiple profiles share the same schedule time.
 
 Config shape:
     {
@@ -45,7 +46,14 @@ logger = logging.getLogger(__name__)
 
 
 class LessonScheduler:
-    """Schedules daily lessons per profile via APScheduler."""
+    """
+    Schedules daily lessons per profile via APScheduler with a serial queue.
+
+    Each profile gets an independent cron trigger. When a trigger fires, the
+    profile is pushed onto a FIFO queue. A single background worker pulls from
+    that queue and runs lessons **one at a time**, guaranteeing no overlap even
+    when multiple profiles share the same schedule time.
+    """
 
     def __init__(
         self,
@@ -71,6 +79,8 @@ class LessonScheduler:
         self.config = config
         self.delivery_callback = delivery_callback
         self._scheduler = None
+        self._job_queue: asyncio.Queue = asyncio.Queue()
+        self._worker_task: Optional[asyncio.Task] = None
 
     # ── Config helpers ─────────────────────────────────────────────
 
@@ -96,36 +106,58 @@ class LessonScheduler:
     # ── APScheduler integration ────────────────────────────────────
 
     def _build_job(self, profile_name: str, profile: dict):
-        """Build an async job function for one profile."""
+        """
+        Build an async job function for one profile.
+
+        The cron trigger only pushes the profile onto the internal queue;
+        the actual lesson work is done by the single background worker.
+        """
         async def job():
-            logger.info("=" * 60)
-            logger.info("SCHEDULED LESSON — Profile: %s", profile_name)
-            logger.info("=" * 60)
-
-            # Delegate full pipeline to Orchestrator
-            from orchestrator import Orchestrator
-            orch = Orchestrator(config=self.config)
-
-            lesson = await orch.run_lesson(
-                profile_name,
-                delivery_callback=self.delivery_callback,
-            )
-
-            if lesson:
-                logger.info("[%s] Lesson prepared: '%s' (%d words, %d vocab)",
-                           profile_name,
-                           lesson.get("title", "?"),
-                           lesson.get("word_count", 0),
-                           len(lesson.get("vocab", [])),
-                           )
-            else:
-                logger.error("[%s] Lesson pipeline returned no result",
-                            profile_name)
-
+            logger.info("[%s] Scheduled trigger fired — enqueuing", profile_name)
+            await self._job_queue.put((profile_name, profile))
         return job
 
+    async def _worker(self):
+        """
+        Background worker that processes queued profiles one at a time.
+
+        Pulls (profile_name, profile) tuples from the FIFO queue and runs the
+        full lesson pipeline sequentially. This ensures that even when multiple
+        cron triggers fire at the same time, lessons never overlap.
+        """
+        while True:
+            profile_name, _profile = await self._job_queue.get()
+            try:
+                logger.info("=" * 60)
+                logger.info("SCHEDULED LESSON — Profile: %s", profile_name)
+                logger.info("=" * 60)
+
+                # Delegate full pipeline to Orchestrator
+                from orchestrator import Orchestrator
+                orch = Orchestrator(config=self.config)
+
+                lesson = await orch.run_lesson(
+                    profile_name,
+                    delivery_callback=self.delivery_callback,
+                )
+
+                if lesson:
+                    logger.info("[%s] Lesson prepared: '%s' (%d words, %d vocab)",
+                               profile_name,
+                               lesson.get("title", "?"),
+                               lesson.get("word_count", 0),
+                               len(lesson.get("vocab", [])),
+                               )
+                else:
+                    logger.error("[%s] Lesson pipeline returned no result",
+                                profile_name)
+            except Exception as e:
+                logger.error("[%s] Worker error: %s", profile_name, e, exc_info=True)
+            finally:
+                self._job_queue.task_done()
+
     async def start(self):
-        """Start the APScheduler (blocks until cancelled)."""
+        """Start the APScheduler and the background worker (blocks until cancelled)."""
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
 
@@ -156,14 +188,17 @@ class LessonScheduler:
                 id=f"lesson_{profile_name}",
                 name=f"Lesson for {profile_name}",
                 replace_existing=True,
-                max_instances=1,  # don't overlap runs
             )
 
             logger.info("Scheduled '%s' at %s (%s)",
                        profile_name, time_str, tz)
 
+        # Start the single background worker that processes lessons sequentially
+        self._worker_task = asyncio.create_task(self._worker())
+        logger.info("Background worker started — processing queue (serial)")
+
         self._scheduler.start()
-        logger.info("Scheduler started — %d active job(s)", len(scheduled))
+        logger.info("Scheduler started — %d active job(s), 1 serial worker", len(scheduled))
 
         try:
             # Block forever (or until shutdown event)
@@ -175,7 +210,15 @@ class LessonScheduler:
             self._scheduler.shutdown()
 
     async def stop(self):
-        """Gracefully stop the scheduler."""
+        """Gracefully stop the scheduler and background worker."""
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+            self._worker_task = None
+
         if self._scheduler:
             self._scheduler.shutdown(wait=False)
 

@@ -1,22 +1,41 @@
 # Lesson Scheduler Guide
 
-The scheduler manages daily cron jobs using APScheduler. Each profile with a `schedule` section gets its own job. When a job fires, it delegates the full lesson pipeline to `Orchestrator.run_lesson()`.
+The scheduler manages daily cron jobs using APScheduler with a **serial FIFO queue**. Each profile with a `schedule` section gets its own cron trigger. When a trigger fires, the profile is pushed onto a shared queue. A single background worker processes lessons **one at a time**, guaranteeing no overlap even when multiple profiles share the same schedule time.
 
 ## Architecture
 
 ```
 Scheduler (APScheduler)
     │
-    ├── 08:00 Europe/Berlin → krystof
-    │   └── Orchestrator.run_lesson("krystof")
-    │       └── fetch → clean → TTS → translate → vocab → deliver_lesson()
-    │
-    └── 10:30 Europe/Madrid → anna
-        └── Orchestrator.run_lesson("anna")
-            └── fetch → clean → skip TTS → translate → vocab → deliver_lesson()
+    ├── 08:00 Europe/Berlin → krystof ─┐
+    ├── 08:00 Europe/Berlin → johi     ├─→ FIFO Queue ─→ Worker (serial)
+    └── 10:30 Europe/Madrid → anna ────┘              │
+                                                       ▼
+                                              Orchestrator.run_lesson()
+                                                  │
+                          ┌───────────────────────┼───────────────────────┐
+                          ▼                       ▼                       ▼
+                     fetch→clean→TTS       translate→vocab         deliver_lesson()
 ```
 
-The scheduler is **thin** — it only handles cron scheduling and profile discovery. All pipeline logic lives in `Orchestrator`.
+The scheduler is **thin** — it only handles cron scheduling, queuing, and profile discovery. All pipeline logic lives in `Orchestrator`.
+
+## Queuing Behavior
+
+Multiple profiles can share the same schedule time (e.g., both `krystof` and `johi` at `08:00`). When their triggers fire:
+
+1. Each trigger **pushes** its profile onto a FIFO queue (instant, non-blocking).
+2. A single background worker pulls profiles from the queue and runs them **sequentially**.
+3. If three profiles share the same time, they run one after another — no overlap, no resource contention.
+
+### Queue ordering
+- Profiles are processed in **FIFO order** (first enqueued = first run).
+- When multiple triggers fire at the exact same second, the order is determined by APScheduler's internal scheduling order (roughly config-definition order).
+- If you need a specific order, stagger times by a few minutes (e.g., `08:00`, `08:03`, `08:06`).
+
+### Queue depth
+- The queue is unbounded. If triggers fire faster than lessons complete (unlikely with daily schedules), items accumulate and are processed in order.
+- There is **no skip logic** — every enqueued lesson will eventually run.
 
 ## Pipeline Steps (delegated to Orchestrator)
 
@@ -118,10 +137,11 @@ The callback receives this dict (returned by `Orchestrator.run_lesson()`):
 }
 ```
 
-## Concurrency
+## Concurrency & Serial Execution
 
-- `max_instances=1` per profile — if a lesson takes longer than the interval, the next run is **skipped** (not queued)
-- Different profiles run independently and can overlap
+- **Single worker, FIFO queue** — all lessons run sequentially. Even if multiple cron triggers fire at the same time, only one lesson runs at any given moment.
+- **No overlap** — LLM API calls, TTS requests, and file I/O never compete between profiles.
+- **No skipped runs** — every trigger is enqueued; unlike the old `max_instances=1` model, nothing is dropped if a previous lesson takes longer than expected.
 
 ## CLI
 
