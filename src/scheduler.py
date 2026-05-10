@@ -36,6 +36,7 @@ Usage (CLI):
 import asyncio
 import json
 import logging
+import os
 import sys
 from typing import Callable, Optional
 
@@ -232,7 +233,8 @@ class LessonScheduler:
         except asyncio.CancelledError:
             logger.info("Scheduler task cancelled")
         finally:
-            self._scheduler.shutdown()
+            if self._scheduler and self._scheduler.running:
+                self._scheduler.shutdown()
 
     async def stop(self):
         """Gracefully stop the scheduler and background worker."""
@@ -244,7 +246,7 @@ class LessonScheduler:
                 pass
             self._worker_task = None
 
-        if self._scheduler:
+        if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
 
     async def run_once(self):
@@ -335,7 +337,24 @@ def main():
         LessonScheduler.print_schedule(config=config)
         return
 
-    scheduler = LessonScheduler(config=config)
+    # Wire up Telegram delivery callback when running jobs (--run-now / --once)
+    delivery_callback = None
+    tg_token = config.get("telegram", {}).get("bot_token") or os.environ.get(
+        "TELEGRAM_BOT_TOKEN", ""
+    )
+    if tg_token and (args.run_now or args.once):
+        try:
+            from telegram_bot import TelegramBot
+            bot = TelegramBot(config=config)
+            delivery_callback = bot.deliver_lesson
+            logger.info("Telegram delivery callback wired up")
+        except Exception as e:
+            logger.warning("Failed to init Telegram bot for delivery: %s", e)
+
+    scheduler = LessonScheduler(
+        config=config,
+        delivery_callback=delivery_callback,
+    )
 
     if args.once:
         # One-shot: run all profiles and exit

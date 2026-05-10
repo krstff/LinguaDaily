@@ -141,9 +141,10 @@ class LinguaDaemon:
         logger.info("All services started — %d active task(s)", len(tasks))
 
         # Wait for shutdown signal or any task to fail
+        shutdown_task = asyncio.create_task(self._wait_for_shutdown(), name="shutdown-watcher")
         try:
             done, pending = await asyncio.wait(
-                [self._wait_for_shutdown()] + tasks,
+                [shutdown_task] + tasks,
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
