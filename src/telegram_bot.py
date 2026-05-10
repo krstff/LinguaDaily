@@ -192,10 +192,11 @@ class TelegramBot:
 
     async def deliver_lesson(self, profile_name: str, lesson: dict):
         """
-        Deliver a completed lesson to the user's Telegram chat as three messages:
+        Deliver a completed lesson to the user's Telegram chat as four messages:
           1. Original article text (content language)
-          2. Translation + vocabulary list
-          3. TTS audio sent as a voice message
+          2. Translation
+          3. Vocabulary list
+          4. TTS audio sent as an audio file
 
         Parameters
         ----------
@@ -205,6 +206,8 @@ class TelegramBot:
             Lesson payload with keys: title, content (translated text),
             original_content, vocab, wav_path (optional audio file path).
         """
+        from aiogram.methods import SendAudio
+
         chat_id = self.profile_to_chat_id.get(profile_name)
         if not chat_id:
             logger.warning("No Telegram chat_id for profile '%s' — skipping delivery",
@@ -226,24 +229,30 @@ class TelegramBot:
         content_lang = lesson.get("content_lang", "?")
 
         # ── Message 1: Original text ──────────────────────────────
-        msg1 = f"📰 *{title}*\n\n"
-        msg1 += f"_Original ({content_lang})_\n\n"
+        msg1 = f"📰 {title}\n\n"
+        msg1 += f"Original ({content_lang})\n\n"
         msg1 += self._truncate_for_telegram(original_content)
 
         try:
-            await bot.send_message(
-                chat_id=chat_id, text=msg1, parse_mode="Markdown")
+            await bot.send_message(chat_id=chat_id, text=msg1)
             logger.info("Delivered original text for '%s' to chat %d",
                         title, chat_id)
         except Exception as e:
             logger.error("Failed to send original text: %s", e)
 
-        # ── Message 2: Translation + Vocabulary ───────────────────
-        msg2 = f"🌐 *Translation ({target_lang})*\n\n"
+        # ── Message 2: Translation ────────────────────────────────
+        msg2 = f"🌐 Translation ({target_lang})\n\n"
         msg2 += self._truncate_for_telegram(translated_content, "\n…")
 
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg2)
+            logger.info("Delivered translation for '%s' to chat %d",
+                        title, chat_id)
+        except Exception as e:
+            logger.error("Failed to send translation message: %s", e)
+
+        # ── Message 3: Vocabulary ─────────────────────────────────
         if vocab:
-            # Build compact vocabulary block
             vocab_lines = []
             for entry in vocab:
                 if isinstance(entry, dict):
@@ -252,54 +261,38 @@ class TelegramBot:
                     vocab_lines.append(f"  • {word} — {meaning}")
                 else:
                     vocab_lines.append(f"  • {entry}")
-            if vocab_lines:
-                msg2 += f"\n\n📝 *Vocabulary*\n"
-                # Truncate vocab if combined message is too long
-                remaining = self._TG_MAX_MSG_LEN - len(msg2)
-                vocab_text = "\n".join(vocab_lines)
-                if len(vocab_text) > remaining - 20:
-                    vocab_text = vocab_text[:remaining - 43] + "\n…"
-                msg2 += vocab_text
 
-        # Check final length — Telegram hard limit is 4096
-        if len(msg2) > self._TG_MAX_MSG_LEN:
-            logger.warning("Message 2 exceeds Telegram limit for '%s', truncating",
-                           title)
-            # Strip vocab first, then truncate content if still too long
-            msg2 = msg2[:self._TG_SAFE_TRUNCATE] + "\n…"
+            msg3 = f"📝 Vocabulary ({len(vocab)} words)\n"
+            msg3 += "\n".join(vocab_lines)
 
-        try:
-            await bot.send_message(
-                chat_id=chat_id, text=msg2, parse_mode="Markdown")
-            logger.info("Delivered translation for '%s' to chat %d",
-                        title, chat_id)
-        except Exception as e:
-            logger.error("Failed to send translation message: %s", e)
+            if len(msg3) > self._TG_MAX_MSG_LEN:
+                logger.warning("Vocab message exceeds Telegram limit for '%s', truncating",
+                               title)
+                msg3 = msg3[:self._TG_SAFE_TRUNCATE] + "\n…"
 
-        # ── Message 3: TTS audio as voice message ─────────────────
-        if wav_path and os.path.isfile(wav_path):
             try:
-                with open(wav_path, "rb") as f:
-                    await bot.request(
-                        "sendVoice",
-                        {
-                            "chat_id": chat_id,
-                            "voice": f,
-                        },
-                    )
-                logger.info("Delivered voice message for '%s' to chat %d",
+                await bot.send_message(chat_id=chat_id, text=msg3)
+                logger.info("Delivered vocabulary for '%s' to chat %d",
                             title, chat_id)
             except Exception as e:
-                # Fallback: send as regular audio
-                try:
-                    await bot.send_document(
-                        chat_id=chat_id,
-                        document=open(wav_path, "rb"),
-                        caption=f"🔊 Audio: {title}",
-                    )
-                    logger.info("Delivered audio as document for '%s'", title)
-                except Exception as e2:
-                    logger.error("Failed to send audio: %s", e2)
+                logger.error("Failed to send vocabulary message: %s", e)
+
+        # ── Message 4: TTS audio ──────────────────────────────────
+        if wav_path and os.path.isfile(wav_path):
+            try:
+                from aiogram.types.input_file import FSInputFile
+                audio_file = FSInputFile(
+                    path=wav_path,
+                    filename=os.path.basename(wav_path),
+                )
+                await bot(SendAudio(
+                    chat_id=chat_id,
+                    audio=audio_file,
+                    caption=f"🔊 {title}",
+                ))
+                logger.info("Delivered audio for '%s' to chat %d", title, chat_id)
+            except Exception as e:
+                logger.error("Failed to send audio: %s", e)
 
     # ── Tutor chat handler ─────────────────────────────────────────
 

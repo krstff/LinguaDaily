@@ -543,8 +543,18 @@ def main():
     # Run the pipeline (async)
     orch = Orchestrator(config=config)
 
+    # Wire up Telegram delivery callback
+    from telegram_bot import TelegramBot
+    tg_bot = TelegramBot(config=config, profile_name=profile_name)
+
     async def _run():
-        return await orch.run_lesson(profile_name)
+        try:
+            return await orch.run_lesson(
+                profile_name,
+                delivery_callback=tg_bot.deliver_lesson,
+            )
+        finally:
+            await tg_bot.stop()  # close the aiohttp session
 
     lesson = asyncio.run(_run())
 
