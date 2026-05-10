@@ -320,8 +320,11 @@ class Orchestrator:
                            profile_name, len(translated.split()))
                 return translated
         except Exception as e:
-            logger.warning("[%s] Translation failed (using original): %s",
-                          profile_name, e)
+            error_msg = str(e)
+            if any(kw in error_msg.lower() for kw in ("connection", "refused", "timeout", "unreachable", "network")):
+                logger.warning("[%s] Translation failed: LLM unreachable", profile_name)
+            else:
+                logger.warning("[%s] Translation failed: %s", profile_name, error_msg[:100])
 
         logger.warning("[%s] Falling back to original text", profile_name)
         return content
@@ -361,8 +364,11 @@ class Orchestrator:
                            profile_name, processor.vocab_path)
             return vocab
         except Exception as e:
-            logger.warning("[%s] Vocab extraction failed: %s",
-                          profile_name, e)
+            error_msg = str(e)
+            if any(kw in error_msg.lower() for kw in ("connection", "refused", "timeout", "unreachable", "network")):
+                logger.warning("[%s] Vocab extraction failed: LLM unreachable", profile_name)
+            else:
+                logger.warning("[%s] Vocab extraction failed: %s", profile_name, error_msg[:100])
 
         return []
 

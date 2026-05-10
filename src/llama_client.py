@@ -207,7 +207,12 @@ class LlamaClient:
             content = response.choices[0].message.content
             return content.strip() if content else None
         except Exception as e:
-            logger.error("LLM chat error: %s", e, exc_info=True)
+            error_msg = str(e)
+            # Show a short message for connection/timeout errors instead of huge tracebacks
+            if any(kw in error_msg.lower() for kw in ("connection", "refused", "timeout", "unreachable", "network")):
+                logger.error("LLM unreachable (%s)", error_msg[:80])
+            else:
+                logger.error("LLM chat error: %s", e, exc_info=True)
             return None
 
     # ── Public API ─────────────────────────────────────────────────
