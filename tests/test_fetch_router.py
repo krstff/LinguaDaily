@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 
 class TestFetchRouterDispatch:
@@ -15,7 +15,23 @@ class TestFetchRouterDispatch:
         with patch("src.fetch_router._fetch_wikipedia") as mock_wiki:
             mock_wiki.return_value = ("Wiki Title", "Some content")
             title, text = fetch_article("wikipedia", "Tech", config)
-        mock_wiki.assert_called_once_with("Tech", config)
+        mock_wiki.assert_called_once_with(config, content_lang=None, article_filter=None)
+        assert title == "Wiki Title"
+
+    def test_dispatch_wikipedia_with_options(self):
+        from src.fetch_router import fetch_article
+        config = {"kiwix": {}, "profiles": {}}
+
+        with patch("src.fetch_router._fetch_wikipedia") as mock_wiki:
+            mock_wiki.return_value = ("Wiki Title", "Some content")
+            title, text = fetch_article(
+                "wikipedia", "Tech", config,
+                content_lang="de",
+                article_filter={"min_words": 300},
+            )
+        mock_wiki.assert_called_once_with(
+            config, content_lang="de", article_filter={"min_words": 300}
+        )
         assert title == "Wiki Title"
 
     def test_dispatch_news(self):
@@ -40,58 +56,88 @@ class TestFetchRouterDispatch:
 
 
 class TestFetchWikipedia:
-    """Test Wikipedia fetching via subprocess."""
+    """Test Wikipedia fetching via direct import."""
 
     def test_success(self):
         from src.fetch_router import _fetch_wikipedia
         config = {}
 
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = json.dumps({"title": "Test", "text": "Content"})
-            mock_run.return_value = mock_result
+        mock_article = ("Test Title", "Some content")
 
-            title, text = _fetch_wikipedia("Topic", config)
-        assert title == "Test"
-        assert text == "Content"
+        with patch("wikipedia_fetcher.KiwixClient") as MockClient, \
+             patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
+            mock_load.return_value = {
+                "base_url": "http://localhost:8080",
+                "zim_name": "wikipedia_de",
+                "article_filter": {"min_words": 250, "max_words": 600},
+            }
+            instance = MagicMock()
+            instance.get_random_article.return_value = mock_article
+            MockClient.return_value.__enter__ = MagicMock(return_value=instance)
+            MockClient.return_value.__exit__ = MagicMock(return_value=False)
 
-    def test_error_exit_code(self):
+            title, text = _fetch_wikipedia(config, content_lang="de")
+        assert title == "Test Title"
+        assert text == "Some content"
+
+    def test_passes_article_filter_overrides(self):
+        from src.fetch_router import _fetch_wikipedia
+        config = {}
+        article_filter = {"min_words": 300, "max_words": 500}
+
+        with patch("wikipedia_fetcher.KiwixClient") as MockClient, \
+             patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
+            mock_load.return_value = {
+                "base_url": "http://localhost:8080",
+                "zim_name": "wikipedia_en",
+                "article_filter": {"min_words": 250, "max_words": 600},
+            }
+            instance = MagicMock()
+            instance.get_random_article.return_value = ("Title", "Content")
+            MockClient.return_value.__enter__ = MagicMock(return_value=instance)
+            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+
+            _fetch_wikipedia(config, article_filter=article_filter)
+        # Verify the filter overrides were merged into settings before calling
+        assert instance.get_random_article.call_args[1]["min_words"] == 300
+        assert instance.get_random_article.call_args[1]["max_words"] == 500
+
+    def test_error_returns_none(self):
         from src.fetch_router import _fetch_wikipedia
         config = {}
 
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "Fetcher failed"
-            mock_run.return_value = mock_result
+        with patch("wikipedia_fetcher.KiwixClient") as MockClient, \
+             patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
+            mock_load.return_value = {
+                "base_url": "http://localhost:8080",
+                "zim_name": "wikipedia_en",
+                "article_filter": {"min_words": 250, "max_words": 600},
+            }
+            MockClient.return_value.__enter__.side_effect = Exception("Connection refused")
 
-            title, text = _fetch_wikipedia("Topic", config)
+            title, text = _fetch_wikipedia(config)
         assert title is None
         assert text is None
 
-    def test_error_in_output(self):
+    def test_resolves_content_lang(self):
+        """load_fetcher_config should be called with the content_lang."""
         from src.fetch_router import _fetch_wikipedia
         config = {}
 
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = json.dumps({"error": "No articles found"})
-            mock_run.return_value = mock_result
+        with patch("wikipedia_fetcher.KiwixClient") as MockClient, \
+             patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
+            mock_load.return_value = {
+                "base_url": "http://localhost:8080",
+                "zim_name": "wikipedia_de",
+                "article_filter": {"min_words": 250, "max_words": 600},
+            }
+            instance = MagicMock()
+            instance.get_random_article.return_value = ("Title", "Content")
+            MockClient.return_value.__enter__ = MagicMock(return_value=instance)
+            MockClient.return_value.__exit__ = MagicMock(return_value=False)
 
-            title, text = _fetch_wikipedia("Topic", config)
-        assert title is None
-
-    def test_timeout(self):
-        from src.fetch_router import _fetch_wikipedia
-        import subprocess as sp
-        config = {}
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = sp.TimeoutExpired(cmd="test", timeout=60)
-            title, text = _fetch_wikipedia("Topic", config)
-        assert title is None
+            _fetch_wikipedia(config, content_lang="de")
+        mock_load.assert_called_once_with(content_lang="de")
 
 
 class TestFetchNews:
@@ -104,21 +150,12 @@ class TestFetchNews:
             "article_filter": {"min_words": 250, "max_words": 600},
         }
 
-        with patch("src.news_fetcher.NewsFetcher") as mock_nf:
+        with patch("news_fetcher.NewsFetcher") as MockNF:
             instance = MagicMock()
             instance.fetch_by_topic.return_value = ("News Title", "News content")
-            mock_nf.return_value.__enter__ = MagicMock(return_value=instance)
-            mock_nf.return_value.__exit__ = MagicMock(return_value=False)
+            MockNF.return_value = instance
 
-            # Patch the import path
-            with patch("src.fetch_router.NewsFetcher") as mock_import:
-                mock_import.return_value.__enter__.return_value.fetch_by_topic.return_value = (
-                    "News Title",
-                    "News content",
-                )
-                mock_import.return_value.__exit__.return_value = False
-
-                title, text = _fetch_news("Politics", config)
+            title, text = _fetch_news("Politics", config)
         assert title == "News Title"
 
     def test_default_article_filter(self):
@@ -129,21 +166,17 @@ class TestFetchNews:
             # No article_filter key
         }
 
-        with patch("src.fetch_router.NewsFetcher") as mock_nf:
+        with patch("news_fetcher.NewsFetcher") as MockNF:
             instance = MagicMock()
             instance.fetch_by_topic.return_value = ("Title", "Content")
-            mock_nf.return_value.__enter__ = MagicMock(return_value=instance)
-            mock_nf.return_value.__exit__ = MagicMock(return_value=False)
+            MockNF.return_value = instance
 
-            with patch("src.fetch_router.NewsFetcher") as mock_import:
-                mock_import.return_value.__enter__.return_value.fetch_by_topic.return_value = (
-                    "Title",
-                    "Content",
-                )
-                mock_import.return_value.__exit__.return_value = False
-
-                title, text = _fetch_news("Topic", config)
+            title, text = _fetch_news("Topic", config)
         assert title == "Title"
+        # Should use default min/max_words since no article_filter in config
+        call_kwargs = instance.fetch_by_topic.call_args[1]
+        assert call_kwargs["min_words"] == 250
+        assert call_kwargs["max_words"] == 600
 
 
 class TestCli:
@@ -154,8 +187,13 @@ class TestCli:
         from src.fetch_router import main
         mock_fetch.return_value = ("CLI Test", "word " * 300)
 
-        with patch("sys.argv", ["fetch_router.py", "--source", "wikipedia", "Topic"]):
+        with patch("sys.argv", ["fetch_router.py", "--source", "wikipedia", "Topic"]), \
+             patch("src.config.load_config") as mock_load_cfg:
+            mock_load_cfg.return_value = {"kiwix": {}, "profiles": {}}
             with patch("builtins.print") as mock_print:
-                # Need to mock config loading too
-                with patch("src.fetch_router.CONFIG_PATH"):
-                    pass  # CLI test is complex; focus on integration tests instead
+                main()
+
+        args, kwargs = mock_print.call_args
+        output = json.loads(args[0])
+        assert output["title"] == "CLI Test"
+        assert output["source"] == "wikipedia"

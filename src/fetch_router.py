@@ -11,7 +11,6 @@ Usage (CLI):
 """
 
 import json
-import sys
 import os
 
 
@@ -53,7 +52,7 @@ def fetch_article(source, topic, config, content_lang=None, article_filter=None)
 # ── Wikipedia (Kiwix) ───────────────────────────────────────────────
 
 def _fetch_wikipedia(config, content_lang=None, article_filter=None):
-    """Fetch a random Wikipedia article via Kiwix (subprocess).
+    """Fetch a random Wikipedia article via Kiwix (direct import).
 
     Parameters
     ----------
@@ -65,40 +64,29 @@ def _fetch_wikipedia(config, content_lang=None, article_filter=None):
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
     """
-    from config import PROJECT_DIR
+    from wikipedia_fetcher import KiwixClient, load_fetcher_config
 
-    fetcher_path = PROJECT_DIR / "src" / "wikipedia_fetcher.py"
-    config_path = PROJECT_DIR / "config.json"
+    settings = load_fetcher_config(content_lang=content_lang)
 
-    cmd = [sys.executable, fetcher_path, "--config", config_path]
-    if content_lang:
-        cmd.extend(["--content-lang", content_lang])
+    base_url = settings["base_url"]
+    zim_name = settings["zim_name"]
+    af = settings["article_filter"]
+
+    # Profile-level overrides take precedence over config defaults
     if article_filter:
-        for key in ("min_words", "max_words"):
-            val = article_filter.get(key)
-            if val is not None:
-                cmd.extend([f"--{key}", str(val)])
+        af.update(article_filter)
+
+    min_words = af.get("min_words", 250)
+    max_words = af.get("max_words", 600)
 
     try:
-        import subprocess
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60
-        )
-        if result.returncode != 0:
-            print(f"Fetcher error: {result.stderr.strip()}")
-            return None, None
-
-        data = json.loads(result.stdout)
-        if data.get("error"):
-            print(f"Fetcher returned error: {data['error']}")
-            return None, None
-
-        return data.get("title", "Unknown"), data.get("text", "")
-    except subprocess.TimeoutExpired:
-        print("Fetcher timed out after 60s")
-        return None, None
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"Fetcher exception: {e}")
+        with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
+            return client.get_random_article(
+                min_words=min_words,
+                max_words=max_words,
+            )
+    except Exception as e:
+        print(f"Wikipedia fetcher error: {e}")
         return None, None
 
 
@@ -140,14 +128,9 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    if args.config:
-        config_path = args.config
-    else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, "..", "config.json")
+    from config import load_config
 
-    with open(config_path, encoding="utf-8") as f:
-        config = json.load(f)
+    config = load_config(args.config)
 
     title, text = fetch_article(args.source, args.topic, config)
 
