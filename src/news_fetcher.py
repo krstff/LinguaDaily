@@ -21,9 +21,10 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# ── Feed catalogue ───────────────────────────────────────────────────
-# Maps topic keywords to sets of RSS feed URLs.
-# Each topic can share feeds; the fetcher picks from the union.
+# ── Feed catalogue (fallback defaults) ─────────────────────────────
+# These are used only when config.json has no sources.news.feeds section.
+# In production, feeds should be configured in config.json under
+# "sources" → "news" → "feeds".
 
 FEED_CATALOGUE = {
     "Technology": [
@@ -34,7 +35,6 @@ FEED_CATALOGUE = {
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     ],
     "Mathematics": [
-        # Math-specific news is rare; fall back to science
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     ],
     "History": [
@@ -47,7 +47,6 @@ FEED_CATALOGUE = {
         "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     ],
     "Philosophy": [
-        # Philosophy news is rare; general culture/science overlap
         "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     ],
     "Literature": [
@@ -97,10 +96,34 @@ DEFAULT_FEEDS = [
 ]
 
 
+def load_feeds_from_config(config=None):
+    """
+    Load RSS feed catalogue from config.json.
+
+    Returns the configured feeds dict, or falls back to FEED_CATALOGUE
+    if config is missing/empty.
+
+    Config shape:
+        {
+          "sources": {
+            "news": {
+              "feeds": { "Technology": ["url1", "url2"], ... }
+            }
+          }
+        }
+    """
+    if config:
+        feeds = (config.get("sources", {}) or {}).get("news", {}) or {}
+        cfg_feeds = feeds.get("feeds")
+        if cfg_feeds and isinstance(cfg_feeds, dict):
+            return cfg_feeds
+    return FEED_CATALOGUE
+
+
 class NewsFetcher:
     """Fetch news articles from RSS feeds."""
 
-    def __init__(self, feeds=None, categories=None):
+    def __init__(self, feeds=None, categories=None, config=None):
         """
         Parameters
         ----------
@@ -109,8 +132,16 @@ class NewsFetcher:
         categories : dict, optional
             Future-proof: maps topic → API provider categories (for when
             an API backend is added). Not used by RSS fetcher.
+        config : dict, optional
+            Full config.json contents. Used to load feeds from
+            sources.news.feeds if `feeds` is not provided directly.
         """
-        self._feeds = feeds or FEED_CATALOGUE
+        if feeds is not None:
+            self._feeds = feeds
+        elif config:
+            self._feeds = load_feeds_from_config(config)
+        else:
+            self._feeds = FEED_CATALOGUE
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": "LinguaDaily/1.0 (language-learning)"

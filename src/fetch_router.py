@@ -96,18 +96,12 @@ def _fetch_news(topic, config, article_filter=None):
     """Fetch via RSS-based news fetcher."""
     from news_fetcher import NewsFetcher
 
-    sources_cfg = config.get("sources", {})
-    news_cfg = sources_cfg.get("news", {})
-
     # Article filter: profile-level > global config > defaults
     af = article_filter or config.get("article_filter", {})
     min_words = af.get("min_words", 250)
     max_words = af.get("max_words", 600)
 
-    fetcher = NewsFetcher(
-        feeds=news_cfg.get("feeds"),
-        categories=news_cfg.get("categories", {}),
-    )
+    fetcher = NewsFetcher(config=config)
     return fetcher.fetch_by_topic(
         topic,
         min_words=min_words,

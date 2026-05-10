@@ -1,113 +1,397 @@
-import os
-import shutil
-import subprocess
+#!/usr/bin/env python3
+"""
+Environment health check for LinguaDaily.
+
+Validates configuration, checks service connectivity, and verifies that
+all required Python packages are installed. Designed to be run before
+starting the daemon so setup problems are caught early.
+
+Usage:
+    python3 src/env_check.py                  # full check
+    python3 src/env_check.py --quick          # skip network checks
+    python3 src/env_check.py --config path    # custom config file
+
+Exit codes:
+    0 — all checks passed (warnings only)
+    1 — one or more errors found
+"""
+
+import importlib
 import json
+import os
+import sys
+from urllib.request import urlopen
+from urllib.error import URLError
 
-from config import CONFIG_PATH, PROJECT_DIR, load_config
+from config import CONFIG_PATH, DATA_DIR, PROJECT_DIR, load_config
 
 
-def check_env():
-    print("--- 🛠️ LinguaDaily: Environment Health Check ---")
+# ── Required Python packages ────────────────────────────────────────
+
+REQUIRED_PACKAGES = {
+    "openai":         "LLM client (translation, vocab, tutor)",
+    "requests":       "HTTP client (Kiwix, TTS, news RSS)",
+    "beautifulsoup4": "HTML parsing (Wikipedia article extraction)",
+    "feedparser":     "RSS feed parsing (news source)",
+    "aiogram":        "Telegram bot framework",
+    "apscheduler":   "Lesson scheduler",
+}
+
+# ── Config schema validation rules ──────────────────────────────────
+
+def validate_config(config):
+    """Return (errors, warnings) from config structure checks."""
     errors = []
     warnings = []
 
-    config_path = str(CONFIG_PATH)
-
-    # 1. Check Project Root
-    if PROJECT_DIR.exists():
-        print(f"✅ Project Root: {PROJECT_DIR}")
+    # --- Top-level keys ---
+    if not config.get("profiles"):
+        errors.append("No 'profiles' section in config.json")
     else:
-        errors.append(f"❌ Project Root not found at {PROJECT_DIR}")
+        profiles = config["profiles"]
+        default = config.get("default_profile")
+        if default and default not in profiles:
+            warnings.append(
+                f"default_profile '{default}' is not in profiles list"
+            )
 
-    # 2. Check Python Availability
-    try:
-        version = subprocess.check_output(["python3", "--version"], stderr=subprocess.STDOUT).decode().strip()
-        print(f"✅ Python: {version}")
-    except Exception:
-        errors.append("❌ Python3 is not accessible in the current PATH.")
+        for name, profile in profiles.items():
+            _validate_profile(errors, warnings, name, profile)
 
-    # 3. Check config.json
-    if os.path.exists(config_path):
-        print(f"✅ Config: {config_path}")
-
-        # Parse profiles
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-
-            profiles = config.get("profiles", {})
-            default = config.get("default_profile", "(none)")
-            print(f"✅ Profiles: {', '.join(profiles.keys())} (default: {default})")
-
-            # Check each profile's data directory
-            for name in profiles:
-                data_dir = PROJECT_DIR / "data" / name
-                vocab_file = data_dir / "vocabulary.md"
-                if os.path.isdir(data_dir):
-                    if os.path.exists(vocab_file):
-                        print(f"  ✅ {name}: data dir + vocab file OK")
-                    else:
-                        warnings.append(f"⚠️  {name}: data dir exists but no vocabulary.md yet")
-                else:
-                    warnings.append(f"⚠️  {name}: data directory missing at {data_dir}")
-        except Exception as e:
-            errors.append(f"❌ Config parse error: {e}")
+    # --- LLM section ---
+    llm = config.get("llm")
+    if llm:
+        if not llm.get("base_url"):
+            errors.append("llm.base_url is missing — LLM calls will fail")
+        if not llm.get("default_model"):
+            warnings.append("llm.default_model is not set (LLM client has a fallback)")
     else:
-        errors.append(f"❌ Config file missing at {config_path}")
-
-    # 4. Check Legacy vocab file (should be migrated)
-    legacy_vocab = PROJECT_DIR / "data" / "vocabulary.md"
-    if os.path.exists(legacy_vocab):
         warnings.append(
-            f"⚠️  Legacy vocab file found at {legacy_vocab} — "
-            f"consider migrating: mkdir -p data/<profile> && mv data/vocabulary.md data/<profile>/"
+            "No 'llm' section — translation, vocab extraction, and tutor chat disabled"
         )
 
-    # 5. Check Dependencies
-    src_path = PROJECT_DIR / "src" / "orchestrator.py"
-    if os.path.exists(src_path):
-        print(f"✅ Orchestrator: Found")
+    # --- Telegram section ---
+    tg = config.get("telegram")
+    if tg:
+        if not tg.get("bot_token"):
+            errors.append("telegram.bot_token is empty — bot cannot start")
     else:
-        errors.append(f"❌ Orchestrator missing at {src_path}")
+        warnings.append("No 'telegram' section — lesson delivery and tutor chat disabled")
 
-    fetcher_path = PROJECT_DIR / "src" / "wikipedia_fetcher.py"
-    if os.path.exists(fetcher_path):
-        print(f"✅ Fetcher: Found")
-    else:
-        errors.append(f"❌ Fetcher missing at {fetcher_path}")
-
-    # 6. Check Kiwix connectivity (if configured)
-    if os.path.exists(config_path):
-        try:
-            config = load_config()
-            kiwix = config.get("kiwix", {})
-            if kiwix.get("base_url"):
-                import urllib.request
-                try:
-                    urllib.request.urlopen(
-                        f"{kiwix['base_url']}/",
-                        timeout=5
+    # --- Kiwix servers (needed for wikipedia source) ---
+    wiki_profiles = [
+        (n, p) for n, p in config.get("profiles", {}).items()
+        if p.get("source") == "wikipedia"
+    ]
+    if wiki_profiles:
+        kiwix = config.get("kiwix_servers", {})
+        if not kiwix:
+            errors.append(
+                "Profiles use 'wikipedia' source but 'kiwix_servers' is empty/missing"
+            )
+        for name, profile in wiki_profiles:
+            cl = profile.get("content_lang", profile.get("target_lang"))
+            if cl and cl not in kiwix:
+                errors.append(
+                    f"Profile '{name}' uses content_lang='{cl}' but no "
+                    f"kiwix_servers entry for '{cl}'"
+                )
+            elif cl and cl in kiwix:
+                srv = kiwix[cl]
+                if not srv.get("base_url"):
+                    errors.append(
+                        f"kiwix_servers['{cl}'].base_url is empty"
                     )
-                    print(f"✅ Kiwix: {kiwix['base_url']} reachable")
-                except Exception:
-                    errors.append(f"❌ Kiwix: {kiwix['base_url']} unreachable")
-        except Exception:
-            pass
+                if not srv.get("zim_name"):
+                    errors.append(
+                        f"kiwix_servers['{cl}'].zim_name is empty"
+                    )
 
-    # Summary
-    print("\n--- Summary ---")
-    if not errors and not warnings:
-        print("🚀 Environment looks HEALTHY. Ready to go!")
+    # --- TTS section ---
+    tts_profiles = [
+        (n, p) for n, p in config.get("profiles", {}).items()
+        if p.get("use_tts")
+    ]
+    if tts_profiles:
+        tts = config.get("tts")
+        if not tts:
+            warnings.append(
+                f"Profiles use TTS ('{', '.join(n for n,_ in tts_profiles)}') "
+                "but no 'tts' section — audio generation will fail"
+            )
+        elif not tts.get("base_url"):
+            errors.append("tts.base_url is missing — TTS calls will fail")
+
+    # --- Schedule sanity ---
+    for name, profile in config.get("profiles", {}).items():
+        sched = profile.get("schedule", {})
+        time_str = sched.get("time", "")
+        if time_str:
+            parts = time_str.split(":")
+            if len(parts) != 2:
+                errors.append(
+                    f"Profile '{name}' schedule.time '{time_str}' is not HH:MM"
+                )
+            else:
+                try:
+                    h, m = int(parts[0]), int(parts[1])
+                    if not (0 <= h <= 23 and 0 <= m <= 59):
+                        errors.append(
+                            f"Profile '{name}' schedule.time '{time_str}' is out of range"
+                        )
+                except ValueError:
+                    errors.append(
+                        f"Profile '{name}' schedule.time '{time_str}' contains non-numeric values"
+                    )
+
+    return errors, warnings
+
+
+def _validate_profile(errors, warnings, name, profile):
+    """Validate a single profile dict."""
+    if not profile.get("telegram_chat_id"):
+        warnings.append(
+            f"Profile '{name}' has no telegram_chat_id — "
+            "lessons won't be delivered via Telegram"
+        )
+    if not profile.get("source_lang"):
+        errors.append(f"Profile '{name}' is missing 'source_lang'")
+    if not profile.get("target_lang"):
+        errors.append(f"Profile '{name}' is missing 'target_lang'")
+
+
+# ── Connectivity checks ─────────────────────────────────────────────
+
+def check_http(url, label, timeout=5):
+    """Return (ok: bool, message: str)."""
+    try:
+        resp = urlopen(url.rstrip("/") + "/", timeout=timeout)
+        if 200 <= resp.status < 400:
+            return True, f"✅ {label}: {url} reachable (HTTP {resp.status})"
+        return False, f"❌ {label}: {url} returned HTTP {resp.status}"
+    except URLError as e:
+        return False, f"❌ {label}: {url} unreachable ({e.reason})"
+    except Exception as e:
+        return False, f"❌ {label}: {url} error — {e}"
+
+
+def check_llm(config):
+    """Check LLM endpoint connectivity."""
+    llm = config.get("llm", {})
+    base_url = llm.get("base_url")
+    if not base_url:
+        return []
+    results = []
+    # Check the /v1/models endpoint (standard OpenAI-compatible)
+    ok, msg = check_http(base_url.rstrip("/") + "/models", "LLM")
+    results.append(msg)
+    return results
+
+
+def check_kiwix(config):
+    """Check all configured Kiwix servers."""
+    results = []
+    kiwix = config.get("kiwix_servers", {})
+    for lang, srv in kiwix.items():
+        url = srv.get("base_url")
+        if not url:
+            continue
+        ok, msg = check_http(url, f"Kiwix ({lang})")
+        results.append(msg)
+    return results
+
+
+def check_telegram(config):
+    """Validate the Telegram bot token by calling getMe."""
+    tg = config.get("telegram", {})
+    token = tg.get("bot_token", "")
+    if not token:
+        return []
+    results = []
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    ok, msg = check_http(url, "Telegram API")
+    results.append(msg)
+    return results
+
+
+def check_tts(config):
+    """Check TTS endpoint connectivity."""
+    tts = config.get("tts", {})
+    base_url = tts.get("base_url")
+    if not base_url:
+        return []
+    results = []
+    ok, msg = check_http(base_url.rstrip("/") + "/models", "TTS")
+    results.append(msg)
+    return results
+
+
+# ── Package checks ──────────────────────────────────────────────────
+
+def check_packages():
+    """Return list of (ok: bool, message: str) for each required package."""
+    results = []
+    for pkg_name, purpose in REQUIRED_PACKAGES.items():
+        try:
+            mod = importlib.import_module(pkg_name)
+            version = getattr(mod, "__version__", "?")
+            results.append((True, f"✅ {pkg_name} ({version}) — {purpose}"))
+        except ImportError:
+            results.append((False, f"❌ {pkg_name} NOT INSTALLED — {purpose}"))
+    return results
+
+
+# ── File / directory checks ────────────────────────────────────────
+
+def check_files(config):
+    """Check that key directories and files exist or can be created."""
+    results = []
+
+    # Project root
+    if PROJECT_DIR.exists():
+        results.append((True, f"✅ Project root: {PROJECT_DIR}"))
     else:
-        if errors:
-            print(f"🚨 Found {len(errors)} error(s):")
-            for err in errors:
-                print(f"  {err}")
-        if warnings:
-            print(f"⚠️  Found {len(warnings)} warning(s):")
-            for w in warnings:
-                print(f"  {w}")
+        results.append((False, f"❌ Project root missing: {PROJECT_DIR}"))
+
+    # Data directory
+    if DATA_DIR.exists():
+        results.append((True, f"✅ Data dir: {DATA_DIR}"))
+    elif DATA_DIR.parent.exists():
+        results.append((True, f"⚠️  Data dir will be created on first run: {DATA_DIR}"))
+    else:
+        results.append((False, f"❌ Cannot create data dir: {DATA_DIR}"))
+
+    # Per-profile data dirs and vocab files
+    for name, profile in config.get("profiles", {}).items():
+        pdir = DATA_DIR / name
+        vfile = pdir / "vocabulary.md"
+        if pdir.exists():
+            if vfile.exists():
+                results.append((True, f"  ✅ {name}: data dir + vocabulary.md OK"))
+            else:
+                results.append((True, f"  ⚠️  {name}: data dir exists, vocabulary.md will be created on first lesson"))
+        else:
+            results.append((True, f"  ℹ️  {name}: data dir will be created on first lesson"))
+
+    return results
+
+
+# ── Main entry point ───────────────────────────────────────────────
+
+def run(config_path=None, skip_network=False):
+    """
+    Run the full environment check.
+
+    Parameters
+    ----------
+    config_path : str or None
+        Path to config.json. Defaults to project root.
+    skip_network : bool
+        If True, skip all HTTP connectivity checks (fast offline mode).
+
+    Returns
+    -------
+    int
+        0 if no errors (warnings are OK), 1 if errors found.
+    """
+    print("=" * 60)
+    print("  LinguaDaily — Environment Health Check")
+    print("=" * 60)
+    all_errors = []
+    all_warnings = []
+
+    # ── 1. Load config ────────────────────────────────────────────
+    print("\n📋 Config file...")
+    try:
+        config = load_config(config_path)
+        print(f"  ✅ Loaded: {CONFIG_PATH if not config_path else config_path}")
+    except FileNotFoundError as e:
+        print(f"  ❌ Config not found: {e}")
+        return 1
+    except json.JSONDecodeError as e:
+        print(f"  ❌ Invalid JSON in config: {e}")
+        return 1
+
+    # ── 2. Config validation ──────────────────────────────────────
+    print("\n🔍 Config structure...")
+    cfg_errors, cfg_warnings = validate_config(config)
+    for e in cfg_errors:
+        print(f"  ❌ {e}")
+        all_errors.append(e)
+    for w in cfg_warnings:
+        print(f"  ⚠️  {w}")
+        all_warnings.append(w)
+    if not cfg_errors and not cfg_warnings:
+        print("  ✅ Config structure OK")
+
+    # ── 3. File / directory checks ────────────────────────────────
+    print("\n📁 Files & directories...")
+    for ok, msg in check_files(config):
+        print(f"  {msg}")
+        if not ok:
+            all_errors.append(msg)
+
+    # ── 4. Package checks ─────────────────────────────────────────
+    print("\n📦 Python packages...")
+    for ok, msg in check_packages():
+        print(f"  {msg}")
+        if not ok:
+            all_errors.append(msg)
+
+    # ── 5. Connectivity (optional) ────────────────────────────────
+    if not skip_network:
+        print("\n🌐 Service connectivity...")
+        for msg in check_llm(config):
+            print(f"  {msg}")
+            if "❌" in msg:
+                all_errors.append(msg)
+
+        for msg in check_kiwix(config):
+            print(f"  {msg}")
+            if "❌" in msg:
+                all_errors.append(msg)
+
+        for msg in check_telegram(config):
+            print(f"  {msg}")
+            if "❌" in msg:
+                all_errors.append(msg)
+
+        for msg in check_tts(config):
+            print(f"  {msg}")
+            if "❌" in msg:
+                all_errors.append(msg)
+    else:
+        print("\n🌐 Service connectivity... (skipped — use without --quick to test)")
+
+    # ── Summary ───────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    if not all_errors and not all_warnings:
+        print("  🚀 All checks passed — environment is healthy!")
+    else:
+        if all_errors:
+            print(f"  🚨 {len(all_errors)} error(s) found:")
+            for e in all_errors:
+                print(f"    • {e}")
+        if all_warnings:
+            print(f"\n  ⚠️  {len(all_warnings)} warning(s):")
+            for w in all_warnings:
+                print(f"    • {w}")
+    print("=" * 60)
+
+    return 1 if all_errors else 0
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="LinguaDaily environment check")
+    parser.add_argument("--config", "-c", default=None, help="Path to config.json")
+    parser.add_argument("--quick", "-q", action="store_true",
+                        help="Skip network connectivity checks")
+    args = parser.parse_args()
+
+    sys.exit(run(config_path=args.config, skip_network=args.quick))
 
 
 if __name__ == "__main__":
-    check_env()
+    main()
