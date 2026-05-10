@@ -18,6 +18,8 @@ Vocabulary file format (data/<profile>/vocabulary.md):
 import os
 from datetime import date
 
+from config import PROJECT_DIR
+
 
 class LinguaProcessor:
     """Manages vocabulary persistence for a single profile."""
@@ -28,16 +30,13 @@ class LinguaProcessor:
         self.profile = profile
 
         # Resolve vocab_path: explicit > per-profile default
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
         if vocab_path:
             if not os.path.isabs(vocab_path):
-                self.vocab_path = os.path.join(
-                    self.script_dir, "..", vocab_path)
+                self.vocab_path = PROJECT_DIR / vocab_path
             else:
                 self.vocab_path = vocab_path
         else:
-            self.vocab_path = os.path.join(
-                self.script_dir, "..", "data", profile, "vocabulary.md")
+            self.vocab_path = PROJECT_DIR / "data" / profile / "vocabulary.md"
 
     # ── File I/O ───────────────────────────────────────────────────
 

@@ -596,8 +596,7 @@ def load_fetcher_config(config_path=None, content_lang=None):
         'kiwix' block if not found.
     """
     if config_path is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, "..", "config.json")
+        from config import CONFIG_PATH as config_path
 
     settings = {
         "base_url": DEFAULT_BASE_URL,

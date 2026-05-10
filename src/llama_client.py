@@ -37,10 +37,9 @@ import os
 import sys
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from config import PROJECT_DIR, load_config
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
+logger = logging.getLogger(__name__)
 
 
 # ── System prompts ───────────────────────────────────────────────────
@@ -383,10 +382,8 @@ class LlamaClient:
     @staticmethod
     def _load_config():
         """Load config from default path."""
-        config_path = os.path.join(PROJECT_DIR, "config.json")
         try:
-            with open(config_path, encoding="utf-8") as f:
-                return json.load(f)
+            return load_config()
         except Exception as e:
             logger.error("Failed to load config for LLM client: %s", e)
             return {}
@@ -420,8 +417,7 @@ def main():
 
     # Load config
     if args.config:
-        with open(args.config, encoding="utf-8") as f:
-            config = json.load(f)
+        config = load_config(args.config)
     else:
         config = LlamaClient._load_config()
 

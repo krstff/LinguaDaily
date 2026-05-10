@@ -17,7 +17,6 @@ Usage (CLI — standalone run for one profile):
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import random
@@ -25,21 +24,9 @@ import re
 import sys
 from typing import Callable, Optional
 
+from config import CONFIG_PATH, PROJECT_DIR, load_config
+
 logger = logging.getLogger(__name__)
-
-# ── Resolve paths ───────────────────────────────────────────────────
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
-CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
-
-
-# ── Config helpers ──────────────────────────────────────────────────
-
-def load_config(path=None):
-    """Load config from a JSON file. Defaults to config.json in project root."""
-    target = path or CONFIG_PATH
-    with open(target, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def get_profile(config, profile_name=None):
@@ -139,8 +126,6 @@ def clean_content(text):
 
 
 # ── Article fetching wrapper ────────────────────────────────────────
-
-# ── Article fetching wrapper ────────────────────────────────────
 
 def fetch_article(source="wikipedia", topic=None, config=None,
                   content_lang=None, article_filter=None):

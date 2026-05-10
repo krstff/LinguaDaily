@@ -3,22 +3,21 @@ import shutil
 import subprocess
 import json
 
+from config import CONFIG_PATH, PROJECT_DIR, load_config
+
 
 def check_env():
     print("--- 🛠️ LinguaDaily: Environment Health Check ---")
     errors = []
     warnings = []
 
-    # Resolve paths
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.normpath(os.path.join(script_dir, ".."))
-    config_path = os.path.join(project_root, "config.json")
+    config_path = str(CONFIG_PATH)
 
     # 1. Check Project Root
-    if os.path.exists(project_root):
-        print(f"✅ Project Root: {project_root}")
+    if PROJECT_DIR.exists():
+        print(f"✅ Project Root: {PROJECT_DIR}")
     else:
-        errors.append(f"❌ Project Root not found at {project_root}")
+        errors.append(f"❌ Project Root not found at {PROJECT_DIR}")
 
     # 2. Check Python Availability
     try:
@@ -42,8 +41,8 @@ def check_env():
 
             # Check each profile's data directory
             for name in profiles:
-                data_dir = os.path.join(project_root, "data", name)
-                vocab_file = os.path.join(data_dir, "vocabulary.md")
+                data_dir = PROJECT_DIR / "data" / name
+                vocab_file = data_dir / "vocabulary.md"
                 if os.path.isdir(data_dir):
                     if os.path.exists(vocab_file):
                         print(f"  ✅ {name}: data dir + vocab file OK")
@@ -57,7 +56,7 @@ def check_env():
         errors.append(f"❌ Config file missing at {config_path}")
 
     # 4. Check Legacy vocab file (should be migrated)
-    legacy_vocab = os.path.join(project_root, "data", "vocabulary.md")
+    legacy_vocab = PROJECT_DIR / "data" / "vocabulary.md"
     if os.path.exists(legacy_vocab):
         warnings.append(
             f"⚠️  Legacy vocab file found at {legacy_vocab} — "
@@ -65,13 +64,13 @@ def check_env():
         )
 
     # 5. Check Dependencies
-    src_path = os.path.join(project_root, "src", "orchestrator.py")
+    src_path = PROJECT_DIR / "src" / "orchestrator.py"
     if os.path.exists(src_path):
         print(f"✅ Orchestrator: Found")
     else:
         errors.append(f"❌ Orchestrator missing at {src_path}")
 
-    fetcher_path = os.path.join(project_root, "src", "wikipedia_fetcher.py")
+    fetcher_path = PROJECT_DIR / "src" / "wikipedia_fetcher.py"
     if os.path.exists(fetcher_path):
         print(f"✅ Fetcher: Found")
     else:
@@ -80,8 +79,7 @@ def check_env():
     # 6. Check Kiwix connectivity (if configured)
     if os.path.exists(config_path):
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
+            config = load_config()
             kiwix = config.get("kiwix", {})
             if kiwix.get("base_url"):
                 import urllib.request

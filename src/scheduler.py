@@ -36,14 +36,10 @@ Usage (CLI):
 import asyncio
 import json
 import logging
-import os
 import sys
 from typing import Callable, Optional
 
-# Resolve paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
-CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
+from config import CONFIG_PATH, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +85,8 @@ class LessonScheduler:
 
     @staticmethod
     def _load_config(path=None):
-        """Load config from JSON file."""
-        target = path or CONFIG_PATH
-        with open(target, encoding="utf-8") as f:
-            return json.load(f)
+        """Load config from JSON file (delegates to shared loader)."""
+        return load_config(path)
 
     def get_scheduled_profiles(self) -> list[tuple[str, dict]]:
         """
@@ -335,8 +329,7 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    with open(args.config, encoding="utf-8") as f:
-        config = json.load(f)
+    config = load_config(args.config)
 
     if args.list:
         LessonScheduler.print_schedule(config=config)

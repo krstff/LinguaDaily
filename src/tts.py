@@ -16,10 +16,7 @@ import re
 import sys
 import uuid
 
-# ── Resolve paths ───────────────────────────────────────────────────
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
-DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
+from config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR, load_config
 
 
 def sanitize_for_tts(text):
@@ -106,11 +103,8 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
         return None
 
     if config is None:
-        config_path = os.path.join(PROJECT_DIR, "config.json")
         try:
-            with open(config_path, encoding="utf-8") as f:
-                import json
-                config = json.load(f)
+            config = load_config()
         except Exception as e:
             print(f"Error loading config for TTS: {e}", file=sys.stderr)
             return None
@@ -172,13 +166,9 @@ def main():
     args = parser.parse_args()
 
     if args.config:
-        import json
-        with open(args.config, encoding="utf-8") as f:
-            config = json.load(f)
+        config = load_config(args.config)
     else:
-        config_path = os.path.join(PROJECT_DIR, "config.json")
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
+        config = load_config()
 
     if args.tts_url:
         config.setdefault("tts", {})["base_url"] = args.tts_url

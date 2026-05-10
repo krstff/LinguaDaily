@@ -17,12 +17,7 @@ import os
 import signal
 import sys
 
-# Resolve paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
-CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
-DATA_DIR = os.path.join(PROJECT_DIR, "data")
-LOG_FILE = os.path.join(PROJECT_DIR, "lingua.log")
+from config import CONFIG_PATH, DATA_DIR, LOG_FILE, load_config
 
 logger = logging.getLogger("lingua")
 
@@ -39,12 +34,9 @@ class LinguaDaemon:
         self.scheduler = None
         self._shutdown_event = asyncio.Event()
 
-    @staticmethod
-    def _load_config(path=None):
-        """Load config from JSON file."""
-        target = path or CONFIG_PATH
-        with open(target, encoding="utf-8") as f:
-            return json.load(f)
+    def _load_config(self, path=None):
+        """Load config from JSON file (delegates to shared loader)."""
+        return load_config(path)
 
     def _setup_logging(self, verbose=False):
         """Configure logging to both console and file."""
@@ -244,8 +236,7 @@ def main():
 
     # Load and validate config
     try:
-        with open(args.config, encoding="utf-8") as f:
-            config = json.load(f)
+        config = load_config(args.config)
     except FileNotFoundError:
         print(f"Error: config file not found: {args.config}", file=sys.stderr)
         sys.exit(1)

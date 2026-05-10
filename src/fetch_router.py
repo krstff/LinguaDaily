@@ -65,9 +65,10 @@ def _fetch_wikipedia(config, content_lang=None, article_filter=None):
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
     """
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    fetcher_path = os.path.join(SCRIPT_DIR, "wikipedia_fetcher.py")
-    config_path = os.path.join(SCRIPT_DIR, "..", "config.json")
+    from config import PROJECT_DIR
+
+    fetcher_path = PROJECT_DIR / "src" / "wikipedia_fetcher.py"
+    config_path = PROJECT_DIR / "config.json"
 
     cmd = [sys.executable, fetcher_path, "--config", config_path]
     if content_lang:

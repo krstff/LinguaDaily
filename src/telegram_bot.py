@@ -38,12 +38,9 @@ import sqlite3
 import sys
 from typing import Optional
 
-# Resolve paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.join(SCRIPT_DIR, "..")
-CONFIG_PATH = os.path.join(PROJECT_DIR, "config.json")
-DATA_DIR = os.path.join(PROJECT_DIR, "data")
-CHAT_DB_PATH = os.path.join(DATA_DIR, "chat_history.db")
+from config import CONFIG_PATH, DATA_DIR, load_config
+
+CHAT_DB_PATH = DATA_DIR / "chat_history.db"
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +141,7 @@ class TelegramBot:
 
     def _load_config(self):
         try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                return json.load(f)
+            return load_config()
         except Exception as e:
             logger.error("Failed to load config: %s", e)
             return {}
@@ -561,8 +557,7 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    with open(args.config, encoding="utf-8") as f:
-        config = json.load(f)
+    config = load_config(args.config)
 
     bot = TelegramBot(config=config)
 
