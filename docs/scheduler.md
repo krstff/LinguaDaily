@@ -154,9 +154,24 @@ conda run -n lingua python src/scheduler.py --list
 # krystof              08:00   Europe/Berlin              German
 # anna                 10:30   Europe/Madrid              Spanish
 
-# Start scheduler (blocks until Ctrl+C)
+# Start scheduler (blocks at cron times, Ctrl+C to stop)
 conda run -n lingua python src/scheduler.py
+
+# Run all jobs immediately, then keep daemon alive
+conda run -n lingua python src/scheduler.py --run-now
+
+# Run all jobs once and exit (testing/debugging)
+conda run -n lingua python src/scheduler.py --once
 ```
+
+### CLI flags
+
+| Flag | Shorthand | Behavior |
+|------|-----------|----------|
+| `--list` | `-l` | Print schedule table and exit |
+| `--run-now` | `-n` | Push all profiles onto the queue immediately, then run as normal daemon. Useful for "test now + stay alive" |
+| `--once` | `-o` | Run all scheduled profiles once via the queue worker, wait for completion, then exit. Ideal for testing the full pipeline without keeping a daemon running |
+| `--config` | `-c` | Override path to config.json (default: `config.json`) |
 
 ## Import API
 
@@ -173,6 +188,10 @@ scheduled = scheduler.get_scheduled_profiles()
 # → [("krystof", {...}), ("anna", {...})]
 
 # Start/stop
-await scheduler.start()   # blocks until cancelled
-await scheduler.stop()    # graceful shutdown
+await scheduler.start()                   # blocks until cancelled
+await scheduler.start(immediate_run=True)  # run now + stay alive
+await scheduler.stop()                    # graceful shutdown
+
+# One-shot (run all profiles, wait for completion, shut down)
+await scheduler.run_once()
 ```

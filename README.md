@@ -115,6 +115,12 @@ conda run -n lingua python src/orchestrator.py --profile krystof
 # List scheduled profiles
 conda run -n lingua python src/scheduler.py --list
 
+# Run all scheduled jobs once and exit (quick test)
+conda run -n lingua python src/scheduler.py --once
+
+# Run all jobs now + keep daemon alive
+conda run -n lingua python src/scheduler.py --run-now
+
 # Run the Telegram bot standalone (for testing)
 conda run -n lingua python src/telegram_bot.py --config config.json
 ```

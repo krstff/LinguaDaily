@@ -26,8 +26,11 @@ Usage (import):
     scheduler = LessonScheduler(config, delivery_callback=bot.deliver_lesson)
     await scheduler.start()
 
-Usage (CLI — dry-run listing):
-    python3 src/scheduler.py --config config.json --list
+Usage (CLI):
+    python3 src/scheduler.py --list        # show schedule
+    python3 src/scheduler.py               # start daemon (blocks at cron times)
+    python3 src/scheduler.py --run-now     # run all jobs now, then stay alive
+    python3 src/scheduler.py --once        # run all jobs once and exit
 """
 
 import asyncio
@@ -156,8 +159,32 @@ class LessonScheduler:
             finally:
                 self._job_queue.task_done()
 
-    async def start(self):
-        """Start the APScheduler and the background worker (blocks until cancelled)."""
+    async def _enqueue_all_profiles(self):
+        """
+        Push all scheduled profiles onto the job queue immediately.
+
+        Used by --run-now and --once to trigger lessons right away instead of
+        waiting for the next cron fire.
+        """
+        scheduled = self.get_scheduled_profiles()
+        if not scheduled:
+            logger.warning("No profiles with schedules found — nothing to enqueue")
+            return
+        for profile_name, profile in scheduled:
+            await self._job_queue.put((profile_name, profile))
+            logger.info("[%s] Enqueued for immediate run", profile_name)
+        logger.info("%d profile(s) enqueued for immediate execution", len(scheduled))
+
+    async def start(self, immediate_run: bool = False):
+        """
+        Start the APScheduler and the background worker.
+
+        Parameters
+        ----------
+        immediate_run : bool
+            If True, push all scheduled profiles onto the queue right away so
+            lessons run immediately instead of waiting for the next cron fire.
+        """
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
 
@@ -200,6 +227,10 @@ class LessonScheduler:
         self._scheduler.start()
         logger.info("Scheduler started — %d active job(s), 1 serial worker", len(scheduled))
 
+        # Optional: run all jobs immediately on startup
+        if immediate_run:
+            await self._enqueue_all_profiles()
+
         try:
             # Block forever (or until shutdown event)
             while True:
@@ -221,6 +252,35 @@ class LessonScheduler:
 
         if self._scheduler:
             self._scheduler.shutdown(wait=False)
+
+    async def run_once(self):
+        """
+        Run all scheduled profiles once and shut down.
+
+        Starts the worker, enqueues every scheduled profile, waits for the
+        queue to drain, then stops everything cleanly. Useful for testing.
+        """
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        scheduled = self.get_scheduled_profiles()
+        if not scheduled:
+            logger.warning("No profiles with schedules found — nothing to run")
+            return
+
+        # Start the worker (no APScheduler cron needed for one-shot)
+        self._worker_task = asyncio.create_task(self._worker())
+        logger.info("Background worker started — one-shot mode")
+
+        # Enqueue all profiles
+        await self._enqueue_all_profiles()
+
+        # Wait for every enqueued item to be processed
+        logger.info("Waiting for queue to drain...")
+        await self._job_queue.join()
+        logger.info("Queue drained — all lessons complete")
+
+        # Shut down
+        await self.stop()
 
     # ── CLI helpers ────────────────────────────────────────────────
 
@@ -253,7 +313,9 @@ def main():
 
     Usage:
         python3 src/scheduler.py --list                  # show schedule
-        python3 src/scheduler.py --config config.json     # start (blocks)
+        python3 src/scheduler.py                          # start daemon (blocks)
+        python3 src/scheduler.py --run-now                # run now, then stay alive
+        python3 src/scheduler.py --once                   # run once and exit
     """
     import argparse
 
@@ -262,6 +324,10 @@ def main():
                         help="Path to config.json")
     parser.add_argument("--list", "-l", action="store_true",
                         help="List scheduled profiles and exit")
+    parser.add_argument("--run-now", "-n", action="store_true",
+                        help="Run all scheduled jobs immediately, then keep daemon alive")
+    parser.add_argument("--once", "-o", action="store_true",
+                        help="Run all scheduled jobs once and exit (for testing)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -278,9 +344,14 @@ def main():
 
     scheduler = LessonScheduler(config=config)
 
+    if args.once:
+        # One-shot: run all profiles and exit
+        asyncio.run(scheduler.run_once())
+        return
+
     async def run():
         try:
-            await scheduler.start()
+            await scheduler.start(immediate_run=args.run_now)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
