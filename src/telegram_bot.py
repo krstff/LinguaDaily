@@ -258,7 +258,11 @@ class TelegramBot:
                 if isinstance(entry, dict):
                     word = entry.get("word", "")
                     meaning = entry.get("meaning", entry.get("definition", ""))
-                    vocab_lines.append(f"  • {word} — {meaning}")
+                    example = entry.get("example", "")
+                    if example:
+                        vocab_lines.append(f"  • {word} — {meaning}\n    «{example}»")
+                    else:
+                        vocab_lines.append(f"  • {word} — {meaning}")
                 else:
                     vocab_lines.append(f"  • {entry}")
 

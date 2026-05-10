@@ -54,16 +54,22 @@ Do NOT add commentary, summaries, or notes — only output the translation."""
 
 VOCAB_SYSTEM_PROMPT = """You are a language-learning tutor extracting vocabulary from a translated article.
 
-The user is learning {source_lang}. Extract useful vocabulary words (nouns, verbs, adjectives)
-from the ORIGINAL text that a learner should know.
+The user is learning {source_lang}. Extract useful vocabulary words (nouns, verbs, adjectives,
+idioms) from the ORIGINAL text that a learner should know.
 
 Output ONLY a JSON array with no surrounding text. Each entry:
 [
-  {{"word": "original_word", "meaning": "brief definition in {target_lang}" }},
+  {{
+    "word": "original_word",
+    "meaning": "brief definition in {target_lang}",
+    "example": "a short example sentence in {source_lang} showing the word in context"
+  }},
   ...
 ]
 
-Only include words that appear in the original text. Keep meanings concise."""
+Only include words that appear in the original text. Keep meanings concise.
+For the example sentence, prefer rephrasing how the word was used in the article itself,
+or craft a natural, memorable sentence that helps the learner remember the word."""
 
 TUTOR_SYSTEM_PROMPT = """You are a friendly language tutor helping someone learn {language_name}.
 
