@@ -75,6 +75,69 @@ def _get_client(config):
     return OpenAI(base_url=base_url, api_key=api_key or "none")
 
 
+def _cleanup_old_files(output_dir, max_age_days=7, max_files=10):
+    """Remove old TTS WAV files from a profile output directory.
+
+    Keeps the most recent `max_files` WAVs and deletes anything older than
+    `max_age_days`. Both conditions are checked — a file is removed if it
+    exceeds the age limit OR the directory has more than max_files total.
+
+    Parameters
+    ----------
+    output_dir : str
+        Directory containing WAV files to clean up.
+    max_age_days : int
+        Delete files older than this many days (0 = disable age limit).
+    max_files : int
+        Keep at most this many recent files (-1 = disable count limit).
+    """
+    if not os.path.isdir(output_dir):
+        return
+
+    now = os.path.getmtime(__file__)  # current time as timestamp proxy
+    import time
+    now = time.time()
+
+    wav_files = [
+        f for f in os.listdir(output_dir)
+        if f.endswith(".wav")
+    ]
+
+    if not wav_files:
+        return
+
+    # Sort by modification time, newest first
+    wav_files.sort(
+        key=lambda f: os.path.getmtime(os.path.join(output_dir, f)),
+        reverse=True,
+    )
+
+    removed = 0
+    for idx, wav in enumerate(wav_files):
+        filepath = os.path.join(output_dir, wav)
+        age_days = (now - os.path.getmtime(filepath)) / 86400
+        should_remove = False
+
+        # Age limit: remove files older than max_age_days
+        if max_age_days > 0 and age_days > max_age_days:
+            should_remove = True
+
+        # Count limit: keep only the most recent max_files (list sorted newest-first)
+        if max_files > 0 and idx >= max_files:
+            should_remove = True
+
+        if should_remove:
+            try:
+                os.remove(filepath)
+                removed += 1
+            except OSError as e:
+                logger.warning("TTS cleanup: failed to remove %s: %s", wav, e)
+
+    if removed:
+        logger.info("TTS cleanup: removed %d old file(s) from %s",
+                    removed, output_dir)
+
+
 def synthesize(text, language_id="de", config=None, output_dir=None, voice=None):
     """
     Generate speech from text using the local OmniVoice server.
@@ -124,6 +187,10 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
     if voice is None:
         voice = tts_cfg.get("default_voice", "male")
 
+    # Read cleanup settings from config (tts.max_age_days, tts.max_files)
+    max_age_days = int(tts_cfg.get("max_age_days", 7))
+    max_files = int(tts_cfg.get("max_files", 10))
+
     filename = f"lingua_{uuid.uuid4().hex[:8]}.wav"
     filepath = os.path.join(output_dir, filename)
 
@@ -141,6 +208,9 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
 
         # Verify the file was actually written and is non-empty
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            # Clean up old files after successful generation
+            _cleanup_old_files(output_dir, max_age_days=max_age_days,
+                               max_files=max_files)
             return filepath
         else:
             logger.warning("TTS: generated file is empty or missing")
