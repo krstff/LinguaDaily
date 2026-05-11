@@ -4,7 +4,7 @@
 
 {% block content %}
 <h1>Config Editor</h1>
-<p class="subtitle">Edit config.json directly — changes take effect on next daemon restart</p>
+<p class="subtitle">Edit config.json directly — changes are hot-reloaded into the running daemon</p>
 
 <div class="toolbar">
   <button class="btn btn-primary" hx-post="/api/config/save"
@@ -27,32 +27,5 @@
     ta.value = JSON.stringify(parsed, null, 2);
   } catch(e) {}
 })();
-
-document.addEventListener('htmx:afterRequest', function(evt) {
-  if (evt.detail.pathInfo && evt.detail.pathInfo.endpoint === '/api/config/save') {
-    const xhr = evt.detail.xhr;
-    if (xhr && xhr.status === 200) {
-      try {
-        const data = JSON.parse(xhr.responseText);
-        showToast(data.message || 'Saved', false);
-        // Re-pretty-print the saved content
-        const ta = document.getElementById('config-editor');
-        try {
-          const parsed = JSON.parse(data.config_json || ta.value);
-          ta.value = JSON.stringify(parsed, null, 2);
-        } catch(e) {}
-      } catch(e) {
-        showToast('Saved', false);
-      }
-    } else if (xhr && xhr.status >= 400) {
-      try {
-        const data = JSON.parse(xhr.responseText);
-        showToast(data.message || 'Error', true);
-      } catch(e) {
-        showToast('Save failed — invalid JSON', true);
-      }
-    }
-  }
-});
 </script>
 {% endblock %}

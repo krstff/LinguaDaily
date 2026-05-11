@@ -38,6 +38,7 @@ except ImportError:
 _config_path = CONFIG_PATH
 _log_file = LOG_FILE
 _password = None
+_scheduler_ref = None  # weak reference to LessonScheduler for hot-reload
 
 # Path to templates directory (next to this file)
 _TEMPLATE_DIR = str(Path(__file__).resolve().parent / "templates")
@@ -71,15 +72,17 @@ def require_auth(f):
 
 # ── Flask application factory ────────────────────────────
 
-def create_app(config_path=None, log_file=None, password=None):
+def create_app(config_path=None, log_file=None, password=None,
+               scheduler=None):
     """Create and configure the Flask web UI app.
 
     Args:
         config_path: Path to config.json (default: project root)
         log_file:    Path to lingua.log (default: project root)
         password:    Optional basic-auth password for remote access
+        scheduler:   Optional LessonScheduler instance for hot-reload support
     """
-    global _config_path, _log_file, _password
+    global _config_path, _log_file, _password, _scheduler_ref
 
     if config_path:
         _config_path = Path(config_path)
@@ -87,9 +90,42 @@ def create_app(config_path=None, log_file=None, password=None):
         _log_file = Path(log_file)
     if password is not None:
         _password = password
+    _scheduler_ref = scheduler
+    """Create and configure the Flask web UI app.
+
+    Args:
+        config_path: Path to config.json (default: project root)
+        log_file:    Path to lingua.log (default: project root)
+        password:    Optional basic-auth password for remote access
+    """
+
 
     app = Flask(__name__, template_folder=_TEMPLATE_DIR)
     app.secret_key = "lingua-webui"  # minimal, no sessions used
+
+    # ── Hot-reload endpoint ──────────────────────────────
+    @app.route("/api/reload", methods=["POST"])
+    @require_auth
+    def reload_config():
+        """Reload config from disk and refresh scheduler jobs.
+
+        Called after any config/profile change so the running daemon
+        picks up new profiles, schedule changes, and enable/disable toggles
+        without requiring a restart.
+        """
+        global _scheduler_ref
+        try:
+            # Re-read config to confirm it's valid JSON
+            load_config(_config_path)
+
+            if _scheduler_ref is not None:
+                _scheduler_ref.reload_config()
+                _scheduler_ref.reload_jobs()
+                return jsonify({"message": "Config reloaded — scheduler jobs updated"})
+            else:
+                return jsonify({"message": "Config validated (no scheduler attached)"})
+        except Exception as e:
+            return jsonify({"message": f"Reload failed: {e}"}), 500
 
     # ── Dashboard ────────────────────────────────────────
     @app.route("/")
@@ -256,11 +292,11 @@ def create_app(config_path=None, log_file=None, password=None):
             old_name = request.form.get("edit_name", "").strip()
             if old_name and old_name in profiles:
                 del profiles[old_name]
-            if not name or name in profiles:
-                # If saving back to same name, it's already deleted above — re-add
-                profiles[name] = profile_data
-            else:
+            # After deleting the old entry, name is free unless another profile
+            # already uses it (rename collision)
+            if name in profiles:
                 return jsonify({"message": f"Profile '{name}' conflicts"}), 409
+            profiles[name] = profile_data
 
         # Persist
         try:
@@ -328,6 +364,59 @@ def create_app(config_path=None, log_file=None, password=None):
             return jsonify({"message": f"Profile '{name}' {state_word}", "enabled": new_state})
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
+
+    @app.route("/api/profiles/<name>/run-lesson", methods=["POST"])
+    @require_auth
+    def run_lesson(name):
+        """Trigger a single lesson for the given profile, delivered to Telegram.
+
+        Returns immediately with status; the lesson pipeline runs in a
+        background thread so the HTTP response is fast.
+        """
+        import asyncio as _asyncio
+        import threading as _threading
+
+        config = load_config(_config_path)
+        profiles = config.get("profiles", {})
+        if name not in profiles:
+            return jsonify({"message": f"Profile '{name}' not found"}), 404
+
+        profile_cfg = profiles[name]
+        chat_id = profile_cfg.get("telegram_chat_id")
+        if not chat_id:
+            return jsonify({"message": f"Profile '{name}' has no telegram_chat_id"}), 400
+
+        # Run lesson pipeline + delivery in a background thread
+        def _run():
+            bot = None
+            try:
+                from orchestrator import Orchestrator
+                from telegram_bot import TelegramBot
+                orch = Orchestrator(config=config)
+                bot = TelegramBot(config=config)
+                lesson = _asyncio.run(orch.run_lesson(name, delivery_callback=bot.deliver_lesson))
+                if lesson:
+                    title = lesson.get("title", "?")
+                    print(f"[web-ui] Lesson delivered for '{name}': {title}")
+                else:
+                    print(f"[web-ui] Lesson pipeline returned no result for '{name}'")
+            except Exception as e:
+                print(f"[web-ui] Error running lesson for '{name}': {e}")
+            finally:
+                # Clean up aiogram session + DB to avoid "Unclosed client session"
+                try:
+                    if bot and bot._bot:
+                        _asyncio.run(bot.stop())
+                except Exception:
+                    pass
+                try:
+                    if bot:
+                        bot.db.close()
+                except Exception:
+                    pass
+
+        _threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"message": f"Lesson started for '{name}' — check logs for progress"})
 
     # ── Model management API ─────────────────────────────
     @app.route("/api/models/fetch")

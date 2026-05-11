@@ -210,6 +210,7 @@ class LinguaDaemon:
                 config_path=str(CONFIG_PATH),
                 log_file=str(LOG_FILE),
                 password=web_password,
+                scheduler=self.scheduler,  # for hot-reload
             )
 
             from werkzeug.serving import make_server

@@ -173,6 +173,58 @@ class LessonScheduler:
             logger.info("[%s] Enqueued for immediate run", profile_name)
         logger.info("%d profile(s) enqueued for immediate execution", len(scheduled))
 
+    def reload_config(self):
+        """Reload config from disk and refresh scheduled jobs in-place.
+
+        Called by the web UI after config.json is modified so the running
+        daemon picks up new profiles, schedule changes, and enable/disable
+        toggles without a restart.
+        """
+        self.config = self._load_config()
+        logger.info("Config reloaded from disk")
+
+    def reload_jobs(self):
+        """Re-sync APScheduler jobs with the current config (after reload_config)."""
+        if not self._scheduler:
+            logger.warning("Scheduler not running — cannot reload jobs yet")
+            return
+
+        # Remove jobs for profiles that no longer exist or are disabled
+        scheduled = self.get_scheduled_profiles()
+        scheduled_names = {name for name, _ in scheduled}
+
+        for job in self._scheduler.get_jobs():
+            job_id = job.id
+            if job_id.startswith("lesson_"):
+                profile_name = job_id[len("lesson_"):]
+                if profile_name not in scheduled_names:
+                    self._scheduler.remove_job(job_id)
+                    logger.info("Removed stale job for '%s'", profile_name)
+
+        # Add or update jobs for all currently scheduled profiles
+        from apscheduler.triggers.cron import CronTrigger
+
+        for profile_name, profile in scheduled:
+            schedule = profile["schedule"]
+            time_str = schedule["time"]
+            tz = schedule.get("tz", "UTC")
+            hours, minutes = time_str.split(":")
+
+            trigger = CronTrigger(hour=hours, minute=minutes, timezone=tz)
+
+            job_fn = self._build_job(profile_name, profile)
+            self._scheduler.add_job(
+                job_fn,
+                trigger=trigger,
+                id=f"lesson_{profile_name}",
+                name=f"Lesson for {profile_name}",
+                replace_existing=True,
+            )
+            logger.info("Scheduled/refreshed '%s' at %s (%s)",
+                        profile_name, time_str, tz)
+
+        logger.info("Jobs reloaded — %d active job(s)", len(scheduled))
+
     async def start(self, immediate_run: bool = False):
         """
         Start the APScheduler and the background worker.

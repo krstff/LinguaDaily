@@ -105,6 +105,10 @@
       <td>{{ p.source or '?' }}</td>
       <td>
         <button class="btn btn-secondary btn-sm" onclick="openModal(this.closest('tr'))">Edit</button>
+        <button class="btn btn-primary btn-sm" hx-post="/api/profiles/{{ name }}/run-lesson"
+                hx-target="this" hx-swap="outerHTML"
+                hx-confirm="Run a lesson for '{{ name }}' now? (delivers to Telegram)">
+          ▶ Run Lesson</button>
         <button class="btn btn-danger btn-sm" hx-delete="/api/profiles/{{ name }}"
                 hx-confirm="Delete profile '{{ name }}'?">Delete</button>
       </td>

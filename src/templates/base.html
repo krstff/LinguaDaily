@@ -526,45 +526,93 @@ document.addEventListener('htmx:afterRequest', function(evt) {
     return;
   }
   const xhr = evt.detail.xhr;
-  if (xhr && xhr.status === 200) {
+  if (!xhr) return;
+
+  // Determine which endpoint was called
+  const path = (evt.detail.requestConfig || {}).path || '';
+
+  if (xhr.status === 200) {
     try {
       const data = JSON.parse(xhr.responseText);
-      showToast(data.message || 'Saved', false);
 
-      // Handle toggle response — update button in place
-      if (data.enabled !== undefined) {
-        const profileName = evt.detail.requestConfig ? '' : '';
-        // Find the toggle button and update it
-        document.querySelectorAll('.toggle-btn').forEach(btn => {
-          const btnProfile = btn.dataset.profile;
-          // We need to figure out which profile was toggled from the URL
-        });
-        const urlParts = (evt.detail.requestConfig || {}).path ? (evt.detail.requestConfig.path || '').split('/') : [];
+      // ── Toggle profile (POST /api/profiles/:name/toggle) ──
+      if (data.enabled !== undefined && path.includes('/toggle')) {
+        showToast(data.message || 'Toggled', false);
+
+        const urlParts = path.split('/');
         const toggledName = urlParts[urlParts.length - 2] || '';
+
+        // Update the toggle button text + class
         const btn = document.querySelector(`.toggle-btn[data-profile="${toggledName}"]`);
         if (btn) {
           if (data.enabled) {
             btn.className = 'btn btn-sm toggle-btn';
             btn.textContent = '✓ Enabled';
-            btn.removeAttribute('hx-post');
-            // Re-add HTMX handler
-            htmx.defineExtension('toggle-ext', {});
-            btn.setAttribute('hx-post', `/api/profiles/${toggledName}/toggle`);
           } else {
             btn.className = 'btn btn-secondary btn-sm toggle-btn';
             btn.textContent = '✗ Disabled';
-            btn.setAttribute('hx-post', `/api/profiles/${toggledName}/toggle`);
+          }
+          // Ensure hx-post is set correctly
+          btn.setAttribute('hx-post', `/api/profiles/${toggledName}/toggle`);
+        }
+
+        // Update the row dimming (disabled class)
+        const row = document.querySelector(`tr.profile-row[data-name="${toggledName}"]`);
+        if (row) {
+          if (data.enabled) {
+            row.classList.remove('disabled');
+          } else {
+            row.classList.add('disabled');
           }
         }
-      } else {
-        closeModal();
-        setTimeout(() => location.reload(), 600);
+
+        // Hot-reload config in the daemon so scheduler picks up changes
+        fetch('/api/reload', { method: 'POST' }).catch(() => {});
+        return;
       }
+
+      // ── Profile CRUD (POST /api/profiles) — add/edit ──
+      if (path === '/api/profiles') {
+        showToast(data.message || 'Saved', false);
+        closeModal();
+        // Hot-reload config then reload page to reflect changes
+        fetch('/api/reload', { method: 'POST' }).then(() => {
+          setTimeout(() => location.reload(), 400);
+        }).catch(() => {
+          setTimeout(() => location.reload(), 400);
+        });
+        return;
+      }
+
+      // ── Delete profile (DELETE /api/profiles/:name) ──
+      if (path.startsWith('/api/profiles/')) {
+        showToast(data.message || 'Deleted', false);
+        fetch('/api/reload', { method: 'POST' }).catch(() => {});
+        setTimeout(() => location.reload(), 400);
+        return;
+      }
+
+      // ── Config save (POST /api/config/save) ──
+      if (path === '/api/config/save') {
+        showToast(data.message || 'Saved', false);
+        // Re-pretty-print the saved content
+        const ta = document.getElementById('config-editor');
+        if (ta) {
+          try {
+            const parsed = JSON.parse(data.config_json || ta.value);
+            ta.value = JSON.stringify(parsed, null, 2);
+          } catch(e) {}
+        }
+        // Hot-reload config in the daemon
+        fetch('/api/reload', { method: 'POST' }).catch(() => {});
+        return;
+      }
+
     } catch(e) {
       // If not JSON, it's an HTML redirect — just reload
       location.reload();
     }
-  } else if (xhr && xhr.status >= 400) {
+  } else if (xhr.status >= 400) {
     try {
       const data = JSON.parse(xhr.responseText);
       showToast(data.message || 'Error', true);
