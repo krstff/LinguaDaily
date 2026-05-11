@@ -211,9 +211,11 @@ class TelegramBot:
             "TELEGRAM_BOT_TOKEN", ""
         )
 
-        # Resolve chat ID → profile mapping from config
-        self.chat_id_to_profile: dict[int, str] = {}
+        # Resolve chat ID ↔ profile mappings from config.
+        # A single chat ID can map to multiple profiles (learning several languages).
+        self.chat_id_to_profiles: dict[int, list[str]] = {}
         self.profile_to_chat_id: dict[str, int] = {}
+        self.selected_profile: dict[int, str] = {}  # active profile per chat
         self._build_mapping()
 
         # Conversation history database
@@ -235,26 +237,58 @@ class TelegramBot:
             return {}
 
     def _build_mapping(self):
-        """Build bidirectional chat_id ↔ profile mapping from config."""
+        """Build bidirectional chat_id ↔ profile mappings from config.
+
+        A single Telegram chat ID can be shared by multiple profiles
+        (e.g. one user learning German + Italian).  Each profile still
+        maps to exactly one chat ID, so lessons are delivered per-profile.
+        """
         profiles = self.config.get("profiles", {})
         for name, profile in profiles.items():
             chat_id = profile.get("telegram_chat_id")
             if chat_id:
                 chat_int = int(chat_id)
-                self.chat_id_to_profile[chat_int] = name
+                self.chat_id_to_profiles.setdefault(chat_int, []).append(name)
                 self.profile_to_chat_id[name] = chat_int
                 logger.info("Mapped profile '%s' → Telegram chat %d", name, chat_int)
             else:
                 logger.debug("Profile '%s' has no telegram_chat_id — skipping mapping", name)
 
     def resolve_profile(self, chat_id: int) -> Optional[str]:
-        """Look up which profile a Telegram user belongs to."""
-        return self.chat_id_to_profile.get(int(chat_id))
+        """Return the active profile for a Telegram user.
+
+        If the user has multiple profiles, returns whichever they selected
+        via /switch.  If only one profile exists it is returned automatically.
+        Returns None if the chat ID has no profiles at all.
+        """
+        cid = int(chat_id)
+        profiles = self.chat_id_to_profiles.get(cid, [])
+        if not profiles:
+            return None
+        # Return explicitly selected profile (if still valid)
+        sel = self.selected_profile.get(cid)
+        if sel and sel in profiles:
+            return sel
+        # Default to first profile
+        return profiles[0]
+
+    def select_profile(self, chat_id: int, profile_name: str) -> bool:
+        """Set the active profile for a chat ID. Returns True on success."""
+        cid = int(chat_id)
+        profiles = self.chat_id_to_profiles.get(cid, [])
+        if profile_name in profiles:
+            self.selected_profile[cid] = profile_name
+            return True
+        return False
 
     def register_user(self, chat_id: int, profile_name: str):
-        """Register a new chat_id → profile mapping at runtime."""
-        self.chat_id_to_profile[int(chat_id)] = profile_name
-        self.profile_to_chat_id[profile_name] = int(chat_id)
+        """Register a new chat_id → profile mapping at runtime.
+
+        Appends to the list so one chat ID can have multiple profiles.
+        """
+        cid = int(chat_id)
+        self.chat_id_to_profiles.setdefault(cid, []).append(profile_name)
+        self.profile_to_chat_id[profile_name] = cid
 
     # ── LLM client ─────────────────────────────────────────────────
 
@@ -633,6 +667,9 @@ class TelegramBot:
                     f"Lessons will be delivered automatically at your scheduled time.\n\n"
                     f"Commands:\n"
                     f"/start — Show this message\n"
+                    f"/chatid — Show your Telegram Chat ID\n"
+                    f"/profiles — List your profiles\n"
+                    f"/switch &lt;name&gt; — Switch active profile\n"
                     f"/history clear — Clear chat history\n"
                     f"/status — Show current status"
                 ),
@@ -691,6 +728,94 @@ class TelegramBot:
                 text="⚠️ Not registered. Ask an admin via the web UI."
             )
 
+    async def handle_chat_id(self, chat_id: int):
+        bot = await self._get_aiogram_bot()
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🆔 Your Telegram Chat ID is:\n\n"
+                f"<code>{chat_id}</code>\n\n"
+                f"Send this to your admin so they can register you via the web UI."
+            ),
+            parse_mode="HTML",
+        )
+
+    async def handle_profiles(self, chat_id: int):
+        """List all profiles available for this chat ID."""
+        bot = await self._get_aiogram_bot()
+        profiles = self.chat_id_to_profiles.get(int(chat_id), [])
+        if not profiles:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ No profiles found for this chat. Ask an admin to register you.",
+            )
+            return
+
+        active = self.resolve_profile(chat_id)
+        lines = []
+        for p in profiles:
+            profile_cfg = self.config.get("profiles", {}).get(p, {})
+            lang = resolve_language_name(
+                profile_cfg.get("learning_language", "?"))
+            marker = " ◀ active" if p == active else ""
+            lines.append(f"  • <b>{self._escape_html(p)}</b> — {self._escape_html(lang)}{marker}")
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"👤 Your profiles:\n\n"
+                + "\n".join(lines) + "\n\n"
+                + "Use <code>/switch &lt;name&gt;</code> to change active profile."
+            ),
+            parse_mode="HTML",
+        )
+
+    async def handle_switch(self, chat_id: int, args: str):
+        """Switch the active profile for this chat ID."""
+        bot = await self._get_aiogram_bot()
+        target = args.strip().lower() if args else ""
+        profiles = self.chat_id_to_profiles.get(int(chat_id), [])
+
+        if not profiles:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ No profiles found for this chat.",
+            )
+            return
+
+        # Exact match first, then case-insensitive prefix
+        matched = None
+        for p in profiles:
+            if p.lower() == target or p.lower().startswith(target):
+                matched = p
+                break
+
+        if not matched:
+            names = ", ".join(f"<code>{p}</code>" for p in profiles)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"❌ Unknown profile. Available:\n\n"
+                    f"{names}\n\n"
+                    f"Usage: <code>/switch &lt;name&gt;</code>"
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        self.select_profile(chat_id, matched)
+        lang = resolve_language_name(
+            self.config.get("profiles", {}).get(matched, {}).get(
+                "learning_language", "?"))
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ Switched to <b>{self._escape_html(matched)}</b> ({self._escape_html(lang)})\n\n"
+                f"Tutor messages will now use this profile."
+            ),
+            parse_mode="HTML",
+        )
+
     # ── aiogram integration ────────────────────────────────────────
 
     async def _get_aiogram_bot(self):
@@ -742,6 +867,23 @@ class TelegramBot:
         @dp.message(Command("status"))
         async def cmd_status(message: types.Message):
             await self.handle_status(message.chat.id)
+
+        @dp.message(Command("chatid"))
+        async def cmd_chatid(message: types.Message):
+            await self.handle_chat_id(message.chat.id)
+
+        @dp.message(Command("profiles"))
+        async def cmd_profiles(message: types.Message):
+            await self.handle_profiles(message.chat.id)
+
+        @dp.message(Command("switch"))
+        async def cmd_switch(message: types.Message):
+            args = message.text.split(maxsplit=1)
+            subcommand = args[1] if len(args) > 1 else ""
+            if not subcommand.strip():
+                await self.handle_profiles(message.chat.id)
+            else:
+                await self.handle_switch(message.chat.id, subcommand)
 
         # ── All other messages → tutor chat ──
         @dp.message(lambda msg: True)  # catch-all

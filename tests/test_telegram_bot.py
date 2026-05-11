@@ -150,10 +150,10 @@ class TestTelegramBotInit:
         config = sample_config[0]
         bot = TelegramBot(config=config)
 
-        assert bot.chat_id_to_profile[111222333] == "krystof"
-        assert bot.chat_id_to_profile[444555666] == "anna"
+        assert "krystof" in bot.chat_id_to_profiles[111222333]
+        assert "anna" in bot.chat_id_to_profiles[444555666]
         # unregistered has no chat_id
-        assert len(bot.chat_id_to_profile) == 2
+        assert len(bot.chat_id_to_profiles) == 2
         bot.db.close()
 
     def test_init_no_telegram_config(self):
@@ -162,7 +162,7 @@ class TestTelegramBotInit:
         config = {"profiles": {}}
         bot = TelegramBot(config=config)
         assert bot.bot_token == ""
-        assert bot.chat_id_to_profile == {}
+        assert bot.chat_id_to_profiles == {}
         bot.db.close()
 
     def test_resolve_profile(self, sample_config):
