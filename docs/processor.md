@@ -40,7 +40,7 @@ from src.processor import LinguaProcessor
 
 # Create processor for a profile
 proc = LinguaProcessor(
-    target_lang_name="German",   # used in file header
+    learning_language="de",      # language code (resolves to display name in header)
     profile="krystof",           # determines vocab path: data/krystof/vocabulary.md
 )
 

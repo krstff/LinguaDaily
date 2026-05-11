@@ -23,7 +23,7 @@ Each step degrades gracefully — if any step fails, the lesson continues withou
 
 ### 1. Fetch & Clean (`_fetch_and_clean`)
 
-Fetches an article via `fetch_router.py` using the profile's `source`, `content_lang`, and `article_filter`. Picks a random topic from the profile's `topics` list. Then runs `clean_content()` to strip Wikipedia artifacts (reference markers, footer sections, broken wiki links).
+Fetches an article via `fetch_router.py` using the profile's `source`, `learning_language`, and `article_filter`. Then runs `clean_content()` to strip Wikipedia artifacts (reference markers, footer sections, broken wiki links).
 
 After cleaning, re-enforces `max_words` by running `smart_truncate()` + `hard_truncate()` as a safety net — cleaning can inflate word count by splitting merged tokens from adjacent capitalized words.
 
@@ -35,25 +35,25 @@ Both steps run concurrently via `asyncio.gather()`:
 
 #### 2a. Generate TTS (`_generate_tts_async`)
 
-Calls `tts.synthesize()` with the original (untranslated) content in the `content_lang`. Audio is saved to `output/<profile>/<uuid>.wav`. Runs in a thread pool executor since TTS is synchronous I/O.
+Calls `tts.synthesize()` with the original (untranslated) content in the `learning_language`. Audio is saved to `output/<profile>/<uuid>.wav`. Runs in a thread pool executor since TTS is synchronous I/O.
 
 **On failure**: Lesson continues without audio (`wav_path` = `None`). If profile has `"use_tts": false`, this step is skipped entirely.
 
 #### 2b. Translate (`_translate_async`)
 
-Calls `llama_client.translate()` to translate from the article's language (`content_lang`) to the user's native language (`source_lang`). This is the **opposite** direction of what might seem intuitive — the lesson text is delivered in the learner's native language so they understand the content, while the audio is in the target language.
+Calls `llama_client.translate()` to translate from the article's language (`learning_language`) to the user's native language (`native_language`). This is the **opposite** direction of what might seem intuitive — the lesson text is delivered in the learner's native language so they understand the content, while the audio is in the target language.
 
 **On failure**: Falls back to the original untranslated text. If no LLM is configured (`config["llm"]` missing), this step is skipped entirely.
 
 ### 3. Extract & Save Vocab (`_extract_and_save_vocab`)
 
-Runs **after** translation because it needs both the original and translated text for context. Calls `llama_client.extract_vocab()` to pull useful vocabulary words from the original article (in the target/learning language). Then persists them via `processor.update_vocab()` to a per-profile markdown file at `data/<profile>/vocabulary.md`.
+Runs **after** translation because it needs both the original and translated text for context. Calls `llama_client.extract_vocab()` to pull useful vocabulary words from the original article (in the learning language). Then persists them via `processor.update_vocab()` to a per-profile markdown file at `data/<profile>/vocabulary.md`.
 
 **On failure**: Continues with empty vocab list. If no LLM configured, skipped entirely.
 
 ### 4. Deliver (`delivery_callback`)
 
-If a delivery callback was provided (e.g., `TelegramBot.deliver_lesson`), the completed lesson dict is passed to it. The callback sends the translated text and TTS audio to the user's Telegram chat.
+If a delivery callback was provided (e.g., `TelegramBot.deliver_lesson`), the completed lesson dict is passed to it. The callback sends the original text, translation, vocabulary list, and TTS audio to the user's Telegram chat. The bot also persists the lesson in SQLite for tutor context injection.
 
 **On failure**: Logs error, lesson still returned successfully.
 
@@ -100,10 +100,9 @@ async def run_lesson(self, profile_name: str,
     "title": "Quantum Computing",
     "content": "Translated article text...",       # translated (or original if LLM failed)
     "original_content": "Original article text...",
-    "source_lang": "en",
-    "target_lang": "de",
-    "target_lang_name": "German",
-    "content_lang": "de",
+    "learning_language": "de",
+    "learning_language_name": "German",
+    "native_language": "en",
     "wav_path": "/workspace/output/krystof/lingua_xxx.wav",  # or None
     "vocab": [{"word": "Quanten", "meaning": "quantum"}],     # or []
     "word_count": 245,
@@ -134,7 +133,7 @@ from src.orchestrator import clean_content
 clean = clean_content(raw_wikipedia_text)
 ```
 
-### `fetch_article(source, topic, config, content_lang=None, article_filter=None)`
+### `fetch_article(source, topic, config, learning_language=None, article_filter=None)`
 
 Wrapper around `fetch_router.fetch_article()`. Fetches an article from the given source (wikipedia/news). Returns `(title, text)` or `(None, None)`.
 
@@ -142,9 +141,8 @@ Wrapper around `fetch_router.fetch_article()`. Fetches an article from the given
 from src.orchestrator import fetch_article
 title, text = fetch_article(
     source="wikipedia",
-    topic="Physics",
     config=config,
-    content_lang="de",
+    learning_language="de",
 )
 ```
 

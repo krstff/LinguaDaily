@@ -2,7 +2,7 @@
 
 `src/llama_client.py` is the interface to local **llama.cpp** models via an OpenAI-compatible API. It handles translation, vocabulary extraction, and interactive tutoring — the three core language-learning tasks.
 
-Designed for a default single-model setup with optional per-task and per-profile model overrides for future extensibility.
+Designed for a default single-model setup with optional per-task and per-profile model overrides.
 
 ## Architecture
 
@@ -11,13 +11,13 @@ LlamaClient
     │
     ├── translate()          ← system prompt + user text → translation
     ├── extract_vocab()      ← system prompt + original + translated → JSON array
-    └── tutor_chat()         ← system prompt + history + message → tutor reply
+    └── tutor_chat()         ← system prompt + history + lesson context + message → reply
           │
           ▼
     _chat()                  ← OpenAI chat.completions.create()
           │
           ▼
-    Local LLM (llama.cpp / vLLM) @ http://localhost:8080/v1
+    Local LLM (llama.cpp / vLLM) @ http://llama-swap:8080/v1
 ```
 
 All three public methods use the same `_chat()` core — they differ only in system prompt, temperature, and input structure.
@@ -29,14 +29,16 @@ All three public methods use the same `_chat()` core — they differ only in sys
 ```json
 {
   "llm": {
-    "base_url": "http://localhost:8080/v1",
+    "base_url": "http://llama-swap:8080/v1",
     "default_model": "gemma-4-26B-language",
     "api_key": "",
-    "timeout": 600
+    "timeout": 600,
+    "translate_model": "gemma-4-26B",    // optional: model for translation + vocab
+    "tutor_model": "Qwen3.6-27B"          // optional: model for tutoring
   },
   "profiles": {
     "krystof": {
-      "llm_model": "other-model",           // optional: override for all tasks
+      "llm_model": "other-model",           // optional: override all tasks
       "llm_translate_model": "...",         // optional: separate model for translation
       "llm_tutor_model": "..."              // optional: separate model for tutoring
     }
@@ -48,7 +50,7 @@ All three public methods use the same `_chat()` core — they differ only in sys
 
 | Config key | Env var | Default |
 |-----------|---------|---------|
-| `llm.base_url` | `LLAMA_BASE_URL` | `http://localhost:8080/v1` |
+| `llm.base_url` | `LLAMA_BASE_URL` | `http://llama-swap:8080/v1` |
 | `llm.default_model` | `LLAMA_MODEL` | `gemma-4-26B-language` |
 | `llm.timeout` | `LLAMA_TIMEOUT` | `600` (seconds) |
 
@@ -58,7 +60,7 @@ All three public methods use the same `_chat()` core — they differ only in sys
 
 1. **Profile-level task-specific override** — e.g., `profile.llm_translate_model`
 2. **Profile-level generic override** — `profile.llm_model`
-3. **LLM-level task default** — `llm.translate_model`, `llm.tutor_model` (future extensibility)
+3. **LLM-level task default** — `llm.translate_model`, `llm.tutor_model` (settable via Web UI)
 4. **Global default model** — `llm.default_model`
 
 ```python
@@ -117,7 +119,7 @@ vocab = client.extract_vocab(
 
 The LLM receives both the original text and its translation for context. Output is expected as a JSON array — the client strips markdown code fences if present and parses with `json.loads()`. Returns empty list on parse failure.
 
-### `tutor_chat(message, language_name, native_lang, history, max_history)`
+### `tutor_chat(message, language_name, native_lang, history, max_history, lesson)`
 
 Handles interactive tutoring chat messages. Uses higher temperature (0.7) for natural conversation.
 
@@ -131,10 +133,19 @@ reply = client.tutor_chat(
         {"role": "assistant", "content": "The dative case..."},
     ],
     max_history=10,  # trim to last 10 turns (20 messages)
+    lesson={                       # optional: today's delivered lesson
+        "title": "Berlin",
+        "original_content": "...",
+        "translated_content": "...",
+        "vocab": [...],
+        "delivered_at": "2026-05-11 08:00:00",
+    },
 )
 ```
 
 **System prompt:** Instructs the model to explain grammar/vocabulary clearly, use examples in the target language with translations, be encouraging and patient, and keep responses concise.
+
+When a `lesson` dict is provided, it's injected into the system prompt as a "Today's Lesson" block so the tutor can answer questions directly about the lesson content. Content is truncated to 2000 chars each.
 
 ### `health_check()`
 

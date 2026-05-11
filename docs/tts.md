@@ -5,7 +5,7 @@
 ## Architecture
 
 ```
-text (original article in content_lang)
+text (original article in learning_language)
     │
     ▼
 sanitize_for_tts()              ← strip reference markers, fix encoding artifacts
@@ -41,7 +41,7 @@ wav_path = synthesize(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `text` | str | (required) | Text to synthesize (should be in the target/content language) |
+| `text` | str | (required) | Text to synthesize (should be in the target/learning language) |
 | `language_id` | str | `"de"` | ISO language code for TTS engine |
 | `config` | dict or None | loaded from default path | Full config.json contents |
 | `output_dir` | str or None | `output/<default_profile>/` | Directory to write the WAV file |
@@ -57,7 +57,7 @@ wav_path = synthesize(
 ```json
 {
   "tts": {
-    "base_url": "http://localhost:8080/v1",
+    "base_url": "http://llama-swap:8080/v1",
     "model": "omnivoice",
     "api_key": "",
     "default_voice": "male"
@@ -142,12 +142,12 @@ The orchestrator calls TTS as part of the lesson pipeline (step 2a, runs in para
 # Inside orchestrator._generate_tts():
 from tts import synthesize
 wav_path = synthesize(
-    text=content,              # original article text (in content_lang)
-    language_id=content_lang,   # e.g., "de" for German articles
+    text=content,              # original article text (in learning_language)
+    language_id=learning_language,   # e.g., "de" for German articles
     config=self.config,
     output_dir=output_dir,      # output/<profile>/
     voice=profile.get("tts_voice", "male"),
 )
 ```
 
-The WAV path is included in the lesson dict and sent to Telegram as an audio file via `TelegramBot.deliver_lesson()`.
+The WAV path is included in the lesson dict and sent to Telegram as an audio file via `TelegramBot.deliver_lesson()`. The TTS model is selected from `tts.model` in config (default: `omnivoice`) and can be changed via the Web UI model selection panel.

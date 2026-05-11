@@ -20,6 +20,27 @@ Scheduler (APScheduler)
 
 The scheduler is **thin** — it only handles cron scheduling, queuing, and profile discovery. All pipeline logic lives in `Orchestrator`.
 
+## Enabled / Disabled Profiles
+
+Profiles have an `enabled` field (default: `true`). Only enabled profiles with a `schedule` section are scheduled. The Web UI provides a toggle button per profile.
+
+```json
+{
+  "profiles": {
+    "krystof": {
+      "enabled": true,       ← scheduled (if schedule.time is set)
+      "schedule": { "time": "08:00", "tz": "Europe/Berlin" }
+    },
+    "johi": {
+      "enabled": false,      ← NOT scheduled even though schedule exists
+      "schedule": { "time": "09:00", "tz": "Europe/Berlin" }
+    }
+  }
+}
+```
+
+Profiles without `enabled` set default to `true` (backward compatible). Disabled profiles still work for tutor chat — they're just excluded from the scheduler.
+
 ## Queuing Behavior
 
 Multiple profiles can share the same schedule time (e.g., both `krystof` and `johi` at `08:00`). When their triggers fire:
@@ -54,20 +75,20 @@ See [Orchestrator Guide](orchestrator.md) for full details. When a scheduled job
 
 ## Configuration
 
-Each profile needs a `schedule` section:
+Each profile needs a `schedule` section and must be enabled:
 
 ```json
 {
   "profiles": {
     "krystof": {
-      "source_lang": "en",
-      "target_lang": "de",
-      "target_lang_name": "German",
-      "topics": ["Technology", "Science", "History"],
+      "native_language": "en",
+      "learning_language": "de",
+      "source": "wikipedia",
       "article_filter": {
         "min_words": 50,
         "max_words": 300
       },
+      "enabled": true,
       "schedule": {
         "time": "08:00",
         "tz": "Europe/Berlin"
@@ -76,10 +97,10 @@ Each profile needs a `schedule` section:
       "tts_voice": "male"
     },
     "anna": {
-      "source_lang": "en",
-      "target_lang": "es",
-      "target_lang_name": "Spanish",
-      "topics": ["History", "Art"],
+      "native_language": "en",
+      "learning_language": "es",
+      "source": "wikipedia",
+      "enabled": false,       ← disabled — won't be scheduled
       "schedule": {
         "time": "10:30",
         "tz": "Europe/Madrid"
@@ -97,7 +118,7 @@ Each profile needs a `schedule` section:
 | `time` | Yes | `"08:00"` | Daily fire time (HH:MM, 24-hour) |
 | `tz` | No | `"Europe/Berlin"` | Timezone (default: UTC) |
 
-Profiles without a `schedule` section are **not scheduled** — they can still be used for on-demand tutor chat.
+Profiles without a `schedule` section or with `"enabled": false` are **not scheduled** — they can still be used for on-demand tutor chat.
 
 ## Delivery Callback
 
@@ -125,11 +146,9 @@ The callback receives this dict (returned by `Orchestrator.run_lesson()`):
     "title": "Quantum Computing",
     "content": "Translated article text...",      # translated (or original if LLM failed)
     "original_content": "Original article text...",
-    "topic": "Technology",
-    "source_lang": "en",
-    "target_lang": "de",
-    "target_lang_name": "German",
-    "content_lang": "de",
+    "learning_language": "de",
+    "learning_language_name": "German",
+    "native_language": "en",
     "wav_path": "/workspace/output/krystof/lingua_xxx.wav",  # or None
     "vocab": [{"word": "Quanten", "meaning": "quantum"}],     # or []
     "word_count": 245,
@@ -146,13 +165,12 @@ The callback receives this dict (returned by `Orchestrator.run_lesson()`):
 ## CLI
 
 ```bash
-# List all scheduled profiles
+# List all scheduled profiles (only enabled ones)
 conda run -n lingua python src/scheduler.py --list
 # Output:
 # Profile                Time   Timezone                   Language
 # ----------------------------------------------------------------------
 # krystof              08:00   Europe/Berlin              German
-# anna                 10:30   Europe/Madrid              Spanish
 
 # Start scheduler (blocks at cron times, Ctrl+C to stop)
 conda run -n lingua python src/scheduler.py
@@ -169,8 +187,8 @@ conda run -n lingua python src/scheduler.py --once
 | Flag | Shorthand | Behavior |
 |------|-----------|----------|
 | `--list` | `-l` | Print schedule table and exit |
-| `--run-now` | `-n` | Push all profiles onto the queue immediately, then run as normal daemon. Useful for "test now + stay alive" |
-| `--once` | `-o` | Run all scheduled profiles once via the queue worker, wait for completion, then exit. Ideal for testing the full pipeline without keeping a daemon running |
+| `--run-now` | `-n` | Push all enabled profiles onto the queue immediately, then run as normal daemon. Useful for "test now + stay alive" |
+| `--once` | `-o` | Run all enabled profiles once via the queue worker, wait for completion, then exit. Ideal for testing the full pipeline without keeping a daemon running |
 | `--config` | `-c` | Override path to config.json (default: `config.json`) |
 
 ## Import API
@@ -183,15 +201,15 @@ scheduler = LessonScheduler(
     delivery_callback=bot.deliver_lesson,   # async callable(profile_name, lesson)
 )
 
-# Inspect scheduled profiles
+# Inspect scheduled profiles (only enabled + with schedule)
 scheduled = scheduler.get_scheduled_profiles()
-# → [("krystof", {...}), ("anna", {...})]
+# → [("krystof", {...})]  (disabled profiles excluded)
 
 # Start/stop
 await scheduler.start()                   # blocks until cancelled
 await scheduler.start(immediate_run=True)  # run now + stay alive
 await scheduler.stop()                    # graceful shutdown
 
-# One-shot (run all profiles, wait for completion, shut down)
+# One-shot (run all enabled profiles, wait for completion, shut down)
 await scheduler.run_once()
 ```

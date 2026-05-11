@@ -8,14 +8,14 @@ One Telegram bot serves all users. Each user is identified by their Telegram cha
 Telegram Bot (one token)
     │
     ├── User A (chat_id=111222333) → profile "krystof" → German lessons + tutor
-    ├── User B (chat_id=444555666) → profile "anna"    → Spanish lessons + tutor  
-    └── User C sends /register unregistered             → French lessons + tutor
+    ├── User B (chat_id=444555666) → profile "anna"    → Spanish lessons + tutor
 ```
 
 Each user gets:
 - Independent language pair (from their profile config)
 - Scheduled lessons delivered to their chat
 - Isolated conversation history with the tutor (SQLite, keyed by `chat_id` + `profile`)
+- **Lesson context** — the tutor sees the most recent delivered lesson when answering questions
 
 ## Setup
 
@@ -38,24 +38,16 @@ Add the bot token and map your Telegram chat IDs to profiles:
   },
   "profiles": {
     "krystof": {
-      "source_lang": "en",
-      "target_lang": "de",
-      "target_lang_name": "German",
+      "native_language": "en",
+      "learning_language": "de",
       "telegram_chat_id": 111222333,
       "schedule": { "time": "08:00", "tz": "Europe/Berlin" }
     },
     "anna": {
-      "source_lang": "en",
-      "target_lang": "es",
-      "target_lang_name": "Spanish", 
+      "native_language": "en",
+      "learning_language": "es",
       "telegram_chat_id": 444555666,
       "schedule": { "time": "10:00", "tz": "Europe/Madrid" }
-    },
-    "unregistered": {
-      "source_lang": "en",
-      "target_lang": "fr",
-      "target_lang_name": "French"
-      // no telegram_chat_id — user will self-register via /register
     }
   }
 }
@@ -71,15 +63,13 @@ https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 
 Look for `"chat": { "id": 123456789 }` in the response. That's your chat ID.
 
-**Alternatively**, start the bot and send it `/start` — if you're not pre-registered, it'll tell you to use `/register <profile>`.
-
 ### 4. Start the Bot
 
 ```bash
 # Standalone (for testing)
 conda run -n lingua python src/telegram_bot.py --config config.json
 
-# As part of the daemon (once main.py is built)
+# As part of the daemon
 conda run -n lingua python src/main.py
 ```
 
@@ -90,7 +80,6 @@ conda run -n lingua python src/main.py
 | Command | What it does |
 |---------|-------------|
 | `/start` | Show welcome message + current registration status |
-| `/register <profile>` | Register your chat to a profile (e.g., `/register krystof`) |
 | `/history clear` | Clear your tutor conversation history |
 | `/status` | Show your schedule, language pair, and Telegram ID |
 
@@ -109,26 +98,22 @@ Conversation history persists across sessions (stored in `data/chat_history.db`)
 
 Lessons are delivered automatically at each profile's scheduled time. The scheduler triggers the orchestrator pipeline, which fetches content, generates TTS audio, and delivers both to your chat:
 
-1. 📖 Text message with translated article
-2. 🔊 Audio file (WAV) of the original text read aloud
+1. 📰 Text message with original article
+2. 🌐 Translation
+3. 📝 Vocabulary list
+4. 🔊 Audio file (WAV) of the original text read aloud
 
-## User Registration Options
+## User Registration
 
-### Option A: Config-based (pre-set)
+### Config-based (pre-set)
 
-Add `telegram_chat_id` to each profile in `config.json`. Best for known users — no setup needed on their end.
+Add `telegram_chat_id` to each profile in `config.json`. This is the only supported method — users must be registered via config or the Web UI before they can use the bot.
 
 ```json
 "krystof": { "telegram_chat_id": 111222333 }
 ```
 
-### Option B: Self-service (runtime)
-
-Leave `telegram_chat_id` out and let users register themselves with `/register <profile>`. Best for shared bots or unknown users. The mapping is kept in memory while the bot runs.
-
-### Both
-
-Use both — pre-register some users in config, allow others to self-register via `/register`.
+Unregistered users who message the bot receive a notice to ask an admin to add them via the web UI.
 
 ## Conversation History
 
@@ -141,7 +126,30 @@ Stored in SQLite at `data/chat_history.db`:
 | `role` | `user` or `assistant` |
 | `content` | The message text |
 
-History is **isolated per user+profile** — User A never sees User B's conversations. Recent history (last 10 turns) is sent to the LLM tutor for context on each chat message.
+History is **isolated per user+profile** — User A never sees User B's conversations. Recent history (last 10 turns) is sent to the LLM tutor for context on each chat message. Old entries are auto-purged after 30 days.
+
+## Lesson Context Injection
+
+When a user messages the tutor, it has access to their **most recently delivered lesson**. The lesson is persisted in SQLite (`latest_lesson` table) when `deliver_lesson()` runs, and injected into the tutor's system prompt:
+
+```
+=== TODAY'S LESSON ===
+Title: Berlin
+Delivered: 2026-05-11 08:00:00
+
+Original article (German):
+Berlin ist die Hauptstadt von Deutschland.
+
+Translation (English):
+Berlin is the capital of Germany.
+
+Vocabulary (3 words):
+  Hauptstadt — capital city
+  ...
+=== END LESSON ===
+```
+
+This means the tutor can answer questions directly about the lesson content, vocabulary, and translations. Content is truncated to 2000 chars each to stay within reasonable token limits.
 
 ## Environment Variables
 

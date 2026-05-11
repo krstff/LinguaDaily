@@ -1,35 +1,34 @@
 # LinguaDaily
 
-A standalone language-learning daemon that delivers daily lessons via Telegram — fetching articles, translating them with a local LLM, generating TTS audio, and providing interactive tutoring.
+A standalone language-learning daemon that delivers daily lessons via Telegram — fetching articles, translating them with a local LLM, generating TTS audio, and providing interactive tutoring. Includes a web UI for profile management and model selection.
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                    main.py (daemon)                        │
-│                                                           │
-│  ┌─────────────────────┐    ┌──────────────────────────┐ │
-│  │   scheduler.py      │    │   telegram_bot.py        │ │
-│  │                     │    │                          │ │
-│  │  per-profile cron   │    │  • lesson delivery       │ │
-│  │  jobs (APScheduler) │    │  • tutor chat (SQLite)   │ │
-│  │                     │    │  • /register, /status    │ │
-│  └─────────┬───────────┘    └──────────┬───────────────┘ │
-│            │                           │                 │
-│            ▼                           │                 │
-│  ┌─────────────────────────────────────┤◀────────────────┘ │
-│  │         orchestrator.py             │                   │
-│  │                                     │                   │
-│  │  Orchestrator.run_lesson():         │                   │
-│  │    1. fetch_router → article        │                   │
-│  │    2. clean_content()               │                   │
-│  │    3. tts.py (OmniVoice)            │                   │
-│  │    4. llama_client.translate()      │                   │
-│  │    5. llama_client.extract_vocab()  │                   │
-│  │    6. processor.update_vocab()      │                   │
-│  │    7. delivery_callback()           │                   │
-│  └─────────────────────────────────────┘                   │
-└───────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                    main.py (daemon)                                │
+│                                                                   │
+│  ┌──────────────┐  ┌──────────────────┐  ┌─────────────────────┐ │
+│  │ scheduler.py │  │ telegram_bot.py  │  │ web_ui.py           │ │
+│  │              │  │                  │  │                     │ │
+│  │ cron jobs    │  │ • lesson delivery│  │ • Dashboard         │ │
+│  │ serial queue │  │ • tutor chat     │  │ • Model selection   │ │
+│  │              │  │ • lesson context │  │ • Config editor     │ │
+│  └──────┬───────┘  │    (SQLite)      │  │ • Live log viewer   │ │
+│         │          └──────────────────┘  └─────────────────────┘ │
+│         ▼                                                         │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │                   orchestrator.py                            │ │
+│  │                                                              │ │
+│  │  Orchestrator.run_lesson():                                  │ │
+│  │    1. fetch_router → article                                 │ │
+│  │    2. clean_content()                                        │ │
+│  │    3+4. tts.py + llama_client.translate() (parallel)         │ │
+│  │    5. llama_client.extract_vocab()                           │ │
+│  │    6. processor.update_vocab()                               │ │
+│  │    7. delivery_callback()                                    │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -38,20 +37,24 @@ A standalone language-learning daemon that delivers daily lessons via Telegram �
 
 ```bash
 conda create -n lingua python=3.11 -y
-conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler
+conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler flask jinja2
 ```
 
 ### 2. Configure `config.json`
 
 ```json
 {
+  "default_profile": "krystof",
   "llm": {
-    "base_url": "http://localhost:8080/v1",
-    "default_model": "gemma4-26b"
+    "base_url": "http://llama-swap:8080/v1",
+    "default_model": "gemma-4-26B-language",
+    "api_key": "",
+    "timeout": 600
   },
   "tts": {
-    "base_url": "http://localhost:8080/v1",
-    "model": "omnivoice"
+    "base_url": "http://llama-swap:8080/v1",
+    "model": "omnivoice",
+    "api_key": ""
   },
   "telegram": {
     "bot_token": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
@@ -61,18 +64,18 @@ conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler
       "native_language": "en",
       "learning_language": "de",
       "source": "wikipedia",
-      "topics": ["Technology", "Science", "History"],
       "article_filter": {
         "min_words": 50,
         "max_words": 300
       },
+      "use_tts": true,
+      "tts_voice": "male",
+      "telegram_chat_id": 111222333,
+      "enabled": true,
       "schedule": {
         "time": "08:00",
         "tz": "Europe/Berlin"
-      },
-      "use_tts": true,
-      "tts_voice": "male",
-      "telegram_chat_id": 111222333
+      }
     }
   }
 }
@@ -81,7 +84,14 @@ conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler
 ### 3. Start the daemon
 
 ```bash
+# Daemon only (scheduler + Telegram bot)
 conda run -n lingua python src/main.py --config config.json
+
+# Daemon + Web UI
+conda run -n lingua python src/main.py --config config.json --web-ui
+
+# Web UI standalone (no scheduler/bot)
+conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
 ```
 
 The startup banner shows all configured profiles, schedules, and service status:
@@ -95,9 +105,77 @@ The startup banner shows all configured profiles, schedules, and service status:
   Scheduled:  1 daily lesson(s)
     • krystof          08:00 (Europe/Berlin) → German
   Telegram:   ✅ configured (token: ...ST-TOKEN)
-  LLM:        gemma4-26b @ http://localhost:8080/v1
+  LLM:        gemma-4-26B-language @ http://llama-swap:8080/v1
 ============================================================
 ```
+
+## Web UI
+
+The web UI is a lightweight admin panel for managing profiles, selecting models, and viewing logs.
+
+### Dashboard (`/`)
+- Profile table with enable/disable toggle per profile
+- Model selection panel — choose translation, tutoring, and TTS models from dropdowns (populated by calling `/v1/models` on your LLM server)
+- Add/Edit/Delete profiles via modal form
+
+### Logs (`/logs`)
+- Live tail of `lingua.log` with color-coded severity levels
+- Auto-refresh every 3 seconds
+
+### Config (`/config`)
+- Raw JSON editor for `config.json` with validation and backup
+
+### Model Selection
+The dashboard has a **Model Selection** panel that queries your LLM server's `/v1/models` endpoint and populates three dropdowns:
+
+| Dropdown | Config key | Used by |
+|----------|-----------|---------|
+| Translation Model | `llm.translate_model` | Article translation + vocabulary extraction |
+| Tutoring Model | `llm.tutor_model` | Interactive tutor chat |
+| TTS Model | `tts.model` | Text-to-speech synthesis |
+
+Leave a dropdown on "→ default" to use the global `default_model`. Changes are saved globally and apply to all profiles.
+
+### Standalone
+
+```bash
+# Defaults (localhost:8089, no auth)
+conda run -n lingua python src/web_ui.py
+
+# Remote access with basic auth
+conda run -n lingua python src/web_ui.py --host 0.0.0.0 --port 8089 --password mypass
+```
+
+## Config Reference
+
+### Global settings
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `default_profile` | string | Default profile for CLI tools |
+| `llm.base_url` | string | OpenAI-compatible API base URL (e.g. `http://llama-swap:8080/v1`) |
+| `llm.default_model` | string | Fallback model when no task-specific override is set |
+| `llm.translate_model` | string *(optional)* | Model for translation + vocab extraction |
+| `llm.tutor_model` | string *(optional)* | Model for interactive tutoring |
+| `tts.base_url` | string | TTS API base URL |
+| `tts.model` | string | TTS model name (default: `omnivoice`) |
+| `telegram.bot_token` | string | Telegram BotFather token |
+
+### Profile settings
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `native_language` | string | User's native language code (`en`, `de`, …) |
+| `learning_language` | string | Language the user is learning |
+| `source` | string | Content source: `wikipedia` or `news` |
+| `article_filter.min_words` | int | Minimum article length |
+| `article_filter.max_words` | int | Maximum article length |
+| `use_tts` | bool | Generate TTS audio (default: `true`) |
+| `tts_voice` | string | Voice name (`male`, `female`) |
+| `telegram_chat_id` | string/int | Telegram chat ID for lesson delivery + tutor chat |
+| `enabled` | bool | Whether the profile is scheduled (default: `true`). Toggle from Web UI. |
+| `schedule.time` | string | Daily lesson time, HH:MM (24h) |
+| `schedule.tz` | string | Timezone, e.g. `Europe/Berlin` |
 
 ## Testing Individual Components
 
@@ -121,17 +199,21 @@ conda run -n lingua python src/scheduler.py --run-now
 
 # Run the Telegram bot standalone (for testing)
 conda run -n lingua python src/telegram_bot.py --config config.json
+
+# Web UI standalone
+conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
 ```
 
 ## Components
 
 | File | Role |
 |------|------|
-| `src/main.py` | Daemon entry — wires scheduler + Telegram bot, signal handling |
+| `src/main.py` | Daemon entry — wires scheduler + Telegram bot, signal handling, optional Web UI |
 | `src/orchestrator.py` | **Lesson pipeline** — fetch → clean → TTS → translate → vocab → deliver |
 | `src/scheduler.py` | APScheduler daily lessons per profile (delegates to orchestrator) |
-| `src/telegram_bot.py` | aiogram 3.x bot — lesson delivery + interactive tutor chat |
-| `src/llama_client.py` | Local LLM client — translate, extract vocab, tutor chat |
+| `src/telegram_bot.py` | aiogram 3.x bot — lesson delivery + interactive tutor chat with lesson context |
+| `src/web_ui.py` | Flask admin panel — dashboard, model selection, config editor, log viewer |
+| `src/llama_client.py` | Local LLM client — translate, extract vocab, tutor chat (with lesson injection) |
 | `src/processor.py` | Vocabulary persistence — markdown file management |
 | `src/fetch_router.py` | Routes fetch requests to wikipedia or news sources |
 | `src/wikipedia_fetcher.py` | Kiwix/ZIM client for offline Wikipedia articles |
@@ -141,10 +223,14 @@ conda run -n lingua python src/telegram_bot.py --config config.json
 ## Documentation
 
 - [Daemon (main.py)](docs/daemon.md) — Startup, service wiring, signal handling, systemd/Docker
+- [Web UI](docs/webui-design.md) — Dashboard, model selection, config editor, log viewer
 - [Orchestrator Guide](docs/orchestrator.md) — Pipeline steps, utility functions, CLI usage
 - [Processor (Vocabulary)](docs/processor.md) — Vocab markdown file management
-- [Lesson Scheduler Guide](docs/scheduler.md) — Schedule config, delivery callback API
-- [Telegram Bot Guide](docs/telegram-bot.md) — Setup, registration, commands, tutor chat
+- [Lesson Scheduler Guide](docs/scheduler.md) — Schedule config, enabled/disabled profiles, delivery callback API
+- [Telegram Bot Guide](docs/telegram-bot.md) — Setup, commands, tutor chat with lesson context
+- [LLM Client Guide](docs/llama-client.md) — Model resolution, translate, vocab extraction, tutor chat
+- [TTS Module Guide](docs/tts.md) — OmniVoice wrapper, text sanitization
+- [Wikipedia Fetcher Guide](docs/wikipedia-fetcher.md) — Kiwix/ZIM client, HTML extraction, smart truncation
 
 ## Tests
 
