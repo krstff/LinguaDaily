@@ -75,6 +75,17 @@ class ChatHistoryDB:
             CREATE INDEX IF NOT EXISTS idx_user_profile
             ON chat_history (user_id, profile)
         """)
+        # ── Latest lesson per profile (for tutor context) ──
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS latest_lesson (
+                profile TEXT PRIMARY KEY,
+                title TEXT,
+                original_content TEXT,
+                translated_content TEXT,
+                vocab_json TEXT,
+                delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         self.conn.commit()
 
     def get_history(
@@ -130,6 +141,52 @@ class ChatHistoryDB:
             self.conn.commit()
             logger.debug("Purged %d old chat entries (>=%d days)", deleted_count, max_age_days)
         return deleted_count
+
+    def store_lesson(self, profile: str, lesson: dict):
+        """Persist the latest delivered lesson for a profile.
+
+        Overwrites any previous lesson so the tutor always sees the most
+        recent one.  Vocabulary is stored as a JSON string to keep the
+        schema flat.
+        """
+        title = lesson.get("title", "")
+        original = lesson.get("original_content", "")
+        translated = lesson.get("content", "")
+        vocab = json.dumps(lesson.get("vocab", []), ensure_ascii=False)
+
+        self.conn.execute(
+            """
+            INSERT INTO latest_lesson (profile, title, original_content,
+                                       translated_content, vocab_json,
+                                       delivered_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(profile) DO UPDATE SET
+                title = excluded.title,
+                original_content = excluded.original_content,
+                translated_content = excluded.translated_content,
+                vocab_json = excluded.vocab_json,
+                delivered_at = excluded.delivered_at
+            """,
+            (profile, title, original, translated, vocab),
+        )
+        self.conn.commit()
+
+    def get_latest_lesson(self, profile: str) -> Optional[dict]:
+        """Return the most recent lesson dict for a profile, or None."""
+        row = self.conn.execute(
+            ("SELECT title, original_content, translated_content, vocab_json, delivered_at "
+             "FROM latest_lesson WHERE profile = ?"),
+            (profile,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "title": row[0],
+            "original_content": row[1] or "",
+            "translated_content": row[2] or "",
+            "vocab": json.loads(row[3]) if row[3] else [],
+            "delivered_at": row[4],
+        }
 
     def close(self):
         self.conn.close()
@@ -327,6 +384,14 @@ class TelegramBot:
             except Exception as e:
                 logger.error("Failed to send audio: %s", e)
 
+        # Persist lesson so the tutor has context
+        try:
+            self.db.store_lesson(profile_name, lesson)
+            logger.info("Stored lesson for '%s' (profile: %s)",
+                        title, profile_name)
+        except sqlite3.Error as e:
+            logger.error("Failed to store lesson for '%s': %s", profile_name, e)
+
     # ── Tutor chat handler ─────────────────────────────────────────
 
     async def handle_tutor_message(self, chat_id: int, text: str):
@@ -360,6 +425,13 @@ class TelegramBot:
         # Get conversation history
         history = self.db.get_history(chat_id, profile_name, max_turns=10)
 
+        # Fetch the latest delivered lesson for tutor context
+        lesson = None
+        try:
+            lesson = self.db.get_latest_lesson(profile_name)
+        except sqlite3.Error as e:
+            logger.error("Failed to fetch lesson for '%s': %s", profile_name, e)
+
         # Call LLM tutor
         client = self._get_llama_client(profile_name)
         reply = client.tutor_chat(
@@ -368,6 +440,7 @@ class TelegramBot:
             native_lang=native_lang,
             history=history,
             max_history=10,
+            lesson=lesson,
         )
 
         if not reply:

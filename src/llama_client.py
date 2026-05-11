@@ -326,6 +326,7 @@ class LlamaClient:
         native_lang: str = "English",
         history: Optional[list] = None,
         max_history: int = 10,
+        lesson: Optional[dict] = None,
     ) -> Optional[str]:
         """
         Handle an interactive tutoring chat message.
@@ -342,6 +343,10 @@ class LlamaClient:
             Previous conversation messages for context.
         max_history : int
             Maximum number of history turns to include (keeps token usage low).
+        lesson : dict or None
+            Latest delivered lesson with keys: title, original_content,
+            translated_content, vocab. Injected into the system prompt
+            so the tutor can answer questions about the lesson.
 
         Returns
         -------
@@ -353,6 +358,39 @@ class LlamaClient:
             language_name=language_name,
             native_lang=native_lang,
         )
+
+        # ── Inject today's lesson into the system prompt ────────
+        if lesson:
+            original = (lesson.get("original_content") or "")[:2000]
+            translated = (lesson.get("translated_content") or "")[:2000]
+            vocab = lesson.get("vocab", [])
+
+            lesson_block = f"""
+You have access to the user's most recent daily lesson.  Use it when
+answering questions.
+
+=== TODAY'S LESSON ===
+Title: {lesson.get('title', '?')}
+Delivered: {lesson.get('delivered_at', '?')}
+
+Original article ({language_name}):
+{original}
+
+Translation ({native_lang}):
+{translated}
+"""
+            if vocab:
+                vocab_lines = []
+                for entry in vocab:
+                    if isinstance(entry, dict):
+                        w = entry.get("word", "")
+                        m = entry.get("meaning", "")
+                        vocab_lines.append(f"  {w} — {m}")
+                    else:
+                        vocab_lines.append(f"  {entry}")
+                lesson_block += f"\nVocabulary ({len(vocab)} words):\n" + "\n".join(vocab_lines)
+            lesson_block += "\n=== END LESSON ==="
+            system += lesson_block
 
         messages = [{"role": "system", "content": system}]
 
