@@ -11,12 +11,15 @@ Usage (CLI):
 """
 
 import json
+import logging
 import os
 import re
 import sys
 import uuid
 
 from config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR, load_config
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_for_tts(text):
@@ -62,7 +65,7 @@ def _get_client(config):
     try:
         from openai import OpenAI
     except ImportError:
-        print("Warning: 'openai' package not installed, skipping TTS.", file=sys.stderr)
+        logger.warning("'openai' package not installed, skipping TTS.")
         return None
 
     tts_cfg = config.get("tts", {})
@@ -106,7 +109,7 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
         try:
             config = load_config()
         except Exception as e:
-            print(f"Error loading config for TTS: {e}", file=sys.stderr)
+            logger.error("Error loading config for TTS: %s", e)
             return None
 
     if output_dir is None:
@@ -140,10 +143,10 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             return filepath
         else:
-            print("TTS: generated file is empty or missing", file=sys.stderr)
+            logger.warning("TTS: generated file is empty or missing")
             return None
     except Exception as e:
-        print(f"TTS error: {e}", file=sys.stderr)
+        logger.error("TTS error: %s", e)
         # Clean up partial file
         if os.path.exists(filepath):
             try:

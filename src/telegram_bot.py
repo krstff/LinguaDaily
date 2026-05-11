@@ -36,6 +36,7 @@ import logging
 import os
 import sqlite3
 import sys
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config import CONFIG_PATH, DATA_DIR, load_config
@@ -53,6 +54,10 @@ class ChatHistoryDB:
     def __init__(self, db_path: str = CHAT_DB_PATH):
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path)
+        # WAL mode for better concurrent read/write performance
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        # Enable foreign keys and busy timeout (helps in multi-process scenarios)
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def _init_schema(self):
@@ -101,6 +106,30 @@ class ChatHistoryDB:
             (str(user_id), profile),
         )
         self.conn.commit()
+
+    def purge_old_entries(self, max_age_days: int = 30):
+        """
+        Delete entries older than max_age_days to prevent unbounded DB growth.
+
+        Parameters
+        ----------
+        max_age_days : int
+            Entries older than this many days are deleted. Default: 30.
+        """
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        rows = self.conn.execute(
+            "SELECT COUNT(*) FROM chat_history WHERE created_at < ?",
+            (cutoff.isoformat(),),
+        ).fetchone()
+        deleted_count = rows[0] if rows else 0
+        if deleted_count > 0:
+            self.conn.execute(
+                "DELETE FROM chat_history WHERE created_at < ?",
+                (cutoff.isoformat(),),
+            )
+            self.conn.commit()
+            logger.debug("Purged %d old chat entries (>=%d days)", deleted_count, max_age_days)
+        return deleted_count
 
     def close(self):
         self.conn.close()
@@ -152,8 +181,12 @@ class TelegramBot:
         for name, profile in profiles.items():
             chat_id = profile.get("telegram_chat_id")
             if chat_id:
-                self.chat_id_to_profile[int(chat_id)] = name
-                self.profile_to_chat_id[name] = int(chat_id)
+                chat_int = int(chat_id)
+                self.chat_id_to_profile[chat_int] = name
+                self.profile_to_chat_id[name] = chat_int
+                logger.info("Mapped profile '%s' → Telegram chat %d", name, chat_int)
+            else:
+                logger.debug("Profile '%s' has no telegram_chat_id — skipping mapping", name)
 
     def resolve_profile(self, chat_id: int) -> Optional[str]:
         """Look up which profile a Telegram user belongs to."""
@@ -340,9 +373,12 @@ class TelegramBot:
         if not reply:
             reply = "⚠️ The tutor is currently unavailable. Please try again later."
 
-        # Store in history
-        self.db.add_message(chat_id, profile_name, "user", text)
-        self.db.add_message(chat_id, profile_name, "assistant", reply)
+        # Store in history (best-effort — don't block the reply on DB errors)
+        try:
+            self.db.add_message(chat_id, profile_name, "user", text)
+            self.db.add_message(chat_id, profile_name, "assistant", reply)
+        except sqlite3.Error as e:
+            logger.error("Failed to write chat history for %s: %s", chat_id, e)
 
         # Send reply (truncate for Telegram limit)
         bot = await self._get_aiogram_bot()
@@ -487,6 +523,14 @@ class TelegramBot:
         if bot is None:
             logger.error("Cannot start — no bot token configured")
             return
+
+        # Purge old chat history entries on startup (prevents unbounded DB growth)
+        try:
+            purged = self.db.purge_old_entries(max_age_days=30)
+            if purged > 0:
+                logger.info("Purged %d stale chat history entries on startup", purged)
+        except Exception as e:
+            logger.warning("Chat history purge failed (non-fatal): %s", e)
 
         dp = Dispatcher()
 
