@@ -25,6 +25,36 @@
   <button class="btn btn-primary" onclick="openModal(null)">+ Add Profile</button>
 </div>
 
+<!-- ── Model Selection Panel ──────────────────────────── -->
+<div class="model-panel">
+  <h2>Model Selection</h2>
+  <p class="subtitle">Choose models for translation, tutoring and TTS (applies to all profiles)</p>
+  <div class="form-grid" style="grid-template-columns:repeat(3,1fr);">
+    <div class="form-row">
+      <label>Translation Model</label>
+      <select id="model_translate">
+        <option value="">→ default model</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Tutoring Model</label>
+      <select id="model_tutor">
+        <option value="">→ default</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>TTS Model</label>
+      <select id="model_tts">
+        <option value="">→ default (omnivoice)</option>
+      </select>
+    </div>
+  </div>
+  <div style="margin-top:10px;display:flex;align-items:center;gap:10px;">
+    <button class="btn btn-primary" onclick="saveModels()">Save Models</button>
+    <span id="model-status" style="color:var(--fg_dim);font-size:12px;"></span>
+  </div>
+</div>
+
 <table>
   <thead>
     <tr>

@@ -329,6 +329,139 @@ def create_app(config_path=None, log_file=None, password=None):
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
 
+    # ── Model management API ─────────────────────────────
+    @app.route("/api/models/fetch")
+    @require_auth
+    def fetch_models():
+        """Fetch available models from the OpenAI-compatible API.
+
+        Queries both the LLM base_url and TTS base_url endpoints,
+        returning a merged list of unique model IDs.
+        """
+        config = load_config(_config_path)
+        llm_cfg = config.get("llm", {})
+        tts_cfg = config.get("tts", {})
+
+        urls = []
+        llm_url = llm_cfg.get("base_url", "")
+        if llm_url:
+            urls.append(llm_url)
+        tts_url = tts_cfg.get("base_url", "")
+        if tts_url and tts_url != llm_url:
+            urls.append(tts_url)
+
+        # Fallback to env vars
+        import os as _os
+        env_url = _os.environ.get("LLAMA_BASE_URL", "")
+        if env_url and env_url not in urls:
+            urls.append(env_url)
+
+        if not urls:
+            return jsonify({"llm_models": [], "tts_models": [], "error": "No API URLs configured"})
+
+        llm_models = []
+        tts_models = []
+        errors = []
+
+        try:
+            from openai import OpenAI
+        except ImportError:
+            return jsonify({"llm_models": [], "tts_models": [], "error": "openai package not installed"})
+
+        for url in urls:
+            api_key = llm_cfg.get("api_key", "") or "none"
+            try:
+                client = OpenAI(base_url=url, api_key=api_key, timeout=10)
+                models = client.models.list()
+                for m in models:
+                    model_id = getattr(m, "id", str(m))
+                    if model_id not in llm_models:
+                        llm_models.append(model_id)
+                    # TTS models typically have "tts" or "voice" in the ID, but
+                    # we also include all models since OmniVoice may use any
+                    if model_id not in tts_models:
+                        tts_models.append(model_id)
+            except Exception as e:
+                errors.append(f"{url}: {e}")
+
+        return jsonify({
+            "llm_models": sorted(llm_models),
+            "tts_models": sorted(tts_models),
+            "errors": errors,
+        })
+
+    @app.route("/api/models/save", methods=["POST"])
+    @require_auth
+    def save_models():
+        """Save global model selections to config.json.
+
+        Expects JSON body:
+        {
+            "translate_model": "model-name",
+            "tutor_model": "model-name",
+            "tts_model": "omnivoice"
+        }
+        """
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"message": "Invalid JSON body"}), 400
+
+        config = load_config(_config_path)
+        llm_cfg = config.setdefault("llm", {})
+        tts_cfg = config.setdefault("tts", {})
+
+        changed = []
+
+        if "translate_model" in data:
+            val = data["translate_model"]
+            # Empty string means "use default"
+            if val:
+                llm_cfg["translate_model"] = val
+            elif "translate_model" in llm_cfg:
+                del llm_cfg["translate_model"]
+            changed.append("translate_model")
+
+        if "tutor_model" in data:
+            val = data["tutor_model"]
+            if val:
+                llm_cfg["tutor_model"] = val
+            elif "tutor_model" in llm_cfg:
+                del llm_cfg["tutor_model"]
+            changed.append("tutor_model")
+
+        if "tts_model" in data:
+            val = data["tts_model"]
+            tts_cfg["model"] = val if val else "omnivoice"
+            changed.append("tts_model")
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+
+            return jsonify({"message": f"Saved: {', '.join(changed)}", "changed": changed})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    # ── Model settings helper for dashboard template ─────
+    @app.route("/api/models/current")
+    @require_auth
+    def current_models():
+        """Return current model selections from config."""
+        config = load_config(_config_path)
+        llm_cfg = config.get("llm", {})
+        tts_cfg = config.get("tts", {})
+        return jsonify({
+            "default_model": llm_cfg.get("default_model", ""),
+            "translate_model": llm_cfg.get("translate_model", ""),
+            "tutor_model": llm_cfg.get("tutor_model", ""),
+            "tts_model": tts_cfg.get("model", "omnivoice"),
+        })
+
     return app
 
 

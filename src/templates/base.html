@@ -327,6 +327,25 @@ textarea { resize: vertical; }
   margin-top: 4px;
 }
 
+/* ── Model Selection Panel ───────────────────────────── */
+.model-panel {
+  background: var(--bg0);
+  border-radius: 6px;
+  padding: 18px;
+  margin-bottom: 24px;
+  border: 1px solid var(--bg1);
+}
+
+.model-panel h2 {
+  font-size: 15px;
+  color: var(--blue);
+  margin-bottom: 2px;
+}
+
+.model-panel .subtitle {
+  margin-bottom: 14px;
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 600px) {
   nav { padding: 0 12px; }
@@ -558,6 +577,101 @@ document.addEventListener('htmx:afterRequest', function(evt) {
 // Close modal on overlay click
 document.getElementById('profile-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
+});
+
+// ── Model Management ─────────────────────────────────────
+async function loadModels() {
+  const statusEl = document.getElementById('model-status');
+  if (!statusEl) return; // not on dashboard
+
+  statusEl.textContent = 'Loading models…';
+
+  try {
+    // Fetch available models from the API endpoints
+    const fetchRes = await fetch('/api/models/fetch');
+    const fetchData = await fetchRes.json();
+
+    if (fetchData.error) {
+      statusEl.textContent = `⚠ ${fetchData.error}`;
+    }
+
+    // Populate dropdowns
+    populateDropdown('model_translate', fetchData.llm_models || []);
+    populateDropdown('model_tutor', fetchData.llm_models || []);
+    populateDropdown('model_tts', fetchData.tts_models || []);
+
+    // Fetch current selections from config
+    const curRes = await fetch('/api/models/current');
+    const curData = await curRes.json();
+
+    if (curData.translate_model) {
+      document.getElementById('model_translate').value = curData.translate_model;
+    }
+    if (curData.tutor_model) {
+      document.getElementById('model_tutor').value = curData.tutor_model;
+    }
+    // tts_model always has a default
+    document.getElementById('model_tts').value = curData.tts_model || 'omnivoice';
+
+    statusEl.textContent = fetchData.errors?.length
+      ? `Loaded (${fetchData.errors.length} endpoint(s) unreachable)`
+      : 'Models loaded';
+  } catch (e) {
+    statusEl.textContent = `⚠ Failed to load models`;;
+  }
+}
+
+function populateDropdown(id, models) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  // Keep the first "→ default" option
+  const firstOption = sel.options[0].outerHTML;
+  sel.innerHTML = firstOption;
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+}
+
+async function saveModels() {
+  const statusEl = document.getElementById('model-status');
+  if (!statusEl) return;
+
+  statusEl.textContent = 'Saving…';
+
+  const payload = {
+    translate_model: document.getElementById('model_translate').value,
+    tutor_model: document.getElementById('model_tutor').value,
+    tts_model: document.getElementById('model_tts').value,
+  };
+
+  try {
+    const res = await fetch('/api/models/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      statusEl.textContent = `✓ ${data.message || 'Saved'}`;
+      showToast(data.message || 'Models saved', false);
+    } else {
+      statusEl.textContent = `⚠ ${data.message || 'Save failed'}`;
+      showToast(data.message || 'Save failed', true);
+    }
+  } catch (e) {
+    statusEl.textContent = '⚠ Network error';
+    showToast('Network error saving models', true);
+  }
+}
+
+// Load models on page load (only when dashboard elements exist)
+document.addEventListener('DOMContentLoaded', function() {
+  if (document.getElementById('model_translate')) {
+    loadModels();
+  }
 });
 </script>
 </body>
