@@ -104,7 +104,10 @@ def create_app(config_path=None, log_file=None, password=None):
                                    error=str(e)), 500
 
         profiles = config.get("profiles", {})
-        scheduled = sum(1 for p in profiles.values() if (p.get("schedule") or {}).get("time"))
+        scheduled = sum(
+            1 for p in profiles.values()
+            if p.get("enabled", True) and (p.get("schedule") or {}).get("time")
+        )
         langs = set(
             p.get("learning_language")
             for p in profiles.values()
@@ -236,6 +239,7 @@ def create_app(config_path=None, log_file=None, password=None):
             },
             "use_tts": request.form.get("use_tts") == "on",
             "tts_voice": request.form.get("tts_voice", "male"),
+            "enabled": request.form.get("enabled") != "false",
         }
 
         schedule_time = request.form.get("schedule_time", "").strip()
@@ -293,6 +297,35 @@ def create_app(config_path=None, log_file=None, password=None):
                 f.write("\n")
 
             return jsonify({"message": f"Profile '{name}' deleted"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    @app.route("/api/profiles/<name>/toggle", methods=["POST"])
+    @require_auth
+    def toggle_profile(name):
+        """Toggle the enabled state of a profile."""
+        config = load_config(_config_path)
+        profiles = config.get("profiles", {})
+
+        if name not in profiles:
+            return jsonify({"message": f"Profile '{name}' not found"}), 404
+
+        # Toggle: default to True if key doesn't exist yet
+        current = profiles[name].get("enabled", True)
+        profiles[name]["enabled"] = not current
+        new_state = profiles[name]["enabled"]
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+
+            state_word = "enabled" if new_state else "disabled"
+            return jsonify({"message": f"Profile '{name}' {state_word}", "enabled": new_state})
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
 

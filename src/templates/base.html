@@ -116,6 +116,14 @@ td {
 
 tr:hover td { background: var(--bg1); }
 
+/* Disabled profile row styling */
+.profile-row.disabled td {
+  opacity: 0.45;
+}
+.profile-row.disabled:hover td {
+  background: transparent;
+}
+
 /* ── Buttons ────────────────────────────────────────────── */
 .btn {
   display: inline-block;
@@ -149,6 +157,15 @@ tr:hover td { background: var(--bg1); }
 .btn-secondary:hover { background: var(--bg1); }
 
 .btn-sm { padding: 3px 8px; font-size: 11px; }
+
+/* Toggle button styles */
+.toggle-btn:not(.btn-secondary) {
+  background: var(--green);
+  color: var(--bg0);
+}
+.toggle-btn:not(.btn-secondary):hover {
+  opacity: .85;
+}
 
 /* ── Forms ──────────────────────────────────────────────── */
 label {
@@ -411,6 +428,11 @@ textarea { resize: vertical; }
       </div>
 
       <div class="form-row" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="enabled" id="profile_enabled" checked style="width:auto;">
+        <label for="profile_enabled" style="margin:0;text-transform:none;font-size:13px;color:var(--fg);">Enabled (schedule active)</label>
+      </div>
+
+      <div class="form-row" style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" name="use_tts" id="use_tts" checked style="width:auto;">
         <label for="use_tts" style="margin:0;text-transform:none;font-size:13px;color:var(--fg);">Enable TTS</label>
       </div>
@@ -459,6 +481,7 @@ function openModal(edit) {
     form.querySelector('[name="min_words"]').value = row.dataset.minWords || 30;
     form.querySelector('[name="max_words"]').value = row.dataset.maxWords || 150;
     form.querySelector('[name="use_tts"]').checked = row.dataset.useTts !== 'false';
+    form.querySelector('[name="enabled"]').checked = row.dataset.enabled !== 'false';
     document.getElementById('form-edit-name').value = row.dataset.name || '';
   } else {
     document.getElementById('modal-title').textContent = 'Add Profile';
@@ -468,6 +491,7 @@ function openModal(edit) {
     form.querySelector('[name="min_words"]').value = 30;
     form.querySelector('[name="max_words"]').value = 150;
     form.querySelector('[name="use_tts"]').checked = true;
+    form.querySelector('[name="enabled"]').checked = true;
     form.querySelector('[name="schedule_tz"]').value = 'Europe/Berlin';
   }
 }
@@ -476,7 +500,7 @@ function closeModal() {
   document.getElementById('profile-modal').classList.remove('visible');
 }
 
-// ── HTMX response handling for profile form ─────────────
+// ── HTMX response handling for profile form & toggle ───
 document.addEventListener('htmx:afterRequest', function(evt) {
   if (evt.detail.failedSwap) {
     showToast('Save failed — check console', true);
@@ -487,9 +511,36 @@ document.addEventListener('htmx:afterRequest', function(evt) {
     try {
       const data = JSON.parse(xhr.responseText);
       showToast(data.message || 'Saved', false);
-      closeModal();
-      // Reload page to reflect changes
-      setTimeout(() => location.reload(), 600);
+
+      // Handle toggle response — update button in place
+      if (data.enabled !== undefined) {
+        const profileName = evt.detail.requestConfig ? '' : '';
+        // Find the toggle button and update it
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+          const btnProfile = btn.dataset.profile;
+          // We need to figure out which profile was toggled from the URL
+        });
+        const urlParts = (evt.detail.requestConfig || {}).path ? (evt.detail.requestConfig.path || '').split('/') : [];
+        const toggledName = urlParts[urlParts.length - 2] || '';
+        const btn = document.querySelector(`.toggle-btn[data-profile="${toggledName}"]`);
+        if (btn) {
+          if (data.enabled) {
+            btn.className = 'btn btn-sm toggle-btn';
+            btn.textContent = '✓ Enabled';
+            btn.removeAttribute('hx-post');
+            // Re-add HTMX handler
+            htmx.defineExtension('toggle-ext', {});
+            btn.setAttribute('hx-post', `/api/profiles/${toggledName}/toggle`);
+          } else {
+            btn.className = 'btn btn-secondary btn-sm toggle-btn';
+            btn.textContent = '✗ Disabled';
+            btn.setAttribute('hx-post', `/api/profiles/${toggledName}/toggle`);
+          }
+        }
+      } else {
+        closeModal();
+        setTimeout(() => location.reload(), 600);
+      }
     } catch(e) {
       // If not JSON, it's an HTML redirect — just reload
       location.reload();

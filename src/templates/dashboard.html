@@ -29,6 +29,7 @@
   <thead>
     <tr>
       <th>Name</th>
+      <th>Enabled</th>
       <th>Source → Target</th>
       <th>Chat ID</th>
       <th>Schedule</th>
@@ -40,7 +41,7 @@
   <tbody>
     {% if profiles %}
     {% for name, p in profiles.items() %}
-    <tr class="profile-row"
+    <tr class="profile-row {{ 'disabled' if not p.get('enabled', true) }}"
         data-name="{{ name }}"
         data-chat-id="{{ p.telegram_chat_id or '' }}"
         data-native-language="{{ p.native_language or 'en' }}"
@@ -51,8 +52,16 @@
         data-tts-voice="{{ p.tts_voice or 'male' }}"
         data-min-words="{{ (p.article_filter or {}).get('min_words',30) }}"
         data-max-words="{{ (p.article_filter or {}).get('max_words',150) }}"
-        data-use-tts="{{ p.get('use_tts', true) }}">
+        data-use-tts="{{ p.get('use_tts', true) }}"
+        data-enabled="{{ p.get('enabled', true) }}">
       <td><strong>{{ name }}</strong></td>
+      <td>
+        {% if p.get('enabled', true) %}
+          <button class="btn btn-sm toggle-btn" hx-post="/api/profiles/{{ name }}/toggle" data-profile="{{ name }}">✓ Enabled</button>
+        {% else %}
+          <button class="btn btn-secondary btn-sm toggle-btn" hx-post="/api/profiles/{{ name }}/toggle" data-profile="{{ name }}">✗ Disabled</button>
+        {% endif %}
+      </td>
       <td>{{ p.native_language or '?' }} → {{ (p.get('learning_language') or '?') }}</td>
       <td style="color:var(--fg_dim)">{{ p.telegram_chat_id or '—' }}</td>
       <td>
@@ -72,7 +81,7 @@
     </tr>
     {% endfor %}
     {% else %}
-    <tr><td colspan="7" style="text-align:center;color:var(--fg_dim);padding:32px;">No profiles — click + Add Profile to start</td></tr>
+    <tr><td colspan="8" style="text-align:center;color:var(--fg_dim);padding:32px;">No profiles — click + Add Profile to start</td></tr>
     {% endif %}
   </tbody>
 </table>

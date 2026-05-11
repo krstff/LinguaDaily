@@ -92,10 +92,13 @@ class LessonScheduler:
     def get_scheduled_profiles(self) -> list[tuple[str, dict]]:
         """
         Return list of (profile_name, profile_config) for all profiles
-        that have a schedule configured.
+        that are enabled and have a schedule configured.
         """
         results = []
         for name, profile in self.config.get("profiles", {}).items():
+            # Skip disabled profiles
+            if not profile.get("enabled", True):
+                continue
             schedule = profile.get("schedule")
             if schedule and schedule.get("time"):
                 results.append((name, profile))
