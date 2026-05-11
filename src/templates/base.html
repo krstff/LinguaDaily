@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}LinguaDaily{% endblock %}</title>
+<style>
+/* ── Gruvbox dark palette ──────────────────────────────── */
+:root {
+  --bg:      #282828;
+  --bg0:     #1d2021;
+  --bg1:     #3c3836;
+  --bg2:     #504945;
+  --fg:      #ebdbb2;
+  --fg_dim:  #928374;
+  --green:   #b8bb26;
+  --red:     #fb4934;
+  --yellow:  #fabd2f;
+  --blue:    #83a598;
+  --purple:  #d3869b;
+  --aqua:    #8ec07c;
+  --orange:  #fe8019;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Top navigation bar ─────────────────────────────────── */
+nav {
+  background: var(--bg0);
+  border-bottom: 2px solid var(--bg2);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  height: 48px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+nav .logo {
+  color: var(--green);
+  font-weight: bold;
+  font-size: 15px;
+  margin-right: 32px;
+  white-space: nowrap;
+}
+
+nav .logo span { color: var(--fg_dim); }
+
+nav a {
+  color: var(--fg_dim);
+  text-decoration: none;
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  transition: all .15s;
+}
+
+nav a:hover { background: var(--bg1); color: var(--fg); }
+nav a.active { background: var(--bg1); color: var(--blue); }
+
+/* ── Main content area ──────────────────────────────────── */
+.container {
+  max-width: 1100px;
+  margin: 24px auto;
+  padding: 0 24px;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.subtitle {
+  color: var(--fg_dim);
+  font-size: 12px;
+  margin-bottom: 20px;
+}
+
+/* ── Tables ─────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg0);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+th {
+  background: var(--bg2);
+  color: var(--fg_dim);
+  font-weight: normal;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+td {
+  padding: 10px 14px;
+  border-top: 1px solid var(--bg1);
+  vertical-align: middle;
+}
+
+tr:hover td { background: var(--bg1); }
+
+/* ── Buttons ────────────────────────────────────────────── */
+.btn {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  text-decoration: none;
+  transition: all .15s;
+}
+
+.btn-primary {
+  background: var(--green);
+  color: var(--bg0);
+}
+.btn-primary:hover { opacity: .85; }
+
+.btn-danger {
+  background: transparent;
+  color: var(--red);
+  border-color: var(--red);
+}
+.btn-danger:hover { background: var(--red); color: var(--bg0); }
+
+.btn-secondary {
+  background: var(--bg2);
+  color: var(--fg);
+}
+.btn-secondary:hover { background: var(--bg1); }
+
+.btn-sm { padding: 3px 8px; font-size: 11px; }
+
+/* ── Forms ──────────────────────────────────────────────── */
+label {
+  display: block;
+  color: var(--fg_dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  margin-bottom: 4px;
+}
+
+input[type="text"], input[type="number"], input[type="password"],
+select, textarea {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--bg2);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--blue);
+}
+
+textarea { resize: vertical; }
+
+.form-row { margin-bottom: 14px; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+/* ── Status badges ──────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.badge-active { background: var(--green); color: var(--bg0); }
+.badge-inactive { background: var(--bg2); color: var(--fg_dim); }
+
+/* ── Log viewer ─────────────────────────────────────────── */
+.log-container {
+  background: var(--bg0);
+  border-radius: 6px;
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  max-height: 75vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-container .debug   { color: var(--fg_dim); }
+.log-container .info    { color: var(--green); }
+.log-container .warning { color: var(--yellow); }
+.log-container .error   { color: var(--red); }
+.log-container .critical{ color: var(--red); font-weight: bold; }
+
+/* ── Toolbar row ────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.toolbar select {
+  width: auto;
+  min-width: 120px;
+}
+
+/* ── Modal overlay ──────────────────────────────────────── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.7);
+  z-index: 200;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal-overlay.visible { display: flex; }
+
+.modal {
+  background: var(--bg1);
+  border-radius: 8px;
+  padding: 24px;
+  width: 90%;
+  max-width: 650px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.modal h2 {
+  font-size: 15px;
+  margin-bottom: 16px;
+  color: var(--blue);
+}
+
+/* ── Toast notifications ────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 300;
+}
+
+.toast {
+  background: var(--bg1);
+  border-left: 3px solid var(--green);
+  padding: 10px 16px;
+  margin-top: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  animation: fadeIn .2s ease;
+}
+
+.toast.error { border-left-color: var(--red); }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+
+/* ── Stats row ──────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg0);
+  border-radius: 6px;
+  padding: 14px;
+  text-align: center;
+}
+
+.stat-card .value {
+  font-size: 24px;
+  font-weight: bold;
+  color: var(--blue);
+}
+
+.stat-card .label {
+  font-size: 11px;
+  color: var(--fg_dim);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 600px) {
+  nav { padding: 0 12px; }
+  nav .logo { margin-right: 12px; font-size: 13px; }
+  nav a { padding: 6px 10px; font-size: 12px; }
+  .container { padding: 0 12px; margin: 16px auto; }
+  td, th { padding: 8px 10px; font-size: 12px; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">LinguaDaily <span>admin</span></div>
+  <a href="/" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/logs" {% if active == 'logs' %}class="active"{% endif %}>Logs</a>
+  <a href="/config" {% if active == 'config' %}class="active"{% endif %}>Config</a>
+</nav>
+<div class="container">
+{% block content %}{% endblock %}
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<!-- ── Add/Edit Profile Modal ───────────────────────────── -->
+<div class="modal-overlay" id="profile-modal">
+  <div class="modal">
+    <h2 id="modal-title">Add Profile</h2>
+    <form id="profile-form" hx-post="/api/profiles" hx-encoding="multipart/form-data">
+      <input type="hidden" name="action" id="form-action" value="add">
+      <input type="hidden" name="edit_name" id="form-edit-name" value="">
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Name</label>
+          <input type="text" name="name" required placeholder="e.g. krystof">
+        </div>
+        <div class="form-row">
+          <label>Telegram Chat ID</label>
+          <input type="text" name="telegram_chat_id" placeholder="e.g. 8218069709">
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Source Language</label>
+          <select name="source_lang">
+            {% for lang in ['en','de','es','it','hu','cs'] %}
+            <option value="{{ lang }}">{{ lang }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Target Language</label>
+          <select name="target_lang">
+            {% for lang in ['de','it','es','hu','cs'] %}
+            <option value="{{ lang }}">{{ lang }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Target Language Name</label>
+          <input type="text" name="target_lang_name" placeholder="e.g. German">
+        </div>
+        <div class="form-row">
+          <label>Content Language</label>
+          <input type="text" name="content_lang" placeholder="e.g. de">
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Source Type</label>
+          <select name="source">
+            <option value="wikipedia">Wikipedia</option>
+            <option value="news">News (RSS)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Schedule Time</label>
+          <input type="text" name="schedule_time" placeholder="08:00">
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Timezone</label>
+          <input type="text" name="schedule_tz" placeholder="Europe/Berlin" value="Europe/Berlin">
+        </div>
+        <div class="form-row">
+          <label>TTS Voice</label>
+          <select name="tts_voice">
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Min Words</label>
+          <input type="number" name="min_words" value="30">
+        </div>
+        <div class="form-row">
+          <label>Max Words</label>
+          <input type="number" name="max_words" value="150">
+        </div>
+      </div>
+
+      <div class="form-row" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="use_tts" id="use_tts" checked style="width:auto;">
+        <label for="use_tts" style="margin:0;text-transform:none;font-size:13px;color:var(--fg);">Enable TTS</label>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Profile</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── HTMX library (was missing — this was the bug!) ───── -->
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+<script>
+// ── Toast notifications ────────────────────────────────
+function showToast(msg, isError) {
+  const c = document.getElementById('toasts');
+  const t = document.createElement('div');
+  t.className = 'toast' + (isError ? ' error' : '');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ── Modal helpers ───────────────────────────────────────
+function openModal(edit) {
+  const modal = document.getElementById('profile-modal');
+  const form = document.getElementById('profile-form');
+  modal.classList.add('visible');
+
+  if (edit) {
+    document.getElementById('modal-title').textContent = 'Edit Profile';
+    document.getElementById('form-action').value = 'edit';
+    // Populate form fields from data-* attributes on the row
+    const row = edit;
+    form.querySelector('[name="name"]').value = row.dataset.name || '';
+    form.querySelector('[name="telegram_chat_id"]').value = row.dataset.chatId || '';
+    form.querySelector('[name="source_lang"]').value = row.dataset.sourceLang || 'en';
+    form.querySelector('[name="target_lang"]').value = row.dataset.targetLang || 'de';
+    form.querySelector('[name="target_lang_name"]').value = row.dataset.targetName || '';
+    form.querySelector('[name="content_lang"]').value = row.dataset.contentLang || '';
+    form.querySelector('[name="source"]').value = row.dataset.source || 'wikipedia';
+    form.querySelector('[name="schedule_time"]').value = row.dataset.schedTime || '';
+    form.querySelector('[name="schedule_tz"]').value = row.dataset.schedTz || 'Europe/Berlin';
+    form.querySelector('[name="tts_voice"]').value = row.dataset.ttsVoice || 'male';
+    form.querySelector('[name="min_words"]').value = row.dataset.minWords || 30;
+    form.querySelector('[name="max_words"]').value = row.dataset.maxWords || 150;
+    form.querySelector('[name="use_tts"]').checked = row.dataset.useTts !== 'false';
+    document.getElementById('form-edit-name').value = row.dataset.name || '';
+  } else {
+    document.getElementById('modal-title').textContent = 'Add Profile';
+    document.getElementById('form-action').value = 'add';
+    document.getElementById('form-edit-name').value = '';
+    form.reset();
+    form.querySelector('[name="min_words"]').value = 30;
+    form.querySelector('[name="max_words"]').value = 150;
+    form.querySelector('[name="use_tts"]').checked = true;
+    form.querySelector('[name="schedule_tz"]').value = 'Europe/Berlin';
+  }
+}
+
+function closeModal() {
+  document.getElementById('profile-modal').classList.remove('visible');
+}
+
+// ── HTMX response handling for profile form ─────────────
+document.addEventListener('htmx:afterRequest', function(evt) {
+  if (evt.detail.failedSwap) {
+    showToast('Save failed — check console', true);
+    return;
+  }
+  const xhr = evt.detail.xhr;
+  if (xhr && xhr.status === 200) {
+    try {
+      const data = JSON.parse(xhr.responseText);
+      showToast(data.message || 'Saved', false);
+      closeModal();
+      // Reload page to reflect changes
+      setTimeout(() => location.reload(), 600);
+    } catch(e) {
+      // If not JSON, it's an HTML redirect — just reload
+      location.reload();
+    }
+  } else if (xhr && xhr.status >= 400) {
+    try {
+      const data = JSON.parse(xhr.responseText);
+      showToast(data.message || 'Error', true);
+    } catch(e) {
+      showToast('Save failed', true);
+    }
+  }
+});
+
+// Close modal on overlay click
+document.getElementById('profile-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+</script>
+</body>
+</html>

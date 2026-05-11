@@ -32,6 +32,7 @@ class LinguaDaemon:
         self.config = config
         self.bot = None
         self.scheduler = None
+        self.web_server = None
         self._shutdown_event = asyncio.Event()
 
     def _load_config(self, path=None):
@@ -64,7 +65,7 @@ class LinguaDaemon:
         ))
         root.addHandler(file_handler)
 
-    def _print_banner(self):
+    def _print_banner(self, web_ui_host=None, web_ui_port=None):
         """Print startup banner with config summary."""
         profiles = self.config.get("profiles", {})
         scheduled = [(n, p["schedule"]) for n, p in profiles.items()
@@ -96,11 +97,14 @@ class LinguaDaemon:
         else:
             print("  LLM:        ⚠️  not configured — translation/tutor disabled")
 
+        if web_ui_host and web_ui_port:
+            print(f"  Web UI:     http://{web_ui_host}:{web_ui_port}")
+
         print("=" * 60)
 
-    async def start(self):
+    async def start(self, web_ui_host=None, web_ui_port=None):
         """Start all services concurrently."""
-        self._print_banner()
+        self._print_banner(web_ui_host, web_ui_port)
 
         # ── Start Telegram bot (if configured) ─────────────────────
         tg_token = self.config.get("telegram", {}).get("bot_token") or os.environ.get(
@@ -126,7 +130,12 @@ class LinguaDaemon:
             delivery_callback=delivery_callback,
         )
 
-        # ── Run both concurrently ───────────────────────────────────
+        # ── Start web UI (if requested) ────────────────────────────
+        if web_ui_host and web_ui_port:
+            logger.info("Starting Web UI on %s:%s...", web_ui_host, web_ui_port)
+            self._start_web_ui(web_ui_host, web_ui_port)
+
+        # ── Run concurrently ───────────────────────────────────────
         tasks = []
 
         # Telegram bot (polling loop)
@@ -184,9 +193,39 @@ class LinguaDaemon:
         """Block until shutdown event is set."""
         await self._shutdown_event.wait()
 
+    def _start_web_ui(self, host, port):
+        """Start the web UI in a background thread."""
+        try:
+            from web_ui import create_app
+            import threading
+
+            web_password = self.config.get("web_ui", {}).get("password")
+            flask_app = create_app(
+                config_path=str(CONFIG_PATH),
+                log_file=str(LOG_FILE),
+                password=web_password,
+            )
+
+            from werkzeug.serving import make_server
+            self.web_server = make_server(host, port, flask_app, threaded=True)
+            thread = threading.Thread(target=self.web_server.serve_forever, daemon=True)
+            thread.start()
+            logger.info("Web UI started on http://%s:%d", host, port)
+        except ImportError:
+            logger.error("Flask not installed — web UI unavailable (pip install flask)")
+        except Exception as e:
+            logger.error("Failed to start Web UI: %s", e)
+
     async def stop(self):
         """Gracefully shut down all services."""
         logger.info("Shutting down...")
+
+        # Shut down web server
+        if self.web_server:
+            try:
+                self.web_server.shutdown()
+            except Exception as e:
+                logger.warning("Web UI shutdown error: %s", e)
 
         # Cancel the bot task
         if self.bot:
@@ -233,6 +272,12 @@ def main():
                         help="Path to config.json")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
+    parser.add_argument("--web-ui", action="store_true", default=False,
+                        help="Start the admin web UI")
+    parser.add_argument("--web-host", default="127.0.0.1",
+                        help="Web UI bind address (default: 127.0.0.1)")
+    parser.add_argument("--web-port", type=int, default=8089,
+                        help="Web UI port (default: 8089)")
     args = parser.parse_args()
 
     # Load and validate config
@@ -261,7 +306,10 @@ def main():
 
     # Run
     try:
-        asyncio.run(daemon.start())
+        asyncio.run(daemon.start(
+            web_ui_host=args.web_host if args.web_ui else None,
+            web_ui_port=args.web_port if args.web_ui else None,
+        ))
     except KeyboardInterrupt:
         logger.info("Interrupted by keyboard")
 

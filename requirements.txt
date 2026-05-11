@@ -12,3 +12,6 @@ httpx>=0.28.0            # Async HTTP client (LLM, TTS via OpenAI compat)
 
 # LLM / TTS (OpenAI-compatible API)
 openai>=2.36.0           # Client for local LLM (translation, vocab, tutor) + TTS
+
+# Web UI (optional — use --web-ui flag)
+flask>=3.0.0             # Admin panel for config management + log viewer

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Logs — LinguaDaily{% endblock %}
+
+{% block content %}
+<h1>Logs</h1>
+<p class="subtitle">Live tail of lingua.log — auto-refreshes every 3s</p>
+
+<div class="toolbar">
+  <select id="log-level-filter" hx-get="/api/logs/tail" hx-target="#log-output"
+          hx-trigger="change" hx-vals='{"level": "ALL"}'>
+    <option value="ALL" selected>All Levels</option>
+    <option value="DEBUG">Debug</option>
+    <option value="INFO">Info</option>
+    <option value="WARNING">Warning</option>
+    <option value="ERROR">Error</option>
+  </select>
+
+  <input type="hidden" id="log-lines-input" name="lines" value="200">
+  <input type="hidden" id="log-level-input" name="level" value="ALL">
+
+  <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:13px;color:var(--fg);margin:0;">
+    <input type="checkbox" id="follow-toggle" checked style="width:auto;"> Follow
+  </label>
+
+  <button class="btn btn-secondary btn-sm" hx-get="/api/logs/tail" hx-target="#log-output">Refresh</button>
+</div>
+
+<div class="log-container" id="log-output"
+     hx-get="/api/logs/tail"
+     hx-trigger="every 3s"
+     hx-swap="innerHTML">
+  Loading…
+</div>
+
+<script>
+// Auto-scroll when follow is enabled
+document.addEventListener('htmx:afterSwap', function(evt) {
+  if (evt.detail.target.id === 'log-output') {
+    const container = document.getElementById('log-output');
+    const follow = document.getElementById('follow-toggle').checked;
+    if (follow && container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+});
+
+// Update hidden inputs when filter changes
+document.getElementById('log-level-filter').addEventListener('change', function() {
+  document.getElementById('log-level-input').value = this.value;
+});
+
+// Pass query params via hx-vals on the log container
+htmx.on('#log-output', 'htmx:configRequest', function(evt) {
+  evt.parameters.level = document.getElementById('log-level-input').value;
+  evt.parameters.lines = document.getElementById('log-lines-input').value;
+});
+</script>
+{% endblock %}

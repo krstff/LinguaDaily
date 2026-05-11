@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — LinguaDaily{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">Manage user profiles and schedule settings</p>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="value">{{ profile_count }}</div>
+    <div class="label">Profiles</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ scheduled_count }}</div>
+    <div class="label">Scheduled</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ lang_count }}</div>
+    <div class="label">Target Languages</div>
+  </div>
+</div>
+
+<div class="toolbar">
+  <button class="btn btn-primary" onclick="openModal(null)">+ Add Profile</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Source → Target</th>
+      <th>Chat ID</th>
+      <th>Schedule</th>
+      <th>TTS</th>
+      <th>Source</th>
+      <th style="width:160px;">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% if profiles %}
+    {% for name, p in profiles.items() %}
+    <tr class="profile-row"
+        data-name="{{ name }}"
+        data-chat-id="{{ p.telegram_chat_id or '' }}"
+        data-source-lang="{{ p.source_lang or 'en' }}"
+        data-target-lang="{{ p.target_lang or '' }}"
+        data-target-name="{{ p.target_lang_name or '' }}"
+        data-content-lang="{{ p.content_lang or '' }}"
+        data-source="{{ p.source or 'wikipedia' }}"
+        data-sched-time="{{ (p.schedule or {}).get('time','') }}"
+        data-sched-tz="{{ (p.schedule or {}).get('tz','Europe/Berlin') }}"
+        data-tts-voice="{{ p.tts_voice or 'male' }}"
+        data-min-words="{{ (p.article_filter or {}).get('min_words',30) }}"
+        data-max-words="{{ (p.article_filter or {}).get('max_words',150) }}"
+        data-use-tts="{{ p.get('use_tts', true) }}">
+      <td><strong>{{ name }}</strong></td>
+      <td>{{ p.source_lang or '?' }} → {{ p.target_lang_name or p.target_lang or '?' }}</td>
+      <td style="color:var(--fg_dim)">{{ p.telegram_chat_id or '—' }}</td>
+      <td>
+        {% if p.schedule and p.schedule.time %}
+          <span class="badge badge-active">{{ p.schedule.time }} {{ (p.schedule.tz or '').split('/')[-1] or '' }}</span>
+        {% else %}
+          <span class="badge badge-inactive">not scheduled</span>
+        {% endif %}
+      </td>
+      <td>{{ '✅ ' ~ (p.tts_voice or '?') if p.get('use_tts', true) else '—' }}</td>
+      <td>{{ p.source or '?' }}</td>
+      <td>
+        <button class="btn btn-secondary btn-sm" onclick="openModal(this.closest('tr'))">Edit</button>
+        <button class="btn btn-danger btn-sm" hx-delete="/api/profiles/{{ name }}"
+                hx-confirm="Delete profile '{{ name }}'?">Delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+    {% else %}
+    <tr><td colspan="7" style="text-align:center;color:var(--fg_dim);padding:32px;">No profiles — click + Add Profile to start</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}
