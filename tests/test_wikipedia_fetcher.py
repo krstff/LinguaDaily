@@ -25,7 +25,10 @@ class TestSmartTruncate:
     def test_section_level_truncation(self):
         st, ss, sa_s, sa_p = self._get_func()
         # Use ==Header== format (no spaces around text) to match wiki regex
-        text = "==Intro==\n" + "A " * 200 + "\n\n==Details==\n" + "B " * 500 + "\n\n==Outro==\n" + "C " * 100
+        # Intro: ~280 words (fits within min=250, max=400)
+        # Details: ~350 words (would exceed max when added to Intro)
+        # Outro: ~100 words
+        text = "==Intro==\n" + "A " * 280 + "\n\n==Details==\n" + "B " * 350 + "\n\n==Outro==\n" + "C " * 100
         result = st(text, max_words=400, min_words=250)
         assert result is not None
         words = len(result.split())

@@ -132,12 +132,15 @@ class TestFetchFeed:
 
     @patch("src.news_fetcher.feedparser")
     def test_fetch_feed_success(self, mock_fp, fetcher):
+        body_html = "<p>" + "word " * 300 + "</p>"
         mock_entry = MagicMock()
-        mock_entry.title = "Test Article"
-        mock_entry.content = [{"type": "html", "value": "<p>" + "word " * 300 + "</p>"}]
-        mock_entry.description = ""
-        mock_entry.link = "http://example.com/article"
-        mock_entry.published = "2026-01-01"
+        mock_entry.get.side_effect = lambda key, default=None: {
+            "title": "Test Article",
+            "content": [{"type": "html", "value": body_html}],
+            "description": "",
+            "link": "http://example.com/article",
+            "published": "2026-01-01",
+        }.get(key, default)
 
         mock_feed = MagicMock()
         mock_feed.entries = [mock_entry]
@@ -155,8 +158,9 @@ class TestFetchFeed:
 
     @patch("src.news_fetcher.feedparser")
     def test_fetch_feed_failure(self, mock_fp, fetcher):
+        import requests
         with patch.object(fetcher._session, "get") as mock_get:
-            mock_get.side_effect = Exception("Network error")
+            mock_get.side_effect = requests.RequestException("Network error")
             articles = fetcher._fetch_feed("https://broken.com/feed.xml")
         assert articles == []
 
@@ -164,11 +168,13 @@ class TestFetchFeed:
     def test_fetch_feed_prefers_content_encoded(self, mock_fp, fetcher):
         """content:encoded should be preferred over description."""
         mock_entry = MagicMock()
-        mock_entry.title = "Test"
-        mock_entry.content = [{"type": "html", "value": "<p>Full content here</p>"}]
-        mock_entry.description = "Short teaser"
-        mock_entry.link = ""
-        mock_entry.published = ""
+        mock_entry.get.side_effect = lambda key, default=None: {
+            "title": "Test",
+            "content": [{"type": "html", "value": "<p>Full content here</p>"}],
+            "description": "Short teaser",
+            "link": "",
+            "published": "",
+        }.get(key, default)
 
         mock_feed = MagicMock()
         mock_feed.entries = [mock_entry]
@@ -195,12 +201,16 @@ class TestFetchByTopic:
         # Create mock articles with sufficient length
         mock_entries = []
         for i in range(5):
+            body_html = f"<p>word{i} " * 300 + "</p>"
+            entry_data = {
+                "title": f"Article {i}",
+                "content": [{"type": "html", "value": body_html}],
+                "description": "",
+                "link": f"http://example.com/{i}",
+                "published": "",
+            }
             entry = MagicMock()
-            entry.title = f"Article {i}"
-            entry.content = [{"type": "html", "value": f"<p>word{i} " * 300 + "</p>"}]
-            entry.description = ""
-            entry.link = f"http://example.com/{i}"
-            entry.published = ""
+            entry.get.side_effect = lambda key, default=None, d=entry_data: d.get(key, default)
             mock_entries.append(entry)
 
         mock_feed = MagicMock()
@@ -223,12 +233,15 @@ class TestFetchByTopic:
         from src.news_fetcher import NewsFetcher
 
         # All articles too short
+        entry_data = {
+            "title": "Too Short",
+            "content": [{"type": "html", "value": "<p>Brief.</p>"}],
+            "description": "",
+            "link": "",
+            "published": "",
+        }
         entry = MagicMock()
-        entry.title = "Too Short"
-        entry.content = [{"type": "html", "value": "<p>Brief.</p>"}]
-        entry.description = ""
-        entry.link = ""
-        entry.published = ""
+        entry.get.side_effect = lambda key, default=None, d=entry_data: d.get(key, default)
 
         mock_feed = MagicMock()
         mock_feed.entries = [entry]

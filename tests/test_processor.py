@@ -20,11 +20,12 @@ class TestProcessorInit:
         assert str(vocab) in proc.vocab_path
 
     def test_default_vocab_path(self, tmp_path, monkeypatch):
+        from src import config as cfg
+        # Patch PROJECT_DIR so default vocab path resolves under tmp_path
+        monkeypatch.setattr(cfg, "PROJECT_DIR", tmp_path)
         from src.processor import LinguaProcessor
-        # Set up a temp project dir
-        monkeypatch.setattr("src.processor.__file__", str(tmp_path / "processor.py"))
         proc = LinguaProcessor(profile="test_user")
-        assert "test_user" in proc.vocab_path
+        assert "test_user" in str(proc.vocab_path)
 
 
 class TestVocabFile:

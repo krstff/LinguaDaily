@@ -101,7 +101,12 @@ class TestGetScheduledProfiles:
 
 
 class TestDeliveryCallback:
-    """Test that lessons are delivered via callback."""
+    """Test that lessons are delivered via callback.
+
+    With the queue-based scheduler, _build_job() only enqueues — the worker
+    processes items. We use run_once() to exercise the full enqueue→worker
+    cycle end-to-end.
+    """
 
     @pytest.mark.asyncio
     async def test_callback_receives_lesson(self, sample_config):
@@ -117,10 +122,6 @@ class TestDeliveryCallback:
             delivery_callback=mock_delivery,
         )
 
-        # Build and run a job manually
-        profile = sample_config[0]["profiles"]["krystof"]
-        job = scheduler._build_job("krystof", profile)
-
         mock_lesson = {
             "title": "Test",
             "content": "Translated.",
@@ -130,20 +131,20 @@ class TestDeliveryCallback:
         }
 
         async def fake_run_lesson(pname, delivery_callback=None):
-            # Simulate Orchestrator.run_lesson calling the delivery callback
             if delivery_callback:
                 await delivery_callback(pname, mock_lesson)
             return mock_lesson
 
         with patch("orchestrator.Orchestrator") as MockOrch:
-            mock_orch = MagicMock()
+            mock_orch = AsyncMock()
             mock_orch.run_lesson = fake_run_lesson
             MockOrch.return_value = mock_orch
-            await job()
+            await scheduler.run_once()
 
-        assert len(delivery_log) == 1
-        assert delivery_log[0][0] == "krystof"
-        assert delivery_log[0][1]["title"] == "Test"
+        assert len(delivery_log) >= 1
+        krystof_entries = [e for e in delivery_log if e[0] == "krystof"]
+        assert len(krystof_entries) == 1
+        assert krystof_entries[0][1]["title"] == "Test"
 
     @pytest.mark.asyncio
     async def test_callback_error_does_not_crash_pipeline(self, sample_config, caplog):
@@ -157,9 +158,6 @@ class TestDeliveryCallback:
             delivery_callback=failing_delivery,
         )
 
-        profile = sample_config[0]["profiles"]["krystof"]
-        job = scheduler._build_job("krystof", profile)
-
         mock_lesson = {
             "title": "Test",
             "content": "text",
@@ -168,22 +166,23 @@ class TestDeliveryCallback:
             "vocab": [],
         }
 
+        # Simulate run_lesson calling the delivery callback which raises;
+        # the orchestrator catches it and continues
         async def fake_run_lesson(pname, delivery_callback=None):
             try:
                 if delivery_callback:
                     await delivery_callback(pname, mock_lesson)
             except Exception as e:
-                # Orchestrator.run_lesson catches delivery errors internally
                 import logging
                 logger = logging.getLogger("src.scheduler")
                 logger.error("[%s] Delivery failed: %s", pname, e)
             return mock_lesson
 
         with patch("orchestrator.Orchestrator") as MockOrch:
-            mock_orch = MagicMock()
+            mock_orch = AsyncMock()
             mock_orch.run_lesson = fake_run_lesson
             MockOrch.return_value = mock_orch
-            await job()  # should not raise
+            await scheduler.run_once()  # should not raise
 
         assert "Delivery failed" in caplog.text or "Telegram unreachable" in caplog.text
 
@@ -268,9 +267,6 @@ class TestJobBuild:
             delivery_callback=capture,
         )
 
-        profile = sample_config[0]["profiles"]["krystof"]
-        job = scheduler._build_job("krystof", profile)
-
         mock_lesson = {
             "title": "Math",
             "content": "1+1=2",
@@ -285,13 +281,15 @@ class TestJobBuild:
             return mock_lesson
 
         with patch("orchestrator.Orchestrator") as MockOrch:
-            mock_orch = MagicMock()
+            mock_orch = AsyncMock()
             mock_orch.run_lesson = fake_run_lesson
             MockOrch.return_value = mock_orch
-            await job()
+            await scheduler.run_once()
 
-        assert len(delivered) == 1
-        assert delivered[0][0] == "krystof"
+        assert len(delivered) == 2  # krystof + anna
+        krystof_entries = [e for e in delivered if e[0] == "krystof"]
+        assert len(krystof_entries) == 1
+        assert krystof_entries[0][0] == "krystof"
 
 
 class TestEdgeCases:
@@ -317,14 +315,12 @@ class TestEdgeCases:
         from src.scheduler import LessonScheduler
 
         scheduler = LessonScheduler(config=sample_config[0])
-        profile = sample_config[0]["profiles"]["krystof"]
-        job = scheduler._build_job("krystof", profile)
 
         with patch("orchestrator.Orchestrator") as MockOrch:
-            mock_orch = MagicMock()
+            mock_orch = AsyncMock()
             mock_orch.run_lesson = AsyncMock(return_value=None)
             MockOrch.return_value = mock_orch
-            await job()
+            await scheduler.run_once()
 
         assert "returned no result" in caplog.text
 

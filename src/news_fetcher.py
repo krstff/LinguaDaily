@@ -257,6 +257,12 @@ class NewsFetcher:
         result = "\n\n".join(accumulated).strip()
         if len(result.split()) >= min_words:
             return article["title"], result
+
+        # Fallback: hard word-level truncation (for text with no paragraph breaks)
+        words = text.split()
+        truncated = " ".join(words[:max_words])
+        if len(truncated.split()) >= min_words:
+            return article["title"], truncated
         return None
 
     # ── Public API ─────────────────────────────────────────────────
