@@ -31,9 +31,11 @@ Usage (CLI):
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -276,6 +278,50 @@ class TelegramBot:
             return text
         return text[:self._TG_SAFE_TRUNCATE] + suffix
 
+    def _escape_html(self, text: str) -> str:
+        """Escape text for Telegram HTML parse mode.
+
+        Telegram HTML parser requires &, <, > to be escaped as entities.
+        (This is a subset of full HTML escaping — enough for TG.)
+        """
+        return html.escape(text, quote=False)
+
+    def _highlight_words(self, text: str, words: list) -> str:
+        """Bold vocabulary words inside the original text.
+
+        Uses case-insensitive whole-word matching so that 'Haus' won't
+        match inside 'Haustür'.  Words are sorted longest-first to avoid
+        partial-match issues (e.g. 'Tag' matching before 'Enttag').
+        """
+        if not words:
+            return text
+
+        # Build a set of lowercased word stems for quick lookup
+        word_set = {str(w).strip().lower() for w in words if str(w).strip()}
+        if not word_set:
+            return text
+
+        # Escape special regex chars and sort longest-first
+        escaped = [re.escape(w) for w in word_set]
+        escaped.sort(key=len, reverse=True)
+
+        pattern = re.compile(
+            r'\b(' + '|'.join(escaped) + r')\b',
+            re.IGNORECASE,
+        )
+
+        def _replace(match):
+            return f"<b>{match.group(0)}</b>"
+
+        return pattern.sub(_replace, text)
+
+    def _format_text_for_telegram(self, text: str) -> str:
+        """Escape plain text for Telegram HTML messages and normalise line breaks."""
+        safe = self._escape_html(text)
+        # Telegram HTML uses <br> or double-space+newline for line breaks;
+        # we keep \n\n as-is (Telegram renders them fine in HTML mode).
+        return safe
+
     async def deliver_lesson(self, profile_name: str, lesson: dict):
         """
         Deliver a completed lesson to the user's Telegram chat as four messages:
@@ -314,45 +360,70 @@ class TelegramBot:
             "learning_language_name", "?")
         native_language = lesson.get("native_language", "?")
 
-        # ── Message 1: Original text ──────────────────────────────
-        msg1 = f"📰 {title}\n\n"
-        msg1 += f"Original ({learning_language_name})\n\n"
-        msg1 += self._truncate_for_telegram(original_content)
+        # Extract word stems for highlighting in the original text
+        vocab_words = []
+        for entry in vocab:
+            if isinstance(entry, dict):
+                w = entry.get("word", "")
+                if w:
+                    vocab_words.append(w)
+            else:
+                vocab_words.append(str(entry))
+
+        # ── Message 1: Original text (vocab words highlighted) ────
+        highlighted = self._highlight_words(original_content, vocab_words)
+        msg1 = f"📰 <b>{self._escape_html(title)}</b>\n\n"
+        msg1 += f"Original ({self._escape_html(learning_language_name)})\n\n"
+        msg1 += self._truncate_for_telegram(self._format_text_for_telegram(highlighted))
 
         try:
-            await bot.send_message(chat_id=chat_id, text=msg1)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=msg1,
+                parse_mode="HTML",
+            )
             logger.info("Delivered original text for '%s' to chat %d",
                         title, chat_id)
         except Exception as e:
             logger.error("Failed to send original text: %s", e)
 
         # ── Message 2: Translation ────────────────────────────────
-        msg2 = f"🌐 Translation ({native_language})\n\n"
-        msg2 += self._truncate_for_telegram(translated_content, "\n…")
+        msg2 = f"🌐 Translation ({self._escape_html(native_language)})\n\n"
+        msg2 += self._truncate_for_telegram(
+            self._format_text_for_telegram(translated_content), "\n…")
 
         try:
-            await bot.send_message(chat_id=chat_id, text=msg2)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=msg2,
+                parse_mode="HTML",
+            )
             logger.info("Delivered translation for '%s' to chat %d",
                         title, chat_id)
         except Exception as e:
             logger.error("Failed to send translation message: %s", e)
 
-        # ── Message 3: Vocabulary ─────────────────────────────────
+        # ── Message 3: Vocabulary (bold words, italic examples) ───
         if vocab:
             vocab_lines = []
             for entry in vocab:
                 if isinstance(entry, dict):
-                    word = entry.get("word", "")
-                    meaning = entry.get("meaning", entry.get("definition", ""))
+                    word = self._escape_html(entry.get("word", ""))
+                    meaning = self._escape_html(
+                        entry.get("meaning", entry.get("definition", "")))
                     example = entry.get("example", "")
                     if example:
-                        vocab_lines.append(f"  • {word} — {meaning}\n    «{example}»")
+                        # word in bold, meaning plain, example sentence in italic
+                        vocab_lines.append(
+                            f"  • <b>{word}</b> — {meaning}\n"
+                            f"    <i>{self._escape_html(example)}</i>")
                     else:
-                        vocab_lines.append(f"  • {word} — {meaning}")
+                        vocab_lines.append(f"  • <b>{word}</b> — {meaning}")
                 else:
-                    vocab_lines.append(f"  • {entry}")
+                    vocab_lines.append(
+                        f"  • <b>{self._escape_html(str(entry))}</b>")
 
-            msg3 = f"📝 Vocabulary ({len(vocab)} words)\n"
+            msg3 = f"📝 <b>Vocabulary ({len(vocab)} words)</b>\n"
             msg3 += "\n".join(vocab_lines)
 
             if len(msg3) > self._TG_MAX_MSG_LEN:
@@ -361,7 +432,11 @@ class TelegramBot:
                 msg3 = msg3[:self._TG_SAFE_TRUNCATE] + "\n…"
 
             try:
-                await bot.send_message(chat_id=chat_id, text=msg3)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg3,
+                    parse_mode="HTML",
+                )
                 logger.info("Delivered vocabulary for '%s' to chat %d",
                             title, chat_id)
             except Exception as e:
@@ -453,12 +528,19 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to write chat history for %s: %s", chat_id, e)
 
-        # Send reply (truncate for Telegram limit)
+        # Send reply formatted for Telegram HTML (truncate for limit)
         bot = await self._get_aiogram_bot()
         if len(reply) > 4000:
             reply = reply[:3997] + "..."
 
-        await bot.send_message(chat_id=chat_id, text=reply)
+        # Escape the tutor reply so it renders safely in HTML mode
+        tg_reply = self._format_text_for_telegram(reply)
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=tg_reply,
+            parse_mode="HTML",
+        )
 
     # ── Command handlers ───────────────────────────────────────────
 
@@ -473,15 +555,15 @@ class TelegramBot:
                 chat_id=chat_id,
                 text=(
                     f"👋 Welcome to Lingua!\n\n"
-                    f"You are registered as *{profile_name}* — learning {lang}.\n\n"
-                    f"Send me a message and I'll tutor you in {lang}.\n"
+                    f"You are registered as <b>{self._escape_html(profile_name)}</b> — learning {self._escape_html(lang)}.\n\n"
+                    f"Send me a message and I'll tutor you in {self._escape_html(lang)}.\n"
                     f"Lessons will be delivered automatically at your scheduled time.\n\n"
                     f"Commands:\n"
                     f"/start — Show this message\n"
                     f"/history clear — Clear chat history\n"
                     f"/status — Show current status"
                 ),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         else:
             await bot.send_message(
@@ -522,13 +604,13 @@ class TelegramBot:
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
-                    f"📊 *Status for {profile_name}*\n\n"
-                    f"Learning: {lang}\n"
-                    f"Schedule: {time_str} ({tz})\n"
+                    f"📊 <b>Status for {self._escape_html(profile_name)}</b>\n\n"
+                    f"Learning: {self._escape_html(lang)}\n"
+                    f"Schedule: {self._escape_html(time_str)} ({self._escape_html(tz)})\n"
                     f"TTS: {'✅' if profile.get('use_tts') else '❌'}\n"
                     f"Telegram ID: {chat_id}"
                 ),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         else:
             await bot.send_message(

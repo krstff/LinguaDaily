@@ -66,6 +66,10 @@ class LinguaDaemon:
         ))
         root.addHandler(file_handler)
 
+        # Silence werkzeug request logs (GET /api/logs/tail floods the console)
+        # but keep errors/warnings visible
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
     def _print_banner(self, web_ui_host=None, web_ui_port=None):
         """Print startup banner with config summary."""
         profiles = self.config.get("profiles", {})
@@ -276,8 +280,8 @@ def main():
                         help="Enable debug logging")
     parser.add_argument("--web-ui", action="store_true", default=False,
                         help="Start the admin web UI")
-    parser.add_argument("--web-host", default="127.0.0.1",
-                        help="Web UI bind address (default: 127.0.0.1)")
+    parser.add_argument("--web-host", default="0.0.0.0",
+                        help="Web UI bind address (default: 0.0.0.0)")
     parser.add_argument("--web-port", type=int, default=8089,
                         help="Web UI port (default: 8089)")
     args = parser.parse_args()
