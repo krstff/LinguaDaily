@@ -346,9 +346,8 @@ class TelegramBot:
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
-                    "⚠️ You are not registered to a profile.\n"
-                    "Use `/register <profile>` or ask an admin to add your "
-                    "Telegram ID to config.json."
+                    "⚠️ You are not registered to a profile. Ask an admin "
+                    "to add your Telegram chat ID via the web UI."
                 ),
             )
             return
@@ -406,71 +405,28 @@ class TelegramBot:
                     f"Lessons will be delivered automatically at your scheduled time.\n\n"
                     f"Commands:\n"
                     f"/start — Show this message\n"
-                    f"/register <profile> — Register to a profile\n"
                     f"/history clear — Clear chat history\n"
                     f"/status — Show current status"
                 ),
                 parse_mode="Markdown",
             )
         else:
-            available = list(self.config.get("profiles", {}).keys())
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
                     "👋 Welcome to Lingua!\n\n"
-                    "You are not registered yet. To start:\n"
-                    f"/register <profile>\n\n"
-                    f"Available profiles: {', '.join(available) if available else 'none'}"
+                    "You are not registered yet. Ask an admin to add your "
+                    "Telegram chat ID to config.json via the web UI."
                 ),
             )
-
-    async def handle_register(self, chat_id: int, args: str):
-        bot = await self._get_aiogram_bot()
-        profile_name = args.strip()
-        profiles = self.config.get("profiles", {})
-
-        if not profile_name:
-            available = list(profiles.keys())
-            await bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    "Usage: /register <profile>\n\n"
-                    f"Available profiles: {', '.join(available) if available else 'none'}"
-                ),
-            )
-            return
-
-        if profile_name not in profiles:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"❌ Profile '{profile_name}' not found.\n\n"
-                    f"Available: {', '.join(profiles.keys())}"
-                ),
-            )
-            return
-
-        self.register_user(chat_id, profile_name)
-        profile = profiles[profile_name]
-        lang = resolve_language_name(
-            profile.get("learning_language", "de"))
-
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"✅ Registered as *{profile_name}*!\n\n"
-                f"You will receive {lang} lessons and can chat with your tutor.\n\n"
-                f"Send me a message to start tutoring!"
-            ),
-            parse_mode="Markdown",
-        )
 
     async def handle_history_clear(self, chat_id: int):
         bot = await self._get_aiogram_bot()
         profile_name = self.resolve_profile(chat_id)
         if not profile_name:
             await bot.send_message(
-                chat_id=chat_id, text="⚠️ You are not registered. Use /register first."
+                chat_id=chat_id,
+                text="⚠️ Not registered. Ask an admin via the web UI."
             )
             return
 
@@ -503,7 +459,8 @@ class TelegramBot:
             )
         else:
             await bot.send_message(
-                chat_id=chat_id, text="⚠️ Not registered. Use /register <profile>."
+                chat_id=chat_id,
+                text="⚠️ Not registered. Ask an admin via the web UI."
             )
 
     # ── aiogram integration ────────────────────────────────────────
@@ -542,12 +499,6 @@ class TelegramBot:
         @dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             await self.handle_start(message.chat.id)
-
-        @dp.message(Command("register"))
-        async def cmd_register(message: types.Message):
-            args = message.text.split(maxsplit=1)
-            payload = args[1] if len(args) > 1 else ""
-            await self.handle_register(message.chat.id, payload)
 
         @dp.message(Command("history"))
         async def cmd_history(message: types.Message):
