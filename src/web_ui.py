@@ -23,7 +23,8 @@ from pathlib import Path
 # ── Ensure src/ is on path for standalone execution ─────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.config import CONFIG_PATH, LOG_FILE, PROJECT_DIR, load_config
+from src.config import (CONFIG_PATH, LOG_FILE, PROJECT_DIR,
+                        resolve_language_name, load_config)
 
 try:
     from flask import Flask, jsonify, render_template, request
@@ -104,7 +105,10 @@ def create_app(config_path=None, log_file=None, password=None):
 
         profiles = config.get("profiles", {})
         scheduled = sum(1 for p in profiles.values() if (p.get("schedule") or {}).get("time"))
-        langs = set(p.get("target_lang") for p in profiles.values() if p.get("target_lang"))
+        langs = set(
+            p.get("learning_language")
+            for p in profiles.values()
+            if p.get("learning_language"))
 
         return render_template("dashboard.html", active="dashboard",
                                profiles=profiles,
@@ -221,11 +225,10 @@ def create_app(config_path=None, log_file=None, password=None):
             return jsonify({"message": "Profile name is required"}), 400
 
         profile_data = {
-            "telegram_chat_id": request.form.get("telegram_chat_id", "").strip() or None,
-            "source_lang": request.form.get("source_lang", "en"),
-            "target_lang": request.form.get("target_lang", ""),
-            "target_lang_name": request.form.get("target_lang_name", "").strip(),
-            "content_lang": request.form.get("content_lang", "").strip(),
+            "telegram_chat_id": request.form.get(
+                "telegram_chat_id", "").strip() or None,
+            "native_language": request.form.get("native_language", "en"),
+            "learning_language": request.form.get("learning_language", ""),
             "source": request.form.get("source", "wikipedia"),
             "article_filter": {
                 "min_words": int(request.form.get("min_words", 30)),

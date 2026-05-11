@@ -354,31 +354,20 @@ textarea { resize: vertical; }
 
       <div class="form-grid">
         <div class="form-row">
-          <label>Source Language</label>
-          <select name="source_lang">
+          <label>Native Language (I understand)</label>
+          <select name="native_language">
             {% for lang in ['en','de','es','it','hu','cs'] %}
             <option value="{{ lang }}">{{ lang }}</option>
             {% endfor %}
           </select>
         </div>
         <div class="form-row">
-          <label>Target Language</label>
-          <select name="target_lang">
+          <label>Learning Language (I want to learn)</label>
+          <select name="learning_language">
             {% for lang in ['de','it','es','hu','cs'] %}
             <option value="{{ lang }}">{{ lang }}</option>
             {% endfor %}
           </select>
-        </div>
-      </div>
-
-      <div class="form-grid">
-        <div class="form-row">
-          <label>Target Language Name</label>
-          <input type="text" name="target_lang_name" placeholder="e.g. German">
-        </div>
-        <div class="form-row">
-          <label>Content Language</label>
-          <input type="text" name="content_lang" placeholder="e.g. de">
         </div>
       </div>
 
@@ -461,10 +450,8 @@ function openModal(edit) {
     const row = edit;
     form.querySelector('[name="name"]').value = row.dataset.name || '';
     form.querySelector('[name="telegram_chat_id"]').value = row.dataset.chatId || '';
-    form.querySelector('[name="source_lang"]').value = row.dataset.sourceLang || 'en';
-    form.querySelector('[name="target_lang"]').value = row.dataset.targetLang || 'de';
-    form.querySelector('[name="target_lang_name"]').value = row.dataset.targetName || '';
-    form.querySelector('[name="content_lang"]').value = row.dataset.contentLang || '';
+    form.querySelector('[name="native_language"]').value = row.dataset.nativeLanguage || 'en';
+    form.querySelector('[name="learning_language"]').value = row.dataset.learningLanguage || 'de';
     form.querySelector('[name="source"]').value = row.dataset.source || 'wikipedia';
     form.querySelector('[name="schedule_time"]').value = row.dataset.schedTime || '';
     form.querySelector('[name="schedule_tz"]').value = row.dataset.schedTz || 'Europe/Berlin';

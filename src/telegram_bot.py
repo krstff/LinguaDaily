@@ -39,7 +39,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
-from config import CONFIG_PATH, DATA_DIR, load_config
+from config import CONFIG_PATH, DATA_DIR, resolve_language_name, load_config
 
 CHAT_DB_PATH = DATA_DIR / "chat_history.db"
 
@@ -253,13 +253,13 @@ class TelegramBot:
         translated_content = lesson.get("content", "")
         vocab = lesson.get("vocab", [])
         wav_path = lesson.get("wav_path")
-        source_lang = lesson.get("source_lang", "?")
-        target_lang = lesson.get("target_lang_name", "?")
-        content_lang = lesson.get("content_lang", "?")
+        learning_language_name = lesson.get(
+            "learning_language_name", "?")
+        native_language = lesson.get("native_language", "?")
 
         # ── Message 1: Original text ──────────────────────────────
         msg1 = f"📰 {title}\n\n"
-        msg1 += f"Original ({content_lang})\n\n"
+        msg1 += f"Original ({learning_language_name})\n\n"
         msg1 += self._truncate_for_telegram(original_content)
 
         try:
@@ -270,7 +270,7 @@ class TelegramBot:
             logger.error("Failed to send original text: %s", e)
 
         # ── Message 2: Translation ────────────────────────────────
-        msg2 = f"🌐 Translation ({target_lang})\n\n"
+        msg2 = f"🌐 Translation ({native_language})\n\n"
         msg2 += self._truncate_for_telegram(translated_content, "\n…")
 
         try:
@@ -354,8 +354,9 @@ class TelegramBot:
             return
 
         profile = self.config.get("profiles", {}).get(profile_name, {})
-        language_name = profile.get("target_lang_name", "German")
-        native_lang = profile.get("source_lang", "English")
+        learning_language = profile.get("learning_language", "de")
+        language_name = resolve_language_name(learning_language)
+        native_lang = profile.get("native_language", "en")
 
         # Get conversation history
         history = self.db.get_history(chat_id, profile_name, max_turns=10)
@@ -394,7 +395,8 @@ class TelegramBot:
         profile_name = self.resolve_profile(chat_id)
         if profile_name:
             profile = self.config.get("profiles", {}).get(profile_name, {})
-            lang = profile.get("target_lang_name", "a language")
+            lang = resolve_language_name(
+                profile.get("learning_language", "de"))
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
@@ -450,7 +452,8 @@ class TelegramBot:
 
         self.register_user(chat_id, profile_name)
         profile = profiles[profile_name]
-        lang = profile.get("target_lang_name", "a language")
+        lang = resolve_language_name(
+            profile.get("learning_language", "de"))
 
         await bot.send_message(
             chat_id=chat_id,
@@ -481,7 +484,8 @@ class TelegramBot:
         profile_name = self.resolve_profile(chat_id)
         if profile_name:
             profile = self.config.get("profiles", {}).get(profile_name, {})
-            lang = profile.get("target_lang_name", "?")
+            lang = resolve_language_name(
+                profile.get("learning_language", "?"))
             schedule = profile.get("schedule", {})
             time_str = schedule.get("time", "not set")
             tz = schedule.get("tz", "not set")

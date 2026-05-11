@@ -14,7 +14,8 @@ import json
 import os
 
 
-def fetch_article(source, topic, config, content_lang=None, article_filter=None):
+def fetch_article(source, topic, config,
+                  learning_language=None, article_filter=None):
     """
     Fetch an article from the given content source.
 
@@ -27,8 +28,8 @@ def fetch_article(source, topic, config, content_lang=None, article_filter=None)
         which uses the /random endpoint.
     config : dict
         Full config.json contents.
-    content_lang : str or None
-        Language code for the desired content (used to pick the right
+    learning_language : str or None
+        Language code to fetch articles in (used to pick the right
         Kiwix server when source is wikipedia).
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
@@ -39,34 +40,37 @@ def fetch_article(source, topic, config, content_lang=None, article_filter=None)
     (title, text) or (None, None) on failure.
     """
     if source == "wikipedia":
-        return _fetch_wikipedia(config, content_lang=content_lang,
+        return _fetch_wikipedia(config,
+                                learning_language=learning_language,
                                 article_filter=article_filter)
     elif source == "news":
         return _fetch_news(topic, config, article_filter=article_filter)
     else:
         print(f"Warning: unknown source '{source}', falling back to wikipedia.")
-        return _fetch_wikipedia(config, content_lang=content_lang,
+        return _fetch_wikipedia(config,
+                                learning_language=learning_language,
                                 article_filter=article_filter)
 
 
 # ── Wikipedia (Kiwix) ───────────────────────────────────────────────
 
-def _fetch_wikipedia(config, content_lang=None, article_filter=None):
+def _fetch_wikipedia(config, learning_language=None,
+                     article_filter=None):
     """Fetch a random Wikipedia article via Kiwix (direct import).
 
     Parameters
     ----------
     config : dict
         Full config.json contents.
-    content_lang : str or None
+    learning_language : str or None
         Language code of the desired content (e.g. "de", "en").
-        If given, resolves Kiwix server from kiwix_servers[content_lang].
+        If given, resolves Kiwix server from kiwix_servers[learning_language].
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
     """
     from wikipedia_fetcher import KiwixClient, load_fetcher_config
 
-    settings = load_fetcher_config(content_lang=content_lang)
+    settings = load_fetcher_config(learning_language=learning_language)
 
     base_url = settings["base_url"]
     zim_name = settings["zim_name"]

@@ -562,7 +562,7 @@ def _accumulate_by_paragraphs(text, max_words, min_words):
 
 def parse_cli_args(args):
     config_path = None
-    content_lang = None
+    learning_language = None
     overrides = {}
     i = 0
     while i < len(args):
@@ -572,17 +572,17 @@ def parse_cli_args(args):
         elif arg == "--config" and i + 1 < len(args):
             config_path = args[i + 1]
             i += 1
-        elif arg == "--content-lang" and i + 1 < len(args):
-            content_lang = args[i + 1]
+        elif arg == "--learning-language" and i + 1 < len(args):
+            learning_language = args[i + 1]
             i += 1
         elif arg in ("--min-words", "--max-words") and i + 1 < len(args):
             overrides[arg.lstrip("-").replace("-", "_")] = int(args[i + 1])
             i += 1
         i += 1
-    return config_path, content_lang, overrides
+    return config_path, learning_language, overrides
 
 
-def load_fetcher_config(config_path=None, content_lang=None):
+def load_fetcher_config(config_path=None, learning_language=None):
     """
     Load fetcher configuration from config.json.
 
@@ -590,9 +590,9 @@ def load_fetcher_config(config_path=None, content_lang=None):
     ----------
     config_path : str or None
         Path to config.json. Defaults to project root.
-    content_lang : str or None
+    learning_language : str or None
         Language code (e.g. "de", "en"). If given, resolves Kiwix server
-        from kiwix_servers[content_lang]. Falls back to legacy top-level
+        from kiwix_servers[learning_language]. Falls back to legacy top-level
         'kiwix' block if not found.
     """
     if config_path is None:
@@ -608,10 +608,10 @@ def load_fetcher_config(config_path=None, content_lang=None):
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
-        # Resolve Kiwix server: prefer kiwix_servers[content_lang], fall back to legacy 'kiwix'
+        # Resolve Kiwix server: prefer kiwix_servers[learning_language], fall back to legacy 'kiwix'
         wiki_cfg = {}
-        if content_lang and "kiwix_servers" in config:
-            wiki_cfg = config["kiwix_servers"].get(content_lang, {})
+        if learning_language and "kiwix_servers" in config:
+            wiki_cfg = config["kiwix_servers"].get(learning_language, {})
 
         # Fall back to legacy top-level kiwix block
         if not wiki_cfg:
@@ -630,8 +630,9 @@ def load_fetcher_config(config_path=None, content_lang=None):
 # ── CLI entry point ─────────────────────────────────────────────────
 
 def main():
-    config_path, content_lang, overrides = parse_cli_args(sys.argv[1:])
-    settings = load_fetcher_config(config_path, content_lang=content_lang)
+    config_path, learning_language, overrides = parse_cli_args(sys.argv[1:])
+    settings = load_fetcher_config(config_path,
+                                   learning_language=learning_language)
 
     base_url = settings["base_url"]
     zim_name = settings["zim_name"]

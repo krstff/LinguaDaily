@@ -90,21 +90,21 @@ def validate_config(config):
                 "Profiles use 'wikipedia' source but 'kiwix_servers' is empty/missing"
             )
         for name, profile in wiki_profiles:
-            cl = profile.get("content_lang", profile.get("target_lang"))
-            if cl and cl not in kiwix:
+            learning_lang = profile.get("learning_language")
+            if learning_lang and learning_lang not in kiwix:
                 errors.append(
-                    f"Profile '{name}' uses content_lang='{cl}' but no "
-                    f"kiwix_servers entry for '{cl}'"
+                    f"Profile '{name}' uses learning_language='{learning_lang}' "
+                    f"but no kiwix_servers entry for '{learning_lang}'"
                 )
-            elif cl and cl in kiwix:
-                srv = kiwix[cl]
+            elif learning_lang and learning_lang in kiwix:
+                srv = kiwix[learning_lang]
                 if not srv.get("base_url"):
                     errors.append(
-                        f"kiwix_servers['{cl}'].base_url is empty"
+                        f"kiwix_servers['{learning_lang}'].base_url is empty"
                     )
                 if not srv.get("zim_name"):
                     errors.append(
-                        f"kiwix_servers['{cl}'].zim_name is empty"
+                        f"kiwix_servers['{learning_lang}'].zim_name is empty"
                     )
 
     # --- TTS section ---
@@ -154,10 +154,10 @@ def _validate_profile(errors, warnings, name, profile):
             f"Profile '{name}' has no telegram_chat_id — "
             "lessons won't be delivered via Telegram"
         )
-    if not profile.get("source_lang"):
-        errors.append(f"Profile '{name}' is missing 'source_lang'")
-    if not profile.get("target_lang"):
-        errors.append(f"Profile '{name}' is missing 'target_lang'")
+    if not profile.get("native_language"):
+        errors.append(f"Profile '{name}' is missing 'native_language'")
+    if not profile.get("learning_language"):
+        errors.append(f"Profile '{name}' is missing 'learning_language'")
 
 
 # ── Connectivity checks ─────────────────────────────────────────────

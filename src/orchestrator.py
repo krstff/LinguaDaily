@@ -24,7 +24,7 @@ import re
 import sys
 from typing import Callable, Optional
 
-from config import CONFIG_PATH, PROJECT_DIR, load_config
+from config import CONFIG_PATH, PROJECT_DIR, resolve_language_name, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def clean_content(text):
 # ── Article fetching wrapper ────────────────────────────────────────
 
 def fetch_article(source="wikipedia", topic=None, config=None,
-                  content_lang=None, article_filter=None):
+                  learning_language=None, article_filter=None):
     """
     Fetch an article from the given content source via the router.
 
@@ -141,8 +141,8 @@ def fetch_article(source="wikipedia", topic=None, config=None,
         which uses the /random endpoint.
     config : dict or None
         Full config.json contents. Loaded from disk if None.
-    content_lang : str or None
-        Language code for the desired content (used to pick the right
+    learning_language : str or None
+        Language code to fetch articles in (used to pick the right
         Kiwix server when source is wikipedia).
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
@@ -155,7 +155,8 @@ def fetch_article(source="wikipedia", topic=None, config=None,
         config = load_config()
 
     from fetch_router import fetch_article as route_fetch
-    return route_fetch(source, topic, config, content_lang=content_lang,
+    return route_fetch(source, topic, config,
+                       learning_language=learning_language,
                        article_filter=article_filter)
 
 
@@ -198,11 +199,11 @@ class Orchestrator:
         if (self._processor is None or
                 self._processor.profile != profile_name):
             from processor import LinguaProcessor
-            target_lang_name = self.config.get("profiles", {}).get(
+            learning_language = self.config.get("profiles", {}).get(
                 profile_name, {}
-            ).get("target_lang_name", "?")
+            ).get("learning_language", "?")
             self._processor = LinguaProcessor(
-                target_lang_name=target_lang_name,
+                learning_language=learning_language,
                 profile=profile_name,
             )
         return self._processor
@@ -217,18 +218,16 @@ class Orchestrator:
             raise ValueError(f"Profile '{profile_name}' not found")
 
         source = profile.get("source", "wikipedia")
-        content_lang = profile.get(
-            "content_lang", profile.get("target_lang", "en")
-        )
+        learning_language = profile.get("learning_language", "en")
         article_filter = profile.get("article_filter")
 
-        logger.info("[%s] Fetching random %s article...",
-                    profile_name, source)
+        logger.info("[%s] Fetching random %s article (lang: %s)...",
+                    profile_name, source, learning_language)
 
         title, content = fetch_article(
             source=source,
             config=self.config,
-            content_lang=content_lang,
+            learning_language=learning_language,
             article_filter=article_filter,
         )
 
@@ -257,9 +256,9 @@ class Orchestrator:
 
         logger.info("[%s] Fetched '%s' (%d words)", profile_name, title, word_count)
 
-        return title, content, source, content_lang
+        return title, content, source, learning_language
 
-    def _generate_tts(self, profile_name, content, content_lang):
+    def _generate_tts(self, profile_name, content, learning_language):
         """Step 3: Generate TTS audio for the original content."""
         profile = self.config.get("profiles", {}).get(profile_name, {})
         use_tts = profile.get("use_tts", True)
@@ -269,7 +268,7 @@ class Orchestrator:
             return None
 
         logger.info("[%s] Generating TTS (lang: %s)...",
-                    profile_name, content_lang)
+                    profile_name, learning_language)
         try:
             from tts import synthesize
             output_dir = os.path.join(PROJECT_DIR, "output", profile_name)
@@ -277,7 +276,7 @@ class Orchestrator:
 
             wav_path = synthesize(
                 text=content,
-                language_id=content_lang,
+                language_id=learning_language,
                 config=self.config,
                 output_dir=output_dir,
                 voice=profile.get("tts_voice", "male"),
@@ -291,11 +290,14 @@ class Orchestrator:
 
         return None
 
-    def _translate(self, profile_name, content, source_lang, target_lang):
-        """Step 4: Translate content via LLM."""
+    def _translate(self, profile_name, content,
+                    learning_language, native_language):
+        """Step 4: Translate content via LLM.
+
+        Translates the article from `learning_language` (what the user is
+        studying) into `native_language` (what the user already understands).
+        """
         profile = self.config.get("profiles", {}).get(profile_name, {})
-        # source_lang here is the article's language (content_lang)
-        # target_lang is the user's native language
 
         if not self.config.get("llm"):
             logger.info("[%s] LLM not configured — skipping translation",
@@ -305,13 +307,14 @@ class Orchestrator:
         word_count = len(content.split())
         model = self._get_llama_client(profile_name).resolve_model("translate")
         logger.info("[%s] Translating (%s → %s, %d words, model: %s)...",
-                    profile_name, source_lang, target_lang, word_count, model)
+                    profile_name, learning_language, native_language,
+                    word_count, model)
         try:
             client = self._get_llama_client(profile_name)
             translated = client.translate(
                 text=content,
-                source_lang=source_lang,
-                target_lang=target_lang,
+                source_lang=learning_language,
+                target_lang=native_language,
             )
             if translated:
                 logger.info("[%s] Translation complete (%d words output)",
@@ -328,8 +331,13 @@ class Orchestrator:
         return content
 
     def _extract_and_save_vocab(self, profile_name, original_content,
-                                translated_content, source_lang, target_lang):
-        """Step 5: Extract vocabulary via LLM and persist to markdown."""
+                                translated_content,
+                                learning_language, native_language):
+        """Step 5: Extract vocabulary via LLM and persist to markdown.
+
+        Vocab is extracted from the article in `learning_language` with
+        definitions provided in `native_language`.
+        """
         if not self.config.get("llm"):
             logger.info("[%s] LLM not configured — skipping vocab extraction",
                        profile_name)
@@ -342,13 +350,13 @@ class Orchestrator:
                     profile_name, orig_words, trans_words, model)
         try:
             client = self._get_llama_client(profile_name)
-            # source_lang for vocab = language the user is learning (= target_lang of profile)
+            # source_lang for vocab = language the user is learning
             # target_lang for vocab = user's native language (for definitions)
             vocab = client.extract_vocab(
                 original_text=original_content,
                 translated_text=translated_content,
-                source_lang=target_lang,
-                target_lang=source_lang,
+                source_lang=learning_language,
+                target_lang=native_language,
                 max_words=15,
             )
 
@@ -371,20 +379,19 @@ class Orchestrator:
         return []
 
     def _build_lesson(self, profile_name, title, original_content,
-                      translated_content, source_lang, target_lang,
-                      content_lang, wav_path, vocab):
+                      translated_content,
+                      learning_language, native_language,
+                      wav_path, vocab):
         """Build the final lesson dict."""
         from datetime import datetime
-        profile = self.config.get("profiles", {}).get(profile_name, {})
         return {
             "profile": profile_name,
             "title": title or "Language Lesson",
             "content": translated_content,
             "original_content": original_content,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "target_lang_name": profile.get("target_lang_name", "?"),
-            "content_lang": content_lang,
+            "learning_language": learning_language,
+            "learning_language_name": resolve_language_name(learning_language),
+            "native_language": native_language,
             "wav_path": wav_path,
             "vocab": vocab,
             "word_count": len(original_content.split()),
@@ -393,17 +400,21 @@ class Orchestrator:
 
     # ── Main pipeline ──────────────────────────────────────────────
 
-    async def _generate_tts_async(self, profile_name, content, content_lang):
+    async def _generate_tts_async(self, profile_name, content,
+                                   learning_language):
         """Async wrapper for TTS generation (runs in executor thread)."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._generate_tts, profile_name, content, content_lang)
+            None, self._generate_tts, profile_name, content,
+            learning_language)
 
-    async def _translate_async(self, profile_name, content, source_lang, target_lang):
+    async def _translate_async(self, profile_name, content,
+                               learning_language, native_language):
         """Async wrapper for translation (runs in executor thread)."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._translate, profile_name, content, source_lang, target_lang)
+            None, self._translate, profile_name, content,
+            learning_language, native_language)
 
     async def run_lesson(self, profile_name: str,
                          delivery_callback: Optional[Callable] = None) -> Optional[dict]:
@@ -440,32 +451,34 @@ class Orchestrator:
 
         profile = profiles[profile_name]
 
-        source_lang = profile.get("source_lang", "en")
-        target_lang = profile.get("target_lang", "de")
+        native_language = profile.get("native_language", "en")
+        learning_language = profile.get("learning_language", "de")
 
         try:
             # Step 1+2: Fetch and clean
-            title, content, source, content_lang = self._fetch_and_clean(
+            title, content, source, fetch_lang = self._fetch_and_clean(
                 profile_name)
 
             # Step 3+4: TTS and Translate in parallel (both need only original content)
             logger.info("[%s] Running TTS + Translation in parallel...", profile_name)
             wav_path, translated = await asyncio.gather(
-                self._generate_tts_async(profile_name, content, content_lang),
+                self._generate_tts_async(profile_name, content,
+                                         learning_language),
                 self._translate_async(profile_name, content,
-                                      source_lang=content_lang,
-                                      target_lang=source_lang),
+                                      learning_language=learning_language,
+                                      native_language=native_language),
             )
 
             # Step 5: Extract and save vocab (depends on translated text)
             vocab = self._extract_and_save_vocab(
                 profile_name, content, translated,
-                source_lang=source_lang, target_lang=target_lang)
+                learning_language=learning_language,
+                native_language=native_language)
 
             # Build lesson dict
             lesson = self._build_lesson(
                 profile_name, title, content, translated,
-                source_lang, target_lang, content_lang, wav_path, vocab)
+                learning_language, native_language, wav_path, vocab)
 
             # Step 6: Deliver via callback
             if delivery_callback and lesson:
@@ -523,9 +536,9 @@ def main():
 
     print(f"Profile: {profile_name}")
     print(f"Source: {profile.get('source', 'wikipedia')}")
-    print(f"Content Language: {profile.get('content_lang', 'en')}")
-    print(f"Languages: {profile['source_lang']} (native) → "
-          f"{profile['target_lang_name']} (learning)")
+    learning_language = profile.get('learning_language', '?')
+    print(f"Learning language: {resolve_language_name(learning_language)} ({learning_language})")
+    print(f"Native language:   {profile.get('native_language', '?')}")
 
     # Show LLM config
     llm_cfg = config.get("llm", {})
@@ -565,12 +578,12 @@ def main():
 
         # Show original text snippet
         original = lesson.get("original_content", "")[:300]
-        print(f"\n📄 Original ({lesson.get('content_lang', '?')}):")
+        print(f"\n📄 Original ({lesson.get('learning_language_name', '?')}):")
         print(f"   {original}{'...' if len(original) == 300 else ''}")
 
         # Show translated text snippet
         translated = lesson.get("content", "")[:300]
-        print(f"\n🌐 Translated ({lesson.get('source_lang', '?')}):")
+        print(f"\n🌐 Translated ({lesson.get('native_language', '?')}):")
         print(f"   {translated}{'...' if len(translated) == 300 else ''}")
     else:
         print("\n❌ Lesson pipeline failed — check logs for details.")

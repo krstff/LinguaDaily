@@ -40,7 +40,7 @@ import os
 import sys
 from typing import Callable, Optional
 
-from config import CONFIG_PATH, load_config
+from config import CONFIG_PATH, resolve_language_name, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +298,8 @@ class LessonScheduler:
             sched = profile["schedule"]
             time_str = sched.get("time", "?")
             tz = sched.get("tz", "UTC")
-            lang = profile.get("target_lang_name", "?")
+            lang = resolve_language_name(
+                profile.get("learning_language", "?"))
             print(f"{name:<20} {time_str:>8} {tz:<25} {lang}")
 
 

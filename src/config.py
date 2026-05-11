@@ -16,7 +16,47 @@ Usage:
 import json
 import pathlib
 
-# ── Path resolution (computed once at import time) ───────────────────
+# ── Language code → display name mapping ────────────────────
+#
+# Used to resolve `learning_language_name` automatically from
+# the `learning_language` code.  The user only needs to set
+# the ISO code ("de", "it", …) in config.json; the human-readable
+# name is computed here so it can never go out of sync.
+#
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "fr": "French",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "cs": "Czech",
+    "pl": "Polish",
+    "nl": "Dutch",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "tr": "Turkish",
+}
+
+
+def resolve_language_name(lang_code: str) -> str:
+    """Return a human-readable language name for an ISO code.
+
+    Falls back to the code itself if the mapping is unknown.
+    """
+    return LANGUAGE_NAMES.get(lang_code, lang_code)
+
+
+# ── Path resolution (computed once at import time) ───────────
 
 PROJECT_DIR = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_DIR / "config.json"

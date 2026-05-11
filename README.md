@@ -58,10 +58,8 @@ conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler
   },
   "profiles": {
     "krystof": {
-      "source_lang": "en",
-      "target_lang": "de",
-      "target_lang_name": "German",
-      "content_lang": "de",
+      "native_language": "en",
+      "learning_language": "de",
       "source": "wikipedia",
       "topics": ["Technology", "Science", "History"],
       "article_filter": {

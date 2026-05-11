@@ -17,7 +17,8 @@ import os
 import signal
 import sys
 
-from config import CONFIG_PATH, DATA_DIR, LOG_FILE, load_config
+from config import (CONFIG_PATH, DATA_DIR, LOG_FILE,
+                    resolve_language_name, load_config)
 
 logger = logging.getLogger("lingua")
 
@@ -81,7 +82,8 @@ class LinguaDaemon:
         if scheduled:
             for name, sched in scheduled:
                 profile = profiles[name]
-                lang = profile.get("target_lang_name", "?")
+                lang = resolve_language_name(
+                    profile.get("learning_language", "?"))
                 print(f"    • {name:<16} {sched['time']} ({sched.get('tz', 'UTC')}) → {lang}")
 
         tg_token = self.config.get("telegram", {}).get("bot_token")
