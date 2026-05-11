@@ -61,14 +61,26 @@ Output ONLY a JSON array with no surrounding text. Each entry:
   {{
     "word": "original_word",
     "meaning": "brief definition in {target_lang}",
-    "example": "a short example sentence in {source_lang} showing the word in context"
+    "example": "a short example sentence in {source_lang} showing the word in context",
+    "highlight_source": ["exact_word_forms_as_they_appear_in_original_text"],
+    "highlight_target": ["exact_word_forms_as_they_appear_in_translation"]
   }},
   ...
 ]
 
-Only include words that appear in the original text. Keep meanings concise.
-For the example sentence, prefer rephrasing how the word was used in the article itself,
-or craft a natural, memorable sentence that helps the learner remember the word."""
+Rules:
+- "word": the base/citation form of the vocabulary word in {source_lang}.
+- "meaning": a concise definition/translation in {target_lang}.
+- "example": a natural example sentence in {source_lang}.
+- "highlight_source": list ALL exact word forms from the original text that
+  should be highlighted (e.g. ["Pferd", "Pferde"] if both singular and plural
+  appear). Only include words/phrases that literally appear in the original text.
+- "highlight_target": list ALL exact word forms from the translation that
+  should be highlighted. These are the {target_lang} equivalents that literally
+  appear in the translated text.
+
+Keep meanings concise. For highlight lists, be thorough — include every
+inflected form (plural, past tense, etc.) that appears in the respective texts."""
 
 TUTOR_SYSTEM_PROMPT = """You are a friendly language tutor helping someone learn {language_name}.
 

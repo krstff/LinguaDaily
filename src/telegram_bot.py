@@ -287,26 +287,24 @@ class TelegramBot:
         return html.escape(text, quote=False)
 
     def _highlight_words(self, text: str, words: list) -> str:
-        """Bold vocabulary words inside the original text.
+        """Underline exact words/phrases inside already-escaped text.
 
-        Uses case-insensitive whole-word matching so that 'Haus' won't
-        match inside 'Haustür'.  Words are sorted longest-first to avoid
-        partial-match issues (e.g. 'Tag' matching before 'Enttag').
+        IMPORTANT: text must already be HTML-escaped before calling this,
+        so that any <b> tags we add are NOT re-escaped later.
+
+        The `words` list contains exact strings (from the LLM's highlight_*
+        fields) that appear verbatim in the text. Longest matches first
+        to avoid partial overlaps.
         """
         if not words:
             return text
 
-        # Build a set of lowercased word stems for quick lookup
-        word_set = {str(w).strip().lower() for w in words if str(w).strip()}
-        if not word_set:
-            return text
-
         # Escape special regex chars and sort longest-first
-        escaped = [re.escape(w) for w in word_set]
+        escaped = [re.escape(w) for w in words if str(w).strip()]
         escaped.sort(key=len, reverse=True)
 
         pattern = re.compile(
-            r'\b(' + '|'.join(escaped) + r')\b',
+            r'(' + '|'.join(escaped) + r')',
             re.IGNORECASE,
         )
 
@@ -315,12 +313,72 @@ class TelegramBot:
 
         return pattern.sub(_replace, text)
 
+    def _markdown_to_telegram_html(self, text: str) -> str:
+        """Convert common markdown formatting to Telegram HTML tags.
+
+        Handles:
+          # / ## / ### headers  → <b>header</b>
+          **bold**              → <b>bold</b>
+          *italic*              → <i>italic</i>
+          `code`                → <code>code</code>
+          > blockquote          → <i>blockquote</i>
+          - / * / 1. lists     → escaped as-is (Telegram renders plain text)
+
+        Uses a placeholder strategy so that our own HTML tags are never
+        re-escaped by the final HTML-escape pass.
+        """
+        # ── Normalise Unicode asterisks to ASCII —───────────────
+        # LLMs sometimes emit ∗ (U+2217), ✱ (U+2731), * (U+00B7)
+        text = text.replace('\u2217', '*').replace('\u2731', '*')
+        text = text.replace('\u00b7', '*').replace('\u2042', '*')
+
+        replacements: dict[str, str] = {}
+        counter = 0
+
+        def _store(content: str, tag: str) -> str:
+            nonlocal counter
+            key = f'\x00TG{counter}\x00'
+            replacements[key] = f'{tag}{self._escape_html(content)}</{tag[1:]}'
+            counter += 1
+            return key
+
+        # ── Step 1: Extract block-level markdown (headers, blockquotes) ──
+        # Headers: # / ## / ### → <b>text</b> (Telegram has no <h3>)
+        def _replace_header(m: re.Match):
+            return _store(m.group(2).strip(), '<b>')
+        text = re.sub(r'^(#{1,6})\s+(.+)$', _replace_header, text, flags=re.MULTILINE)
+
+        # Blockquotes: > text → <i>text</i>
+        def _replace_blockquote(m: re.Match):
+            return _store(m.group(1).strip(), '<i>')
+        text = re.sub(r'^>\s*(.+)$', _replace_blockquote, text, flags=re.MULTILINE)
+
+        # ── Step 2: Extract inline markdown (bold, italic, code) ───
+        _inline_re = re.compile(
+            r'\*\*(.+?)\*\*'           # **bold**
+            r'|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)'  # *italic*
+            r'|`(.+?)`',                            # `code`
+        )
+
+        def _replace_inline(m: re.Match):
+            tag_map = {1: '<b>', 2: '<i>', 3: '<code>'}
+            content = m.group(1) or m.group(2) or m.group(3)
+            return _store(content, tag_map[m.lastindex])
+
+        text = _inline_re.sub(_replace_inline, text)
+
+        # ── Step 3: HTML-escape the remaining plain text ─────────
+        text = self._escape_html(text)
+
+        # ── Step 4: Restore all placeholders (contain real <b>/<i> tags) ─
+        for key, value in replacements.items():
+            text = text.replace(self._escape_html(key), value)
+
+        return text
+
     def _format_text_for_telegram(self, text: str) -> str:
-        """Escape plain text for Telegram HTML messages and normalise line breaks."""
-        safe = self._escape_html(text)
-        # Telegram HTML uses <br> or double-space+newline for line breaks;
-        # we keep \n\n as-is (Telegram renders them fine in HTML mode).
-        return safe
+        """Escape plain text for Telegram HTML messages."""
+        return self._escape_html(text)
 
     async def deliver_lesson(self, profile_name: str, lesson: dict):
         """
@@ -360,21 +418,34 @@ class TelegramBot:
             "learning_language_name", "?")
         native_language = lesson.get("native_language", "?")
 
-        # Extract word stems for highlighting in the original text
-        vocab_words = []
+        # Extract highlight words from LLM-provided lists.
+        # Falls back to word/meaning fields for backward compatibility
+        # with older vocab entries that lack highlight_* fields.
+        vocab_source_words: list[str] = []
+        vocab_target_words: list[str] = []
         for entry in vocab:
             if isinstance(entry, dict):
-                w = entry.get("word", "")
-                if w:
-                    vocab_words.append(w)
+                # Prefer LLM-provided exact highlight forms
+                src = entry.get("highlight_source")
+                tgt = entry.get("highlight_target")
+                if src and isinstance(src, list):
+                    vocab_source_words.extend(str(w) for w in src if str(w).strip())
+                elif (w := entry.get("word", "")):
+                    vocab_source_words.append(w)
+                if tgt and isinstance(tgt, list):
+                    vocab_target_words.extend(str(w) for w in tgt if str(w).strip())
+                elif (m := entry.get("meaning", entry.get("definition", ""))):
+                    vocab_target_words.append(m)
             else:
-                vocab_words.append(str(entry))
+                vocab_source_words.append(str(entry))
 
-        # ── Message 1: Original text (vocab words highlighted) ────
-        highlighted = self._highlight_words(original_content, vocab_words)
+        # ── Message 1: Original text (source words highlighted) ───
+        # Escape first, THEN highlight — so <b> tags are not re-escaped
+        safe_original = self._escape_html(original_content)
+        highlighted_original = self._highlight_words(safe_original, vocab_source_words)
         msg1 = f"📰 <b>{self._escape_html(title)}</b>\n\n"
         msg1 += f"Original ({self._escape_html(learning_language_name)})\n\n"
-        msg1 += self._truncate_for_telegram(self._format_text_for_telegram(highlighted))
+        msg1 += self._truncate_for_telegram(highlighted_original)
 
         try:
             await bot.send_message(
@@ -387,10 +458,12 @@ class TelegramBot:
         except Exception as e:
             logger.error("Failed to send original text: %s", e)
 
-        # ── Message 2: Translation ────────────────────────────────
+        # ── Message 2: Translation (meaning words highlighted) ───
+        safe_translation = self._escape_html(translated_content)
+        highlighted_translation = self._highlight_words(
+            safe_translation, vocab_target_words)
         msg2 = f"🌐 Translation ({self._escape_html(native_language)})\n\n"
-        msg2 += self._truncate_for_telegram(
-            self._format_text_for_telegram(translated_content), "\n…")
+        msg2 += self._truncate_for_telegram(highlighted_translation, "\n…")
 
         try:
             await bot.send_message(
@@ -533,8 +606,8 @@ class TelegramBot:
         if len(reply) > 4000:
             reply = reply[:3997] + "..."
 
-        # Escape the tutor reply so it renders safely in HTML mode
-        tg_reply = self._format_text_for_telegram(reply)
+        # Convert markdown from LLM to Telegram HTML tags, then escape rest
+        tg_reply = self._markdown_to_telegram_html(reply)
 
         await bot.send_message(
             chat_id=chat_id,
