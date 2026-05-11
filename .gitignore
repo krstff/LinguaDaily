@@ -6,6 +6,7 @@
 output/
 .pi
 nohup.out
+*.bak
 
 ### Linux ###
 *~
