@@ -1,0 +1,14 @@
+# LinguaDaily — third-party dependencies
+#
+# Core runtime
+aiogram>=3.28.0          # Telegram bot framework (async)
+apscheduler>=3.11.0      # Cron-style scheduling with async support
+
+# Content fetching & parsing
+beautifulsoup4>=4.14.0   # HTML cleaning (Wikipedia, news)
+feedparser>=6.0.0        # RSS feed parsing for news articles
+requests>=2.31.0         # HTTP client (KiwiX, RSS, fallback TTS)
+httpx>=0.28.0            # Async HTTP client (LLM, TTS via OpenAI compat)
+
+# LLM / TTS (OpenAI-compatible API)
+openai>=2.36.0           # Client for local LLM (translation, vocab, tutor) + TTS

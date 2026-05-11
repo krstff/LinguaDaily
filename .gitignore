@@ -5,6 +5,7 @@
 .vcode/
 output/
 .pi
+nohup.out
 
 ### Linux ###
 *~
