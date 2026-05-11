@@ -181,19 +181,19 @@ class TestOrchestratorRunLesson:
         assert lesson["content"] == "Python ist eine großartige Sprache."
         assert lesson["wav_path"] == "/tmp/output/test_user/test.wav"
         assert len(lesson["vocab"]) == 1
-        assert lesson["target_lang_name"] == "German"
+        assert lesson["learning_language_name"] == "German"
         assert "timestamp" in lesson
 
     @pytest.mark.asyncio
-    async def test_fallback_when_fetch_fails(self, sample_config):
+    async def test_aborts_when_fetch_fails(self, sample_config):
         from src.orchestrator import Orchestrator
 
         with patch("fetch_router.fetch_article", return_value=(None, None)):
             orch = Orchestrator(config=sample_config[0])
             lesson = await orch.run_lesson("test_user")
 
-        assert lesson is not None
-        assert "could not be retrieved" in lesson["original_content"]
+        # Pipeline aborts on fetch failure — no LLM calls wasted
+        assert lesson is None
 
     @pytest.mark.asyncio
     async def test_unknown_profile_returns_none(self, sample_config):

@@ -232,11 +232,9 @@ class Orchestrator:
         )
 
         if not content:
-            logger.warning("[%s] No article fetched — using fallback",
-                          profile_name)
-            title = "Random Article"
-            content = (f"A {source} article could not be retrieved "
-                      "from the local server.")
+            logger.error("[%s] No article fetched from %s — aborting pipeline",
+                         profile_name, source)
+            return None
 
         # Clean content
         content = clean_content(content)
@@ -456,8 +454,12 @@ class Orchestrator:
 
         try:
             # Step 1+2: Fetch and clean
-            title, content, source, fetch_lang = self._fetch_and_clean(
-                profile_name)
+            result = self._fetch_and_clean(profile_name)
+            if result is None:
+                # Article fetch failed — abort pipeline, skip all LLM calls
+                logger.warning("[%s] Pipeline aborted — no article available", profile_name)
+                return None
+            title, content, source, fetch_lang = result
 
             # Step 3+4: TTS and Translate in parallel (both need only original content)
             logger.info("[%s] Running TTS + Translation in parallel...", profile_name)
