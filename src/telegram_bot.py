@@ -473,7 +473,24 @@ class TelegramBot:
             else:
                 vocab_source_words.append(str(entry))
 
-        # ── Message 1: Original text (source words highlighted) ───
+        # ── Message 1: TTS audio (sent first) ────────────────────
+        if wav_path and os.path.isfile(wav_path):
+            try:
+                from aiogram.types.input_file import FSInputFile
+                audio_file = FSInputFile(
+                    path=wav_path,
+                    filename=os.path.basename(wav_path),
+                )
+                await bot(SendAudio(
+                    chat_id=chat_id,
+                    audio=audio_file,
+                    caption=f"🔊 {title}",
+                ))
+                logger.info("Delivered audio for '%s' to chat %d", title, chat_id)
+            except Exception as e:
+                logger.error("Failed to send audio: %s", e)
+
+        # ── Message 2: Original text (source words highlighted) ───
         # Escape first, THEN highlight — so <b> tags are not re-escaped
         safe_original = self._escape_html(original_content)
         highlighted_original = self._highlight_words(safe_original, vocab_source_words)
@@ -492,7 +509,7 @@ class TelegramBot:
         except Exception as e:
             logger.error("Failed to send original text: %s", e)
 
-        # ── Message 2: Translation (meaning words highlighted) ───
+        # ── Message 3: Translation (meaning words highlighted) ───
         safe_translation = self._escape_html(translated_content)
         highlighted_translation = self._highlight_words(
             safe_translation, vocab_target_words)
@@ -510,7 +527,7 @@ class TelegramBot:
         except Exception as e:
             logger.error("Failed to send translation message: %s", e)
 
-        # ── Message 3: Vocabulary (bold words, italic examples) ───
+        # ── Message 4: Vocabulary (bold words, italic examples) ───
         if vocab:
             vocab_lines = []
             for entry in vocab:
@@ -548,23 +565,6 @@ class TelegramBot:
                             title, chat_id)
             except Exception as e:
                 logger.error("Failed to send vocabulary message: %s", e)
-
-        # ── Message 4: TTS audio ──────────────────────────────────
-        if wav_path and os.path.isfile(wav_path):
-            try:
-                from aiogram.types.input_file import FSInputFile
-                audio_file = FSInputFile(
-                    path=wav_path,
-                    filename=os.path.basename(wav_path),
-                )
-                await bot(SendAudio(
-                    chat_id=chat_id,
-                    audio=audio_file,
-                    caption=f"🔊 {title}",
-                ))
-                logger.info("Delivered audio for '%s' to chat %d", title, chat_id)
-            except Exception as e:
-                logger.error("Failed to send audio: %s", e)
 
         # Persist lesson so the tutor has context
         try:
@@ -783,12 +783,17 @@ class TelegramBot:
             )
             return
 
-        # Exact match first, then case-insensitive prefix
+        # Exact match first, then case-insensitive prefix (only if no exact match)
         matched = None
         for p in profiles:
-            if p.lower() == target or p.lower().startswith(target):
+            if p.lower() == target:
                 matched = p
                 break
+        if not matched:
+            for p in profiles:
+                if p.lower().startswith(target):
+                    matched = p
+                    break
 
         if not matched:
             names = ", ".join(f"<code>{p}</code>" for p in profiles)
