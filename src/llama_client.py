@@ -34,12 +34,75 @@ Config structure in config.json:
 import json
 import logging
 import os
+import re
 import sys
 from typing import Optional
 
 from config import PROJECT_DIR, load_config
 
 logger = logging.getLogger(__name__)
+
+
+# ── LaTeX → Unicode cleanup for tutor messages ───────────────────────
+#
+# LLMs sometimes emit LaTeX math notation (e.g. $\rightarrow$, $\neq$).
+# Convert common patterns to plain-text / Unicode equivalents so they
+# render correctly in Telegram.
+
+_LATEX_REPLACEMENTS = [
+    # arrows
+    (r'\$\\rightarrow\$', '→'),
+    (r'\$\\leftarrow\$', '←'),
+    (r'\$\\Rightarrow\$', '⇒'),
+    (r'\$\\Leftarrow\$', '⇐'),
+    (r'\$\\Leftrightarrow\$', '⇔'),
+    # relations
+    (r'\$\\neq\$', '≠'),
+    (r'\$\\leq\$', '≤'),
+    (r'\$\\geq\$', '≥'),
+    (r'\$\\approx\$', '≈'),
+    (r'\$\\sim\$', '∼'),
+    (r'\$\\in\$', '∈'),
+    (r'\$\\notin\$', '∉'),
+    (r'\$\\subset\$', '⊂'),
+    (r'\$\\supset\$', '⊃'),
+    (r'\$\\subseteq\$', '⊆'),
+    (r'\$\\supseteq\$', '⊇'),
+    (r'\$\\forall\$', '∀'),
+    (r'\$\\exists\$', '∃'),
+    # operators
+    (r'\$\\times\$', '×'),
+    (r'\$\\cdot\$', '·'),
+    (r'\$\\pm\$', '±'),
+    (r'\$\\infty\$', '∞'),
+    (r'\$\\sum\$', '∑'),
+    (r'\$\\prod\$', '∏'),
+    # greek (lowercase)
+    (r'\$\\alpha\$', 'α'),
+    (r'\$\\beta\$', 'β'),
+    (r'\$\\gamma\$', 'γ'),
+    (r'\$\\delta\$', 'δ'),
+    (r'\$\\epsilon\$', 'ε'),
+    (r'\$\\theta\$', 'θ'),
+    (r'\$\\lambda\$', 'λ'),
+    (r'\$\\mu\$', 'μ'),
+    (r'\$\\pi\$', 'π'),
+    (r'\$\\sigma\$', 'σ'),
+    (r'\$\\phi\$', 'φ'),
+    (r'\$\\omega\$', 'ω'),
+]
+
+
+def _clean_latex(text: str) -> str:
+    """Replace common LaTeX math notation with Unicode equivalents."""
+    for pattern, replacement in _LATEX_REPLACEMENTS:
+        text = re.sub(pattern, replacement, text)
+
+    # Strip remaining standalone $...$ or $$...$$ blocks
+    text = re.sub(r'\$\$.*?\$\$', '', text, flags=re.DOTALL)
+    text = re.sub(r'\$[^$]+\$', '', text)
+
+    return text
 
 
 # ── System prompts ───────────────────────────────────────────────────
@@ -53,15 +116,15 @@ Do NOT add commentary, summaries, or notes — only output the translation."""
 
 VOCAB_SYSTEM_PROMPT = """You are a language-learning tutor extracting vocabulary from a translated article.
 
-The user is learning {source_lang}. Extract useful vocabulary words (nouns, verbs, adjectives,
+The user is learning {source_lang} ({source_lang_name}). Extract useful vocabulary words (nouns, verbs, adjectives,
 idioms) from the ORIGINAL text that a learner should know.
 
 Output ONLY a JSON array with no surrounding text. Each entry:
 [
   {{
     "word": "original_word",
-    "meaning": "brief definition in {target_lang}",
-    "example": "a short example sentence in {source_lang} showing the word in context",
+    "meaning": "brief definition in {target_lang_name}",
+    "example": "a short example sentence in {source_lang_name} showing the word in context",
     "highlight_source": ["exact_word_forms_as_they_appear_in_original_text"],
     "highlight_target": ["exact_word_forms_as_they_appear_in_translation"]
   }},
@@ -69,14 +132,14 @@ Output ONLY a JSON array with no surrounding text. Each entry:
 ]
 
 Rules:
-- "word": the base/citation form of the vocabulary word in {source_lang}.
-- "meaning": a concise definition/translation in {target_lang}.
-- "example": a natural example sentence in {source_lang}.
+- "word": the base/citation form of the vocabulary word in {source_lang_name}.
+- "meaning": a concise definition/translation written entirely in {target_lang_name}. Never use English if {target_lang_name} is not English.
+- "example": a natural example sentence in {source_lang_name}.
 - "highlight_source": list ALL exact word forms from the original text that
   should be highlighted (e.g. ["Pferd", "Pferde"] if both singular and plural
   appear). Only include words/phrases that literally appear in the original text.
 - "highlight_target": list ALL exact word forms from the translation that
-  should be highlighted. These are the {target_lang} equivalents that literally
+  should be highlighted. These are the {target_lang_name} equivalents that literally
   appear in the translated text.
 
 Keep meanings concise. For highlight lists, be thorough — include every
@@ -287,9 +350,9 @@ class LlamaClient:
         translated_text : str or None
             The translated version (used for context in prompts).
         source_lang : str
-            Language of the original text.
+            Language of the original text (code or name, e.g. "de", "German").
         target_lang : str
-            User's native language (for definitions).
+            User's native language for definitions (code or name, e.g. "cs", "Czech").
         max_words : int
             Maximum number of vocabulary words to extract.
 
@@ -298,10 +361,16 @@ class LlamaClient:
         list[dict]
             List of {word, meaning} dicts, or empty list on failure.
         """
+        from config import resolve_language_name
+
         model = self.resolve_model("vocab")
+        source_lang_name = resolve_language_name(source_lang)
+        target_lang_name = resolve_language_name(target_lang)
         system = VOCAB_SYSTEM_PROMPT.format(
             source_lang=source_lang,
+            source_lang_name=source_lang_name,
             target_lang=target_lang,
+            target_lang_name=target_lang_name,
         )
 
         user_text = f"Original text ({source_lang}):\n{original_text}"
@@ -417,7 +486,10 @@ Translation ({native_lang}):
 
         messages.append({"role": "user", "content": message})
 
-        return self._chat(messages, model=model, temperature=0.7)
+        reply = self._chat(messages, model=model, temperature=0.7)
+        if reply:
+            reply = _clean_latex(reply)
+        return reply
 
     def health_check(self) -> bool:
         """Check if the LLM endpoint is reachable."""
