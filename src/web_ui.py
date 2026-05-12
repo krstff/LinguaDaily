@@ -251,6 +251,165 @@ def create_app(config_path=None, log_file=None, password=None,
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
 
+    # ── Sources page ────────────────────────────────────────
+    @app.route("/sources")
+    @require_auth
+    def sources_page():
+        try:
+            config = load_config(_config_path)
+        except Exception as e:
+            return render_template("sources.html", active="sources",
+                                   kiwix_servers={}, news_feeds={},
+                                   feed_languages=[],
+                                   error=str(e)), 500
+
+        kiwix_servers = config.get("kiwix_servers", {})
+        feeds_raw = (config.get("sources", {}) or {}).get("news", {}) or {}
+        news_feeds = feeds_raw.get("feeds", {})
+
+        # Collect available languages from both Kiwix servers and news feeds
+        all_langs = set(kiwix_servers.keys())
+        all_langs.update(news_feeds.keys())
+        feed_languages = sorted(all_langs)
+
+        return render_template("sources.html", active="sources",
+                               kiwix_servers=kiwix_servers,
+                               news_feeds=news_feeds,
+                               feed_languages=feed_languages)
+
+    # ── Kiwix server CRUD ───────────────────────────────
+    @app.route("/api/sources/kiwix", methods=["POST"])
+    @require_auth
+    def api_kiwix():
+        action = request.form.get("action", "add")
+        config = load_config(_config_path)
+        kiwix = config.setdefault("kiwix_servers", {})
+
+        lang = request.form.get("lang", "").strip().lower()
+        if not lang:
+            return jsonify({"message": "Language code is required"}), 400
+
+        base_url = request.form.get("base_url", "").strip()
+        zim_name = request.form.get("zim_name", "").strip()
+
+        server_data = {}
+        if base_url:
+            server_data["base_url"] = base_url
+        if zim_name:
+            server_data["zim_name"] = zim_name
+
+        if action == "add":
+            if lang in kiwix:
+                return jsonify({"message": f"Server for '{lang}' already exists"}), 409
+            kiwix[lang] = server_data
+        elif action == "edit":
+            if lang not in kiwix:
+                return jsonify({"message": f"Server for '{lang}' not found"}), 404
+            kiwix[lang] = server_data
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"Kiwix server '{lang}' saved"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    @app.route("/api/sources/kiwix/<lang>", methods=["DELETE"])
+    @require_auth
+    def delete_kiwix(lang):
+        config = load_config(_config_path)
+        kiwix = config.get("kiwix_servers", {})
+
+        lang_lower = lang.lower()
+        if lang_lower not in kiwix:
+            return jsonify({"message": f"Server for '{lang}' not found"}), 404
+
+        del kiwix[lang_lower]
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"Kiwix server '{lang}' removed"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    # ── RSS news feeds CRUD (language-keyed) ────────────────
+    @app.route("/api/sources/news-feeds", methods=["POST"])
+    @require_auth
+    def api_news_feeds():
+        action = request.form.get("action", "add")
+        config = load_config(_config_path)
+        sources = config.setdefault("sources", {})
+        news = sources.setdefault("news", {})
+        feeds = news.setdefault("feeds", {})
+
+        lang = request.form.get("lang", "en").strip().lower()
+        topic = request.form.get("topic", "").strip()
+        if not topic:
+            return jsonify({"message": "Topic is required"}), 400
+
+        # Ensure language bucket exists
+        lang_feeds = feeds.setdefault(lang, {})
+
+        urls_raw = request.form.get("urls", "").strip()
+        urls = [u.strip() for u in urls_raw.splitlines() if u.strip()] if urls_raw else []
+
+        if action == "add":
+            if topic in lang_feeds:
+                return jsonify({"message": f"Topic '{topic}' already exists for '{lang}'"}), 409
+            lang_feeds[topic] = urls
+        elif action == "edit":
+            if topic not in lang_feeds:
+                return jsonify({"message": f"Topic '{topic}' not found for '{lang}'"}), 404
+            lang_feeds[topic] = urls
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"News feeds for '{lang}' / '{topic}' saved"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    @app.route("/api/sources/news-feeds/<lang>/<topic>", methods=["DELETE"])
+    @require_auth
+    def delete_news_feed(lang, topic):
+        config = load_config(_config_path)
+        feeds = (config.get("sources", {}) or {}).get("news", {}).get("feeds", {})
+        lang_lower = lang.lower()
+
+        lang_feeds = feeds.get(lang_lower, {})
+        if topic not in lang_feeds:
+            return jsonify({"message": f"Topic '{topic}' not found for '{lang}'"}), 404
+
+        del lang_feeds[topic]
+
+        # Clean up empty language buckets
+        if not lang_feeds and lang_lower in feeds:
+            del feeds[lang_lower]
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"News feeds for '{lang}' / '{topic}' removed"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
     # ── Profile CRUD API ─────────────────────────────────
     @app.route("/api/profiles", methods=["POST"])
     @require_auth

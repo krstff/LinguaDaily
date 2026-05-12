@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+
+{% block title %}Sources — LinguaDaily{% endblock %}
+
+{% block content %}
+<h1>Sources</h1>
+<p class="subtitle">Manage content sources — Kiwix servers and RSS news feeds</p>
+
+<!-- ── Kiwix Servers ──────────────────────────────────────── -->
+<div class="model-panel" style="border-left:3px solid var(--green);">
+  <h2>Kiwix Servers</h2>
+  <p class="subtitle">Per-language Wikipedia servers (ZIM files)</p>
+
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openKiwixModal(null)">+ Add Server</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Language</th>
+        <th>Base URL</th>
+        <th>ZIM Name</th>
+        <th style="width:120px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="kiwix-table">
+      {% if kiwix_servers %}
+      {% for lang, srv in kiwix_servers.items() %}
+      <tr data-lang="{{ lang }}"
+          data-base-url="{{ srv.base_url or '' }}"
+          data-zim-name="{{ srv.zim_name or '' }}">
+        <td><strong>{{ lang }}</strong></td>
+        <td style="color:var(--fg_dim);font-size:12px;">{{ srv.base_url or '—' }}</td>
+        <td style="color:var(--fg_dim);font-size:12px;">{{ srv.zim_name or '—' }}</td>
+        <td>
+          <button class="btn btn-secondary btn-sm" onclick="openKiwixModal(this.closest('tr'))">Edit</button>
+          <button class="btn btn-danger btn-sm" hx-delete="/api/sources/kiwix/{{ lang }}"
+                  hx-confirm="Remove Kiwix server for '{{ lang }}'?">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="4" style="text-align:center;color:var(--fg_dim);padding:32px;">No Kiwix servers configured — click + Add Server</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<!-- ── RSS News Feeds ─────────────────────────────────────── -->
+<div class="model-panel" style="border-left:3px solid var(--orange);">
+  <h2>RSS News Feeds</h2>
+  <p class="subtitle">Select a language and topic to manage feed URLs</p>
+
+  <div class="toolbar">
+    <select id="feed-lang-select" onchange="onLangChange()">
+      <option value="">— Language —</option>
+      {% for lang in feed_languages %}
+      <option value="{{ lang }}">{{ lang }}</option>
+      {% endfor %}
+    </select>
+    <select id="feed-topic-select" onchange="onTopicChange()" disabled>
+      <option value="">— Topic —</option>
+    </select>
+    <button class="btn btn-secondary" onclick="addNewTopic()">+ New Topic</button>
+  </div>
+
+  <!-- Feed URLs for selected topic -->
+  <div id="feed-urls-area" style="display:none;">
+    <table>
+      <thead>
+        <tr>
+          <th>Feed URL</th>
+          <th style="width:80px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="feed-urls-table">
+      </tbody>
+    </table>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <input type="text" id="new-url-input" placeholder="https://example.com/feed.xml" style="flex:1;">
+      <button class="btn btn-primary" onclick="addFeedUrl()">+ Add URL</button>
+    </div>
+  </div>
+
+  <div id="feed-empty-msg" style="text-align:center;color:var(--fg_dim);padding:32px;font-size:13px;">
+    Select a language and topic above to manage feeds.
+  </div>
+</div>
+
+<!-- ── Kiwix Server Modal ─────────────────────────────────── -->
+<div class="modal-overlay" id="kiwix-modal">
+  <div class="modal">
+    <h2 id="kiwix-modal-title">Add Kiwix Server</h2>
+    <form id="kiwix-form" hx-post="/api/sources/kiwix" hx-encoding="multipart/form-data">
+      <input type="hidden" name="action" id="kiwix-action" value="add">
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Language Code</label>
+          <input type="text" name="lang" required placeholder="e.g. de, en, es">
+        </div>
+        <div class="form-row">
+          <label>Base URL</label>
+          <input type="text" name="base_url" placeholder="http://192.168.1.5:8080">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>ZIM Name</label>
+        <input type="text" name="zim_name" placeholder="wikipedia_de_all_nopic_2026-01">
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeKiwixModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Server</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// All feeds data from server: { lang: { topic: [urls] } }
+const ALL_FEEDS = {{ news_feeds | tojson }};
+
+function getSelectedLang() {
+  return document.getElementById('feed-lang-select').value || '';
+}
+
+function getSelectedTopic() {
+  return document.getElementById('feed-topic-select').value || '';
+}
+
+// ── Language changed → populate topics ────────────────────
+function onLangChange() {
+  const lang = getSelectedLang();
+  const topicSel = document.getElementById('feed-topic-select');
+  topicSel.innerHTML = '<option value="">— Topic —</option>';
+
+  if (!lang) {
+    topicSel.disabled = true;
+    showFeedArea(false);
+    return;
+  }
+
+  const langFeeds = ALL_FEEDS[lang] || {};
+  const topics = Object.keys(langFeeds).sort();
+  topicSel.disabled = false;
+
+  for (const topic of topics) {
+    const opt = document.createElement('option');
+    opt.value = topic;
+    opt.textContent = topic;
+    topicSel.appendChild(opt);
+  }
+
+  showFeedArea(false);
+}
+
+// ── Topic changed → show feed URLs ────────────────────────
+function onTopicChange() {
+  const lang = getSelectedLang();
+  const topic = getSelectedTopic();
+
+  if (!lang || !topic) {
+    showFeedArea(false);
+    return;
+  }
+
+  const urls = (ALL_FEEDS[lang] || {})[topic] || [];
+  renderUrls(urls);
+  showFeedArea(true);
+}
+
+// ── Render URL list ───────────────────────────────────────
+function renderUrls(urls) {
+  const tbody = document.getElementById('feed-urls-table');
+  if (urls.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;color:var(--fg_dim);padding:16px;">No feeds yet — add one below</td></tr>';
+    return;
+  }
+
+  let html = '';
+  for (const url of urls) {
+    html += '<tr>' +
+      '<td style="color:var(--fg_dim);font-size:12px;word-break:break-all;">' + escapeHtml(url) + '</td>' +
+      '<td><button class="btn btn-danger btn-sm" onclick="removeFeedUrl(\'' + escapeJs(url) + '\')">Delete</button></td>' +
+      '</tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+// ── Show/hide feed area ───────────────────────────────────
+function showFeedArea(show) {
+  document.getElementById('feed-urls-area').style.display = show ? 'block' : 'none';
+  document.getElementById('feed-empty-msg').style.display = show ? 'none' : 'block';
+}
+
+// ── Add a new feed URL ────────────────────────────────────
+function addFeedUrl() {
+  const input = document.getElementById('new-url-input');
+  const url = input.value.trim();
+  if (!url) return;
+
+  const lang = getSelectedLang();
+  const topic = getSelectedTopic();
+  const urls = ((ALL_FEEDS[lang] || {})[topic]) || [];
+
+  if (urls.includes(url)) {
+    showToast('URL already exists for this topic', true);
+    return;
+  }
+
+  urls.push(url);
+  input.value = '';
+  renderUrls(urls);
+
+  // Persist via API
+  persistFeeds();
+}
+
+// ── Remove a feed URL ─────────────────────────────────────
+function removeFeedUrl(url) {
+  const lang = getSelectedLang();
+  const topic = getSelectedTopic();
+  const urls = (ALL_FEEDS[lang] || {})[topic] || [];
+  const idx = urls.indexOf(url);
+  if (idx === -1) return;
+
+  urls.splice(idx, 1);
+  renderUrls(urls);
+  persistFeeds();
+}
+
+// ── Add a new topic under the selected language ───────────
+function addNewTopic() {
+  const lang = getSelectedLang();
+  if (!lang) {
+    showToast('Select a language first', true);
+    return;
+  }
+
+  const topic = prompt('Enter topic name:');
+  if (!topic || !topic.trim()) return;
+
+  const topicClean = topic.trim();
+  if (!ALL_FEEDS[lang]) ALL_FEEDS[lang] = {};
+  if (topicClean in ALL_FEEDS[lang]) {
+    showToast('Topic already exists', true);
+    return;
+  }
+
+  ALL_FEEDS[lang][topicClean] = [];
+
+  // Refresh topic dropdown
+  onLangChange();
+
+  // Auto-select the new topic
+  const topicSel = document.getElementById('feed-topic-select');
+  topicSel.value = topicClean;
+  onTopicChange();
+
+  persistFeeds();
+}
+
+// ── Persist current feeds state to server ─────────────────
+async function persistFeeds() {
+  const lang = getSelectedLang();
+  const topic = getSelectedTopic();
+  if (!lang || !topic) return;
+
+  const urls = (ALL_FEEDS[lang] || {})[topic] || [];
+
+  try {
+    const formData = new FormData();
+    formData.append('action', 'edit');
+    formData.append('lang', lang);
+    formData.append('topic', topic);
+    formData.append('urls', urls.join('\n'));
+
+    await fetch('/api/sources/news-feeds', {
+      method: 'POST',
+      body: formData,
+    });
+
+    // Hot-reload config in daemon
+    fetch('/api/reload', { method: 'POST' }).catch(() => {});
+  } catch (e) {
+    showToast('Failed to save feeds', true);
+  }
+}
+
+// ── Kiwix Modal ───────────────────────────────────────────
+function openKiwixModal(row) {
+  const modal = document.getElementById('kiwix-modal');
+  const form = document.getElementById('kiwix-form');
+  modal.classList.add('visible');
+
+  if (row) {
+    document.getElementById('kiwix-modal-title').textContent = 'Edit Kiwix Server';
+    document.getElementById('kiwix-action').value = 'edit';
+    form.querySelector('[name="lang"]').value = row.dataset.lang || '';
+    form.querySelector('[name="base_url"]').value = row.dataset.baseUrl || '';
+    form.querySelector('[name="zim_name"]').value = row.dataset.zimName || '';
+  } else {
+    document.getElementById('kiwix-modal-title').textContent = 'Add Kiwix Server';
+    document.getElementById('kiwix-action').value = 'add';
+    form.reset();
+  }
+}
+
+function closeKiwixModal() {
+  const m = document.getElementById('kiwix-modal');
+  if (m) m.classList.remove('visible');
+}
+
+// ── Helpers ───────────────────────────────────────────────
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escapeJs(str) {
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+// ── Close modal on overlay click ──────────────────────────
+document.getElementById('kiwix-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeKiwixModal();
+});
+</script>
+{% endblock %}

@@ -360,6 +360,7 @@ textarea { resize: vertical; }
 <nav>
   <div class="logo">LinguaDaily <span>admin</span></div>
   <a href="/" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/sources" {% if active == 'sources' %}class="active"{% endif %}>Sources</a>
   <a href="/logs" {% if active == 'logs' %}class="active"{% endif %}>Logs</a>
   <a href="/config" {% if active == 'config' %}class="active"{% endif %}>Config</a>
 </nav>
@@ -605,6 +606,23 @@ document.addEventListener('htmx:afterRequest', function(evt) {
         }
         // Hot-reload config in the daemon
         fetch('/api/reload', { method: 'POST' }).catch(() => {});
+        return;
+      }
+
+      // ── Sources CRUD (Kiwix servers + RSS feeds) ──
+      if (path.startsWith('/api/sources/')) {
+        showToast(data.message || 'Saved', false);
+        // Close any open modals
+        const kiwixModal = document.getElementById('kiwix-modal');
+        const feedModal = document.getElementById('feed-modal');
+        if (kiwixModal) kiwixModal.classList.remove('visible');
+        if (feedModal) feedModal.classList.remove('visible');
+        // Hot-reload config then reload page
+        fetch('/api/reload', { method: 'POST' }).then(() => {
+          setTimeout(() => location.reload(), 400);
+        }).catch(() => {
+          setTimeout(() => location.reload(), 400);
+        });
         return;
       }
 

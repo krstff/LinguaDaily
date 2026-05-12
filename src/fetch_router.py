@@ -44,7 +44,9 @@ def fetch_article(source, topic, config,
                                 learning_language=learning_language,
                                 article_filter=article_filter)
     elif source == "news":
-        return _fetch_news(topic, config, article_filter=article_filter)
+        return _fetch_news(topic, config,
+                           learning_language=learning_language,
+                           article_filter=article_filter)
     else:
         print(f"Warning: unknown source '{source}', falling back to wikipedia.")
         return _fetch_wikipedia(config,
@@ -96,7 +98,8 @@ def _fetch_wikipedia(config, learning_language=None,
 
 # ── News (RSS) ──────────────────────────────────────────────────────
 
-def _fetch_news(topic, config, article_filter=None):
+def _fetch_news(topic, config, learning_language=None,
+                article_filter=None):
     """Fetch via RSS-based news fetcher."""
     from news_fetcher import NewsFetcher
 
@@ -105,7 +108,8 @@ def _fetch_news(topic, config, article_filter=None):
     min_words = af.get("min_words", 250)
     max_words = af.get("max_words", 600)
 
-    fetcher = NewsFetcher(config=config)
+    fetcher = NewsFetcher(config=config,
+                          learning_language=learning_language)
     return fetcher.fetch_by_topic(
         topic,
         min_words=min_words,

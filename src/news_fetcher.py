@@ -22,72 +22,75 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 # ── Feed catalogue (fallback defaults) ─────────────────────────────
+# Language-keyed dict: { lang_code: { topic: [urls] } }.
 # These are used only when config.json has no sources.news.feeds section.
 # In production, feeds should be configured in config.json under
 # "sources" → "news" → "feeds".
 
 FEED_CATALOGUE = {
-    "Technology": [
-        "https://feeds.bbci.co.uk/news/technology/rss.xml",
-        "https://www.theregister.com/security/headlines.atom",
-    ],
-    "Science": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Mathematics": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "History": [
-        "https://feeds.bbci.co.uk/news/world/rss.xml",
-    ],
-    "Art": [
-        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    ],
-    "Music": [
-        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    ],
-    "Philosophy": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Literature": [
-        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    ],
-    "Architecture": [
-        "https://feeds.bbci.co.uk/news/world/rss.xml",
-    ],
-    "Biology": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Physics": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Chemistry": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Geography": [
-        "https://feeds.bbci.co.uk/news/world/rss.xml",
-        "https://www.nationalgeographic.com/news/",
-    ],
-    "Astronomy": [
-        "https://www.nasa.gov/rss/dyn/breaking_news.rss",
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Psychology": [
-        "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    ],
-    "Economics": [
-        "https://feeds.bbci.co.uk/news/business/rss.xml",
-    ],
-    "Politics": [
-        "https://feeds.bbci.co.uk/news/politics/rss.xml",
-        "https://feeds.bbci.co.uk/news/world/rss.xml",
-    ],
-    "Medicine": [
-        "https://feeds.bbci.co.uk/news/health/rss.xml",
-    ],
-    "Culture": [
-        "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    ],
+    "en": {
+        "Technology": [
+            "https://feeds.bbci.co.uk/news/technology/rss.xml",
+            "https://www.theregister.com/security/headlines.atom",
+        ],
+        "Science": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Mathematics": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "History": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+        ],
+        "Art": [
+            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        ],
+        "Music": [
+            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        ],
+        "Philosophy": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Literature": [
+            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        ],
+        "Architecture": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+        ],
+        "Biology": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Physics": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Chemistry": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Geography": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            "https://www.nationalgeographic.com/news/",
+        ],
+        "Astronomy": [
+            "https://www.nasa.gov/rss/dyn/breaking_news.rss",
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Psychology": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        ],
+        "Economics": [
+            "https://feeds.bbci.co.uk/news/business/rss.xml",
+        ],
+        "Politics": [
+            "https://feeds.bbci.co.uk/news/politics/rss.xml",
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+        ],
+        "Medicine": [
+            "https://feeds.bbci.co.uk/news/health/rss.xml",
+        ],
+        "Culture": [
+            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+        ],
+    },
 }
 
 # Fallback: general feeds used when a topic has no specific mapping
@@ -100,10 +103,23 @@ def load_feeds_from_config(config=None):
     """
     Load RSS feed catalogue from config.json.
 
-    Returns the configured feeds dict, or falls back to FEED_CATALOGUE
-    if config is missing/empty.
+    Returns a language-keyed dict: { lang_code: { topic: [urls] } }.
 
-    Config shape:
+    Supports two formats:
+
+    New (language-keyed):
+        {
+          "sources": {
+            "news": {
+              "feeds": {
+                "en": { "Technology": ["url1"] },
+                "es": { "Tecnología": ["url2"] }
+              }
+            }
+          }
+        }
+
+    Legacy (flat — auto-wrapped under "en"):
         {
           "sources": {
             "news": {
@@ -116,14 +132,25 @@ def load_feeds_from_config(config=None):
         feeds = (config.get("sources", {}) or {}).get("news", {}) or {}
         cfg_feeds = feeds.get("feeds")
         if cfg_feeds and isinstance(cfg_feeds, dict):
-            return cfg_feeds
+            # Detect format: if values are dicts of topic→urls, it's language-keyed.
+            # If values are lists of URLs, it's legacy flat format.
+            has_language_keys = any(
+                isinstance(v, dict)
+                for v in cfg_feeds.values()
+            )
+            if has_language_keys:
+                return cfg_feeds
+            else:
+                # Legacy flat format — wrap under "en"
+                return {"en": cfg_feeds}
     return FEED_CATALOGUE
 
 
 class NewsFetcher:
     """Fetch news articles from RSS feeds."""
 
-    def __init__(self, feeds=None, categories=None, config=None):
+    def __init__(self, feeds=None, categories=None, config=None,
+                 learning_language=None):
         """
         Parameters
         ----------
@@ -135,6 +162,9 @@ class NewsFetcher:
         config : dict, optional
             Full config.json contents. Used to load feeds from
             sources.news.feeds if `feeds` is not provided directly.
+        learning_language : str, optional
+            Language code (e.g. "es", "de") to resolve language-specific
+            RSS feeds. Falls back to English feeds if unavailable.
         """
         if feeds is not None:
             self._feeds = feeds
@@ -142,6 +172,7 @@ class NewsFetcher:
             self._feeds = load_feeds_from_config(config)
         else:
             self._feeds = FEED_CATALOGUE
+        self._learning_language = learning_language or "en"
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": "LinguaDaily/1.0 (language-learning)"
@@ -150,16 +181,49 @@ class NewsFetcher:
     # ── Topic → feeds ──────────────────────────────────────────────
 
     def _resolve_feeds(self, topic):
-        """Get the list of RSS feed URLs for a given topic."""
-        if topic in self._feeds:
-            return list(self._feeds[topic])
-        # Try case-insensitive match
-        topic_lower = topic.lower()
-        for key, urls in self._feeds.items():
-            if key.lower() == topic_lower:
-                return list(urls)
+        """Get the list of RSS feed URLs for a given topic.
+
+        Resolution order:
+          1. Feeds for the learning_language + exact topic match
+          2. Feeds for the learning_language + case-insensitive topic match
+          3. Same two steps falling back to English feeds
+          4. DEFAULT_FEEDS (general BBC news)
+        """
+        lang = self._learning_language.lower()
+
+        # Try target language first
+        lang_feeds = self._feeds.get(lang, {})
+        found = self._find_topic_in_catalogue(topic, lang_feeds)
+        if found:
+            return list(found)
+
+        # Fall back to English feeds
+        en_feeds = self._feeds.get("en", {})
+        found = self._find_topic_in_catalogue(topic, en_feeds)
+        if found:
+            logger.info(
+                "No '%s' feeds for topic '%s', falling back to English.",
+                lang, topic,
+            )
+            return list(found)
+
         logger.warning("No feeds for topic '%s', using defaults.", topic)
         return list(DEFAULT_FEEDS)
+
+    @staticmethod
+    def _find_topic_in_catalogue(topic, catalogue):
+        """Find a topic in a single-language feed catalogue.
+
+        Returns the list of URLs or None.
+        First tries exact match, then case-insensitive.
+        """
+        if topic in catalogue:
+            return catalogue[topic]
+        topic_lower = topic.lower()
+        for key, urls in catalogue.items():
+            if key.lower() == topic_lower:
+                return urls
+        return None
 
     # ── RSS fetching ───────────────────────────────────────────────
 
