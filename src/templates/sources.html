@@ -6,13 +6,17 @@
 <h1>Sources</h1>
 <p class="subtitle">Manage content sources — Kiwix servers and RSS news feeds</p>
 
+<div class="toolbar">
+  <button class="btn btn-primary" onclick="openAddLangModal()">+ Add Language</button>
+</div>
+
 <!-- ── Kiwix Servers ──────────────────────────────────────── -->
 <div class="model-panel" style="border-left:3px solid var(--green);">
   <h2>Kiwix Servers</h2>
   <p class="subtitle">Per-language Wikipedia servers (ZIM files)</p>
 
   <div class="toolbar">
-    <button class="btn btn-primary" onclick="openKiwixModal(null)">+ Add Server</button>
+    <button class="btn btn-secondary" onclick="openKiwixModal(null)">+ Add Server</button>
   </div>
 
   <table>
@@ -88,6 +92,36 @@
   </div>
 </div>
 
+<!-- ── Add Language Modal ──────────────────────────────────── -->
+<div class="modal-overlay" id="add-lang-modal">
+  <div class="modal">
+    <h2>Add Language Support</h2>
+    <p style="color:var(--fg_dim);font-size:12px;margin-bottom:16px;">Adds a Kiwix server entry and news feeds bucket for the new language.</p>
+    <form id="add-lang-form" onsubmit="event.preventDefault(); addLanguage()">
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Language Code</label>
+          <input type="text" name="lang" id="new-lang-code" required placeholder="e.g. fr, ja, ar" pattern="[a-z]{2}" title="Two-letter ISO code">
+        </div>
+        <div class="form-row">
+          <label>Kiwix Base URL (optional)</label>
+          <input type="text" name="base_url" id="new-lang-base-url" placeholder="http://192.168.1.5:8080">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>ZIM Name (optional)</label>
+        <input type="text" name="zim_name" id="new-lang-zim-name" placeholder="wikipedia_fr_all_nopic_2026-01">
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeAddLangModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Language</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ── Kiwix Server Modal ─────────────────────────────────── -->
 <div class="modal-overlay" id="kiwix-modal">
   <div class="modal">
@@ -120,8 +154,9 @@
 </div>
 
 <script>
-// All feeds data from server: { lang: { topic: [urls] } }
+// Data from server
 const ALL_FEEDS = {{ news_feeds | tojson }};
+const KIWIX_LANGS = {{ kiwix_servers.keys() | list | tojson }};
 
 function getSelectedLang() {
   return document.getElementById('feed-lang-select').value || '';
@@ -314,7 +349,62 @@ function closeKiwixModal() {
   if (m) m.classList.remove('visible');
 }
 
-// ── Helpers ───────────────────────────────────────────────
+// ── Add Language Support ──────────────────────────────────
+function openAddLangModal() {
+  document.getElementById('add-lang-modal').classList.add('visible');
+  document.getElementById('new-lang-code').value = '';
+  document.getElementById('new-lang-base-url').value = '';
+  document.getElementById('new-lang-zim-name').value = '';
+}
+
+function closeAddLangModal() {
+  const m = document.getElementById('add-lang-modal');
+  if (m) m.classList.remove('visible');
+}
+
+async function addLanguage() {
+  const lang = document.getElementById('new-lang-code').value.trim().toLowerCase();
+  const baseUrl = document.getElementById('new-lang-base-url').value.trim();
+  const zimName = document.getElementById('new-lang-zim-name').value.trim();
+
+  if (!lang || !/^[a-z]{2}$/.test(lang)) {
+    showToast('Enter a valid two-letter language code', true);
+    return;
+  }
+
+  // Check for duplicates
+  if (KIWIX_LANGS.includes(lang)) {
+    showToast("Kiwix server for '" + lang + "' already exists", true);
+    return;
+  }
+
+  // Call the combined endpoint
+  try {
+    const formData = new FormData();
+    formData.append('lang', lang);
+    if (baseUrl) formData.append('base_url', baseUrl);
+    if (zimName) formData.append('zim_name', zimName);
+
+    const res = await fetch('/api/sources/language', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.message || 'Failed to add language', true);
+      return;
+    }
+
+    showToast("Language '" + lang + "' added", false);
+    closeAddLangModal();
+    fetch('/api/reload', { method: 'POST' }).catch(() => {});
+    setTimeout(() => location.reload(), 500);
+  } catch (e) {
+    showToast('Failed to add language support', true);
+  }
+}
+// ────────────────────────────────────────────────
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -323,9 +413,12 @@ function escapeJs(str) {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
 }
 
-// ── Close modal on overlay click ──────────────────────────
+// ── Close modals on overlay click ────────────────────────
 document.getElementById('kiwix-modal').addEventListener('click', function(e) {
   if (e.target === this) closeKiwixModal();
+});
+document.getElementById('add-lang-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeAddLangModal();
 });
 </script>
 {% endblock %}

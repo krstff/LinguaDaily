@@ -393,7 +393,7 @@ textarea { resize: vertical; }
         <div class="form-row">
           <label>Native Language (I understand)</label>
           <select name="native_language">
-            {% for lang in ['en','de','es','it','hu','cs'] %}
+            {% for lang in kiwix_languages %}
             <option value="{{ lang }}">{{ lang }}</option>
             {% endfor %}
           </select>
@@ -401,7 +401,7 @@ textarea { resize: vertical; }
         <div class="form-row">
           <label>Learning Language (I want to learn)</label>
           <select name="learning_language">
-            {% for lang in ['de','it','es','hu','cs'] %}
+            {% for lang in kiwix_languages %}
             <option value="{{ lang }}">{{ lang }}</option>
             {% endfor %}
           </select>

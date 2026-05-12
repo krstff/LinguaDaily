@@ -514,7 +514,7 @@ class TelegramBot:
         highlighted_translation = self._highlight_words(
             safe_translation, vocab_target_words)
         msg2 = f"🌐 Translation ({self._escape_html(native_language)})\n\n"
-        msg2 += self._truncate_for_telegram(highlighted_translation, "\n…")
+        msg2 += "<blockquote expandable> " + self._truncate_for_telegram(highlighted_translation, '\n…') + "</blockquote>"
 
         try:
             await bot.send_message(
@@ -539,7 +539,7 @@ class TelegramBot:
                     if example:
                         # word in bold, meaning plain, example sentence in italic
                         vocab_lines.append(
-                            f"  • <b>{word}</b> — {meaning}\n"
+                            f"  • <b>{word}</b> — <tg-spoiler>{meaning}</tg-spoiler>\n"
                             f"    <i>{self._escape_html(example)}</i>")
                     else:
                         vocab_lines.append(f"  • <b>{word}</b> — {meaning}")

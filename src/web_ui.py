@@ -103,6 +103,18 @@ def create_app(config_path=None, log_file=None, password=None,
     app = Flask(__name__, template_folder=_TEMPLATE_DIR)
     app.secret_key = "lingua-webui"  # minimal, no sessions used
 
+    # ── Global context: Kiwix languages for profile dropdowns ──
+    @app.context_processor
+    def inject_kiwix_languages():
+        try:
+            cfg = load_config(_config_path)
+        except Exception:
+            cfg = {}
+        servers = cfg.get("kiwix_servers", {})
+        # Sorted list of language codes that have Kiwix server entries
+        langs = sorted(servers.keys())
+        return {"kiwix_languages": langs}
+
     # ── Hot-reload endpoint ──────────────────────────────
     @app.route("/api/reload", methods=["POST"])
     @require_auth
@@ -338,6 +350,51 @@ def create_app(config_path=None, log_file=None, password=None,
                 json.dump(config, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             return jsonify({"message": f"Kiwix server '{lang}' removed"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
+
+    # ── Add language support (scaffolds Kiwix + feeds) ──────
+    @app.route("/api/sources/language", methods=["POST"])
+    @require_auth
+    def add_language():
+        """Add a new language with Kiwix server entry and empty feeds bucket.
+
+        Form fields: lang (required), base_url (optional), zim_name (optional)
+        """
+        lang = request.form.get("lang", "").strip().lower()
+        if not lang or len(lang) != 2:
+            return jsonify({"message": "Enter a valid two-letter language code"}), 400
+
+        config = load_config(_config_path)
+
+        # Check for existing Kiwix entry
+        kiwix = config.setdefault("kiwix_servers", {})
+        if lang in kiwix:
+            return jsonify({"message": f"Kiwix server for '{lang}' already exists"}), 409
+
+        # Add Kiwix server (with optional URL/ZIM from form, or empty)
+        base_url = request.form.get("base_url", "").strip()
+        zim_name = request.form.get("zim_name", "").strip()
+        kiwix[lang] = {}
+        if base_url:
+            kiwix[lang]["base_url"] = base_url
+        if zim_name:
+            kiwix[lang]["zim_name"] = zim_name
+
+        # Add empty feeds bucket
+        sources = config.setdefault("sources", {})
+        news = sources.setdefault("news", {})
+        feeds = news.setdefault("feeds", {})
+        feeds.setdefault(lang, {})
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"Language '{lang}' added"})
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
 
