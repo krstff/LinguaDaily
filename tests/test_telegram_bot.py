@@ -20,9 +20,8 @@ def sample_config(tmp_path):
         },
         "profiles": {
             "krystof": {
-                "source_lang": "en",
-                "target_lang": "de",
-                "target_lang_name": "German",
+                "learning_language": "de",
+                "native_language": "en",
                 "telegram_chat_id": 111222333,
                 "schedule": {
                     "time": "08:00",
@@ -31,9 +30,8 @@ def sample_config(tmp_path):
                 "use_tts": True,
             },
             "anna": {
-                "source_lang": "en",
-                "target_lang": "es",
-                "target_lang_name": "Spanish",
+                "learning_language": "es",
+                "native_language": "en",
                 "telegram_chat_id": 444555666,
                 "schedule": {
                     "time": "10:00",
@@ -41,9 +39,8 @@ def sample_config(tmp_path):
                 },
             },
             "unregistered": {
-                "source_lang": "en",
-                "target_lang": "fr",
-                "target_lang_name": "French",
+                "learning_language": "fr",
+                "native_language": "en",
                 # no telegram_chat_id
             },
         },
@@ -210,9 +207,9 @@ class TestDeliverLesson:
             "title": "Python Basics",
             "content": "Python is a programming language.",
             "original_content": "Das ist Python.",
-            "source_lang": "en",
-            "target_lang_name": "German",
-            "content_lang": "de",
+            "learning_language_name": "German",
+            "native_language": "English",
+            "vocab": [],
         }
 
         await bot.deliver_lesson("krystof", lesson)
@@ -231,7 +228,7 @@ class TestDeliverLesson:
         msg2_kwargs = calls[1][1]
         assert msg2_kwargs["chat_id"] == 111222333
         assert "Translation" in msg2_kwargs["text"]
-        assert "German" in msg2_kwargs["text"]
+        assert "English" in msg2_kwargs["text"]
 
         bot.db.close()
 
@@ -258,9 +255,9 @@ class TestDeliverLesson:
             "title": "Long Article",
             "content": "A" * 5000,
             "original_content": "B" * 5000,
-            "source_lang": "en",
-            "target_lang_name": "German",
-            "content_lang": "de",
+            "learning_language_name": "German",
+            "native_language": "English",
+            "vocab": [],
         }
 
         await bot.deliver_lesson("krystof", lesson)
@@ -412,40 +409,28 @@ class TestCommands:
         bot.db.close()
 
     @pytest.mark.asyncio
-    async def test_command_register_success(self, sample_config, mock_aiogram):
+    async def test_register_user_success(self, sample_config, mock_aiogram):
         from src.telegram_bot import TelegramBot
         config = sample_config[0]
         bot = TelegramBot(config=config)
 
-        await bot.handle_register(777888999, "unregistered")
+        bot.register_user(777888999, "unregistered")
 
         assert bot.resolve_profile(777888999) == "unregistered"
-        sent = mock_aiogram.send_message.call_args[1]["text"]
-        assert "Registered" in sent or "✅" in sent
         bot.db.close()
 
     @pytest.mark.asyncio
-    async def test_command_register_bad_profile(self, sample_config, mock_aiogram):
+    async def test_register_user_multiple_profiles(self, sample_config, mock_aiogram):
         from src.telegram_bot import TelegramBot
         config = sample_config[0]
         bot = TelegramBot(config=config)
 
-        await bot.handle_register(777888999, "nonexistent")
+        # Register a second profile for an existing chat
+        bot.register_user(111222333, "anna")
 
-        sent = mock_aiogram.send_message.call_args[1]["text"]
-        assert "not found" in sent.lower()
-        bot.db.close()
-
-    @pytest.mark.asyncio
-    async def test_command_register_no_arg(self, sample_config, mock_aiogram):
-        from src.telegram_bot import TelegramBot
-        config = sample_config[0]
-        bot = TelegramBot(config=config)
-
-        await bot.handle_register(777888999, "")
-
-        sent = mock_aiogram.send_message.call_args[1]["text"]
-        assert "Usage" in sent or "usage" in sent.lower()
+        cid_profiles = bot.chat_id_to_profiles.get(111222333, [])
+        assert "krystof" in cid_profiles
+        assert "anna" in cid_profiles
         bot.db.close()
 
     @pytest.mark.asyncio
@@ -517,9 +502,9 @@ class TestBotLifecycle:
             "title": "No Audio",
             "content": "Just text.",
             "original_content": "Original text.",
-            "source_lang": "en",
-            "target_lang_name": "German",
-            "content_lang": "de",
+            "learning_language_name": "German",
+            "native_language": "English",
+            "vocab": [],
             # no wav_path
         }
 

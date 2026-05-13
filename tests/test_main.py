@@ -323,7 +323,7 @@ class TestCLI:
         # Patch start to capture logging level before it does work
         original_start = LinguaDaemon.start
 
-        async def capture_start(self):
+        async def capture_start(self, web_ui_host=None, web_ui_port=None):
             root = logging.getLogger()
             assert root.level == logging.DEBUG
             raise asyncio.CancelledError

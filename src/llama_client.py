@@ -174,7 +174,7 @@ class LlamaClient:
             Profile name to resolve per-profile model overrides.
         """
         if config is None:
-            config = self._load_config()
+            config = load_config(fallback={})
 
         self.config = config
         self.profile_name = profile_name
@@ -503,18 +503,6 @@ Translation ({native_lang}):
             logger.error("LLM health check failed: %s", e)
             return False
 
-    # ── Helpers ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _load_config():
-        """Load config from default path."""
-        try:
-            return load_config()
-        except Exception as e:
-            logger.error("Failed to load config for LLM client: %s", e)
-            return {}
-
-
 # ── CLI entry point ────────────────────────────────────────────────
 
 def main():
@@ -545,7 +533,7 @@ def main():
     if args.config:
         config = load_config(args.config)
     else:
-        config = LlamaClient._load_config()
+        config = load_config(fallback={})
 
     if args.llm_url:
         config.setdefault("llm", {})["base_url"] = args.llm_url

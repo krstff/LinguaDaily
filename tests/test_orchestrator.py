@@ -61,6 +61,11 @@ class TestLoadConfig:
         with pytest.raises(FileNotFoundError):
             load_config(str(tmp_path / "missing.json"))
 
+    def test_load_config_fallback(self, tmp_path):
+        from config import load_config
+        result = load_config(str(tmp_path / "missing.json"), fallback={})
+        assert result == {}
+
 
 class TestGetProfile:
     """Test profile resolution."""
@@ -124,23 +129,6 @@ class TestCleanContent:
         result = clean_content(text)
         assert ", word2" in result
         assert ", word4" in result
-
-
-class TestFetchArticle:
-    """Test the fetch_article router wrapper."""
-
-    def test_fetch_with_source(self, sample_config):
-        from src.orchestrator import fetch_article
-        config = sample_config[0]
-
-        # orchestrator does: from fetch_router import fetch_article as route_fetch
-        with patch("fetch_router.fetch_article") as mock_route:
-            mock_route.return_value = ("Test Title", "Test content here.")
-            title, text = fetch_article(source="wikipedia", config=config)
-
-        assert title == "Test Title"
-        mock_route.assert_called_once()
-
 
 class TestOrchestratorInit:
     """Test Orchestrator initialization."""

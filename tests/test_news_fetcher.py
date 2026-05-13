@@ -270,11 +270,15 @@ class TestFeedCatalogue:
             "Chemistry", "Geography", "Astronomy", "Psychology", "Economics",
             "Politics", "Medicine", "Culture",
         ]
-        for topic in expected_topics:
-            assert topic in FEED_CATALOGUE, f"Missing feed mapping for topic: {topic}"
+        # FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
+        for lang, topics in FEED_CATALOGUE.items():
+            for topic in expected_topics:
+                assert topic in topics, f"Missing feed mapping for topic: {topic} (lang: {lang})"
 
     def test_feeds_are_http_urls(self):
         from src.news_fetcher import FEED_CATALOGUE
-        for topic, feeds in FEED_CATALOGUE.items():
-            for url in feeds:
-                assert url.startswith("http"), f"{topic}: URL should start with http: {url}"
+        # FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
+        for lang, topics in FEED_CATALOGUE.items():
+            for topic, feeds in topics.items():
+                for url in feeds:
+                    assert url.startswith("http"), f"{lang}/{topic}: URL should start with http: {url}"

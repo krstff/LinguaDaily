@@ -67,20 +67,26 @@ LOG_FILE    = PROJECT_DIR / "lingua.log"
 
 # ── Config loader ────────────────────────────────────────────────────
 
-def load_config(path=None):
+def load_config(path=None, fallback=None):
     """Load and return the project config as a dict.
 
     Args:
         path: Optional path to a JSON config file. Defaults to
               ``config.json`` in the project root.
+        fallback: Value to return on any error (default: raise).
 
     Returns:
-        dict with the parsed configuration.
+        dict with the parsed configuration, or ``fallback`` on error.
 
     Raises:
-        FileNotFoundError: if the config file does not exist.
-        json.JSONDecodeError: if the file is not valid JSON.
+        FileNotFoundError: if the config file does not exist and no fallback.
+        json.JSONDecodeError: if the file is not valid JSON and no fallback.
     """
     target = pathlib.Path(path) if path else CONFIG_PATH
-    with open(target, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(target, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        if fallback is not None:
+            return fallback
+        raise

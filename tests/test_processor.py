@@ -9,8 +9,9 @@ class TestProcessorInit:
 
     def test_default_init(self):
         from src.processor import LinguaProcessor
-        proc = LinguaProcessor(target_lang_name="German", profile="test")
-        assert proc.target_lang_name == "German"
+        proc = LinguaProcessor(learning_language="de", profile="test")
+        assert proc.learning_language == "de"
+        assert proc.learning_language_name == "German"
         assert proc.profile == "test"
 
     def test_explicit_vocab_path(self, tmp_path):

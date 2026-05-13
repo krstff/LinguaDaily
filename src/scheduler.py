@@ -74,20 +74,13 @@ class LessonScheduler:
             Override path to config.json.
         """
         if config is None:
-            config = self._load_config(config_path)
+            config = load_config(config_path)
 
         self.config = config
         self.delivery_callback = delivery_callback
         self._scheduler = None
         self._job_queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
-
-    # ── Config helpers ─────────────────────────────────────────────
-
-    @staticmethod
-    def _load_config(path=None):
-        """Load config from JSON file (delegates to shared loader)."""
-        return load_config(path)
 
     def get_scheduled_profiles(self) -> list[tuple[str, dict]]:
         """
@@ -180,7 +173,7 @@ class LessonScheduler:
         daemon picks up new profiles, schedule changes, and enable/disable
         toggles without a restart.
         """
-        self.config = self._load_config()
+        self.config = load_config()
         logger.info("Config reloaded from disk")
 
     def reload_jobs(self):
@@ -339,7 +332,7 @@ class LessonScheduler:
     def print_schedule(config=None, config_path=None):
         """Print all scheduled profiles (for --list mode)."""
         if config is None:
-            config = LessonScheduler._load_config(config_path)
+            config = load_config(config_path)
 
         scheduled = LessonScheduler(config).get_scheduled_profiles()
 

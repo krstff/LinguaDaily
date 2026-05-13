@@ -28,17 +28,13 @@ class LinguaDaemon:
 
     def __init__(self, config=None, config_path=None):
         if config is None:
-            config = self._load_config(config_path)
+            config = load_config(config_path)
 
         self.config = config
         self.bot = None
         self.scheduler = None
         self.web_server = None
         self._shutdown_event = asyncio.Event()
-
-    def _load_config(self, path=None):
-        """Load config from JSON file (delegates to shared loader)."""
-        return load_config(path)
 
     def _setup_logging(self, verbose=False):
         """Configure logging to both console and file."""

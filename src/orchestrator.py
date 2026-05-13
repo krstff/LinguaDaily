@@ -125,41 +125,6 @@ def clean_content(text):
     return text
 
 
-# ── Article fetching wrapper ────────────────────────────────────────
-
-def fetch_article(source="wikipedia", topic=None, config=None,
-                  learning_language=None, article_filter=None):
-    """
-    Fetch an article from the given content source via the router.
-
-    Parameters
-    ----------
-    source : str
-        Content source identifier ("wikipedia", "news").
-    topic : str or None
-        Topic — used only for news RSS feeds; ignored for wikipedia
-        which uses the /random endpoint.
-    config : dict or None
-        Full config.json contents. Loaded from disk if None.
-    learning_language : str or None
-        Language code to fetch articles in (used to pick the right
-        Kiwix server when source is wikipedia).
-    article_filter : dict or None
-        Per-profile article filter overrides ({min_words, max_words}).
-
-    Returns
-    -------
-    (title, text) or (None, None) on failure.
-    """
-    if config is None:
-        config = load_config()
-
-    from fetch_router import fetch_article as route_fetch
-    return route_fetch(source, topic, config,
-                       learning_language=learning_language,
-                       article_filter=article_filter)
-
-
 # ── Orchestrator class ──────────────────────────────────────────────
 
 class Orchestrator:
@@ -224,8 +189,10 @@ class Orchestrator:
         logger.info("[%s] Fetching random %s article (lang: %s)...",
                     profile_name, source, learning_language)
 
-        title, content = fetch_article(
+        from fetch_router import fetch_article as _fetch
+        title, content = _fetch(
             source=source,
+            topic=None,
             config=self.config,
             learning_language=learning_language,
             article_filter=article_filter,

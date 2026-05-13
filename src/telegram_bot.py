@@ -201,7 +201,7 @@ class TelegramBot:
 
     def __init__(self, config=None, profile_name=None):
         if config is None:
-            config = self._load_config()
+            config = load_config(fallback={})
 
         self.config = config
         self.profile_name = profile_name
@@ -228,13 +228,6 @@ class TelegramBot:
         self._bot = None
 
     # ── Config / mapping ───────────────────────────────────────────
-
-    def _load_config(self):
-        try:
-            return load_config()
-        except Exception as e:
-            logger.error("Failed to load config: %s", e)
-            return {}
 
     def _build_mapping(self):
         """Build bidirectional chat_id ↔ profile mappings from config.
