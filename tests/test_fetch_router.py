@@ -178,6 +178,47 @@ class TestFetchNews:
         assert call_kwargs["min_words"] == 250
         assert call_kwargs["max_words"] == 600
 
+    def test_picks_random_topic_when_none(self):
+        """When topic is None, should pick a random topic."""
+        from src.fetch_router import _fetch_news
+        config = {
+            "sources": {"news": {}},
+            "article_filter": {},
+        }
+
+        with patch("news_fetcher.NewsFetcher") as MockNF:
+            instance = MagicMock()
+            instance.pick_random_topic.return_value = "Technology"
+            instance.fetch_by_topic.return_value = ("Tech News", "Content")
+            MockNF.return_value = instance
+
+            title, text = _fetch_news(None, config)
+        # Should have called pick_random_topic and then fetch with the result
+        instance.pick_random_topic.assert_called_once()
+        instance.fetch_by_topic.assert_called_once_with(
+            "Technology", min_words=250, max_words=600
+        )
+        assert title == "Tech News"
+
+    def test_returns_none_when_no_topics_available(self):
+        """When topic is None and no topics exist, should return (None, None)."""
+        from src.fetch_router import _fetch_news
+        config = {
+            "sources": {"news": {}},
+            "article_filter": {},
+        }
+
+        with patch("news_fetcher.NewsFetcher") as MockNF:
+            instance = MagicMock()
+            instance.pick_random_topic.return_value = None  # No topics available
+            MockNF.return_value = instance
+
+            title, text = _fetch_news(None, config)
+        assert title is None
+        assert text is None
+        # fetch_by_topic should NOT have been called
+        instance.fetch_by_topic.assert_not_called()
+
 
 class TestCli:
     """Test CLI entry points."""

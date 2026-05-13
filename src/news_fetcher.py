@@ -329,6 +329,34 @@ class NewsFetcher:
             return article["title"], truncated
         return None
 
+    # ── Topic selection helpers ────────────────────────────────────
+
+    def pick_random_topic(self):
+        """Pick a random topic available for the learning language.
+
+        Tries the learning_language first, falls back to English.
+        Returns a topic string or None if no topics are available.
+        """
+        lang = self._learning_language.lower()
+
+        # Try target language first
+        lang_feeds = self._feeds.get(lang, {})
+        if lang_feeds:
+            logger.info("Picking random topic from '%s' feeds", lang)
+            return random.choice(list(lang_feeds.keys()))
+
+        # Fall back to English
+        en_feeds = self._feeds.get("en", {})
+        if en_feeds:
+            logger.info(
+                "No topics for '%s', picking random topic from English feeds",
+                lang,
+            )
+            return random.choice(list(en_feeds.keys()))
+
+        logger.warning("No feed catalogue available — cannot pick a topic")
+        return None
+
     # ── Public API ─────────────────────────────────────────────────
 
     def fetch_by_topic(self, topic, min_words=250, max_words=600):

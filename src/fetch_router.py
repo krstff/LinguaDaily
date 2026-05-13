@@ -100,7 +100,11 @@ def _fetch_wikipedia(config, learning_language=None,
 
 def _fetch_news(topic, config, learning_language=None,
                 article_filter=None):
-    """Fetch via RSS-based news fetcher."""
+    """Fetch via RSS-based news fetcher.
+
+    If `topic` is None, a random topic is picked from the available feeds
+    for the given language (falling back to English).
+    """
     from news_fetcher import NewsFetcher
 
     # Article filter: profile-level > global config > defaults
@@ -110,6 +114,14 @@ def _fetch_news(topic, config, learning_language=None,
 
     fetcher = NewsFetcher(config=config,
                           learning_language=learning_language)
+
+    # Pick a random topic if none was provided
+    if topic is None:
+        topic = fetcher.pick_random_topic()
+        if topic is None:
+            print("News fetcher error: no topics available")
+            return None, None
+
     return fetcher.fetch_by_topic(
         topic,
         min_words=min_words,

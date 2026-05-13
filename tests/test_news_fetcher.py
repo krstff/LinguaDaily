@@ -258,6 +258,77 @@ class TestFetchByTopic:
         assert title is None
 
 
+class TestPickRandomTopic:
+    """Test random topic selection for news source."""
+
+    def test_picks_topic_from_learning_language(self):
+        from src.news_fetcher import NewsFetcher
+
+        config = {
+            "sources": {
+                "news": {
+                    "feeds": {
+                        "de": {"Technologie": ["https://example.de/tech.xml"]},
+                        "en": {"Technology": ["https://example.com/tech.xml"]},
+                    }
+                }
+            }
+        }
+        fetcher = NewsFetcher(config=config, learning_language="de")
+        topic = fetcher.pick_random_topic()
+        assert topic == "Technologie"
+
+    def test_falls_back_to_english(self):
+        from src.news_fetcher import NewsFetcher
+
+        config = {
+            "sources": {
+                "news": {
+                    "feeds": {
+                        "en": {"Technology": ["https://example.com/tech.xml"]},
+                    }
+                }
+            }
+        }
+        fetcher = NewsFetcher(config=config, learning_language="fr")
+        topic = fetcher.pick_random_topic()
+        assert topic == "Technology"
+
+    def test_returns_none_when_no_feeds(self):
+        from src.news_fetcher import NewsFetcher
+
+        # Pass feeds directly as empty dict (bypasses config fallback)
+        fetcher = NewsFetcher(feeds={}, learning_language="xx")
+        topic = fetcher.pick_random_topic()
+        assert topic is None
+
+    def test_picks_from_multiple_topics(self):
+        from src.news_fetcher import NewsFetcher
+
+        config = {
+            "sources": {
+                "news": {
+                    "feeds": {
+                        "en": {
+                            "Technology": ["https://example.com/tech.xml"],
+                            "Science": ["https://example.com/science.xml"],
+                            "Politics": ["https://example.com/politics.xml"],
+                        }
+                    }
+                }
+            }
+        }
+        fetcher = NewsFetcher(config=config, learning_language="en")
+        # Call multiple times to verify randomness (statistical check)
+        topics_seen = set()
+        for _ in range(20):
+            topic = fetcher.pick_random_topic()
+            assert topic in ("Technology", "Science", "Politics")
+            topics_seen.add(topic)
+        # Should have seen more than one topic across 20 tries
+        assert len(topics_seen) > 1
+
+
 class TestFeedCatalogue:
     """Test that the feed catalogue covers all expected topics."""
 

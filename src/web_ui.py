@@ -38,7 +38,8 @@ except ImportError:
 _config_path = CONFIG_PATH
 _log_file = LOG_FILE
 _password = None
-_scheduler_ref = None  # weak reference to LessonScheduler for hot-reload
+_scheduler_ref = None  # reference to LessonScheduler for hot-reload
+_bot_ref = None         # reference to TelegramBot for config reload
 
 # Path to templates directory (next to this file)
 _TEMPLATE_DIR = str(Path(__file__).resolve().parent / "templates")
@@ -73,7 +74,7 @@ def require_auth(f):
 # ── Flask application factory ────────────────────────────
 
 def create_app(config_path=None, log_file=None, password=None,
-               scheduler=None):
+               scheduler=None, bot=None):
     """Create and configure the Flask web UI app.
 
     Args:
@@ -81,8 +82,9 @@ def create_app(config_path=None, log_file=None, password=None,
         log_file:    Path to lingua.log (default: project root)
         password:    Optional basic-auth password for remote access
         scheduler:   Optional LessonScheduler instance for hot-reload support
+        bot:         Optional TelegramBot instance for config reload
     """
-    global _config_path, _log_file, _password, _scheduler_ref
+    global _config_path, _log_file, _password, _scheduler_ref, _bot_ref
 
     if config_path:
         _config_path = Path(config_path)
@@ -91,14 +93,7 @@ def create_app(config_path=None, log_file=None, password=None,
     if password is not None:
         _password = password
     _scheduler_ref = scheduler
-    """Create and configure the Flask web UI app.
-
-    Args:
-        config_path: Path to config.json (default: project root)
-        log_file:    Path to lingua.log (default: project root)
-        password:    Optional basic-auth password for remote access
-    """
-
+    _bot_ref = bot
 
     app = Flask(__name__, template_folder=_TEMPLATE_DIR)
     app.secret_key = "lingua-webui"  # minimal, no sessions used
@@ -119,23 +114,32 @@ def create_app(config_path=None, log_file=None, password=None,
     @app.route("/api/reload", methods=["POST"])
     @require_auth
     def reload_config():
-        """Reload config from disk and refresh scheduler jobs.
+        """Reload config from disk and refresh scheduler + bot state.
 
         Called after any config/profile change so the running daemon
         picks up new profiles, schedule changes, and enable/disable toggles
         without requiring a restart.
         """
-        global _scheduler_ref
+        global _scheduler_ref, _bot_ref
         try:
             # Re-read config to confirm it's valid JSON
             load_config(_config_path)
 
+            reloaded = []
+
             if _scheduler_ref is not None:
                 _scheduler_ref.reload_config()
                 _scheduler_ref.reload_jobs()
-                return jsonify({"message": "Config reloaded — scheduler jobs updated"})
+                reloaded.append("scheduler")
+
+            if _bot_ref is not None:
+                _bot_ref.reload_config()
+                reloaded.append("telegram-bot")
+
+            if reloaded:
+                return jsonify({"message": f"Config reloaded — {', '.join(reloaded)} updated(s)"})
             else:
-                return jsonify({"message": "Config validated (no scheduler attached)"})
+                return jsonify({"message": "Config validated (no scheduler/bot attached)"})
         except Exception as e:
             return jsonify({"message": f"Reload failed: {e}"}), 500
 
@@ -588,6 +592,11 @@ def create_app(config_path=None, log_file=None, password=None,
 
         Returns immediately with status; the lesson pipeline runs in a
         background thread so the HTTP response is fast.
+
+        Uses a *temporary* TelegramBot so that aiogram sessions and SQLite
+        connections are not shared across threads (both are thread-bound).
+        The running bot's config is reloaded after the lesson completes so
+        its profile selection stays in sync.
         """
         import asyncio as _asyncio
         import threading as _threading
@@ -602,9 +611,11 @@ def create_app(config_path=None, log_file=None, password=None,
         if not chat_id:
             return jsonify({"message": f"Profile '{name}' has no telegram_chat_id"}), 400
 
-        # Run lesson pipeline + delivery in a background thread
+        # Run lesson pipeline + delivery in a background thread.
+        # Always uses a temporary bot — the running bot's aiogram session
+        # and SQLite connection are tied to the main event-loop thread and
+        # cannot be used from here.
         def _run():
-            bot = None
             try:
                 from orchestrator import Orchestrator
                 from telegram_bot import TelegramBot
@@ -619,7 +630,6 @@ def create_app(config_path=None, log_file=None, password=None,
             except Exception as e:
                 print(f"[web-ui] Error running lesson for '{name}': {e}")
             finally:
-                # Clean up aiogram session + DB to avoid "Unclosed client session"
                 try:
                     if bot and bot._bot:
                         _asyncio.run(bot.stop())
@@ -630,6 +640,10 @@ def create_app(config_path=None, log_file=None, password=None,
                         bot.db.close()
                 except Exception:
                     pass
+                # Sync the running bot's profile selection so tutor chat
+                # uses the correct profile after a web-UI-triggered lesson.
+                if _bot_ref is not None:
+                    _bot_ref.select_profile(int(chat_id), name)
 
         _threading.Thread(target=_run, daemon=True).start()
         return jsonify({"message": f"Lesson started for '{name}' — check logs for progress"})

@@ -230,7 +230,7 @@ class TelegramBot:
     # ── Config / mapping ───────────────────────────────────────────
 
     def _build_mapping(self):
-        """Build bidirectional chat_id ↔ profile mappings from config.
+        """Build bidirectional chat_id ↔ profile mappings from current config.
 
         A single Telegram chat ID can be shared by multiple profiles
         (e.g. one user learning German + Italian).  Each profile still
@@ -246,6 +246,31 @@ class TelegramBot:
                 logger.info("Mapped profile '%s' → Telegram chat %d", name, chat_int)
             else:
                 logger.debug("Profile '%s' has no telegram_chat_id — skipping mapping", name)
+
+    def reload_config(self):
+        """Reload config from disk and rebuild all in-memory mappings.
+
+        Preserves the selected_profile state where possible (keeps a user's
+        active profile selection even if the profile list changes).
+        """
+        old_selected = dict(self.selected_profile)
+
+        # Reload config from disk
+        self.config = load_config()
+
+        # Reset mappings
+        self.chat_id_to_profiles: dict[int, list[str]] = {}
+        self.profile_to_chat_id: dict[str, int] = {}
+        self._build_mapping()
+
+        # Restore selected profiles only if they still exist
+        self.selected_profile: dict[int, str] = {}
+        for cid, pname in old_selected.items():
+            if pname in self.profile_to_chat_id:
+                self.selected_profile[cid] = pname
+
+        logger.info("Telegram bot config reloaded — %d profile(s) mapped",
+                    len(self.profile_to_chat_id))
 
     def resolve_profile(self, chat_id: int) -> Optional[str]:
         """Return the active profile for a Telegram user.
