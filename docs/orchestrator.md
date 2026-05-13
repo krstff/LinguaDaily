@@ -133,19 +133,6 @@ from src.orchestrator import clean_content
 clean = clean_content(raw_wikipedia_text)
 ```
 
-### `fetch_article(source, topic, config, learning_language=None, article_filter=None)`
-
-Wrapper around `fetch_router.fetch_article()`. Fetches an article from the given source (wikipedia/news). Returns `(title, text)` or `(None, None)`.
-
-```python
-from src.orchestrator import fetch_article
-title, text = fetch_article(
-    source="wikipedia",
-    config=config,
-    learning_language="de",
-)
-```
-
 ## CLI Usage
 
 Run a single lesson pipeline from the command line:

@@ -1,0 +1,87 @@
+{
+  "default_profile": "alice",
+
+  "llm": {
+    "base_url": "http://localhost:8080/v1",
+    "default_model": "gemma-4-26B-language",
+    "api_key": "",
+    "timeout": 600,
+    "translate_model": "gemma-4-26B-language",
+    "tutor_model": "gemma-4-26B-language"
+  },
+
+  "telegram": {
+    "bot_token": "YOUR_BOT_TOKEN_HERE"
+  },
+
+  "kiwix_servers": {
+    "de": {
+      "base_url": "http://localhost:8081",
+      "zim_name": "wikipedia_de_all_nopic_2026-01"
+    },
+    "fr": {
+      "base_url": "http://localhost:8081",
+      "zim_name": "wikipedia_fr_all_nopic_2026-01"
+    }
+  },
+
+  "tts": {
+    "base_url": "http://localhost:8080/v1",
+    "api_key": "",
+    "model": "omnivoice"
+  },
+
+  "sources": {
+    "wikipedia": {},
+    "news": {
+      "feeds": {
+        "en": {
+          "Technology": [
+            "https://feeds.bbci.co.uk/news/technology/rss.xml"
+          ],
+          "Science": [
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"
+          ]
+        }
+      }
+    }
+  },
+
+  "profiles": {
+    "alice": {
+      "native_language": "en",
+      "learning_language": "de",
+      "source": "wikipedia",
+      "article_filter": {
+        "min_words": 50,
+        "max_words": 300
+      },
+      "use_tts": true,
+      "tts_voice": "female",
+      "telegram_chat_id": "111222333",
+      "enabled": true,
+      "schedule": {
+        "time": "08:00",
+        "tz": "Europe/Berlin"
+      }
+    },
+
+    "bob": {
+      "native_language": "en",
+      "learning_language": "fr",
+      "source": "wikipedia",
+      "article_filter": {
+        "min_words": 50,
+        "max_words": 300
+      },
+      "use_tts": true,
+      "tts_voice": "male",
+      "telegram_chat_id": "444555666",
+      "enabled": true,
+      "schedule": {
+        "time": "09:00",
+        "tz": "Europe/Paris"
+      }
+    }
+  }
+}

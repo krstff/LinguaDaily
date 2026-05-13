@@ -191,12 +191,13 @@ Kiwix Server omits the `charset` parameter in its `Content-Type` header, so Pyth
 The orchestrator doesn't call `wikipedia_fetcher.py` directly — it goes through `fetch_router.py`:
 
 ```python
-# In orchestrator._fetch_and_clean():
-from fetch_router import fetch_article as route_fetch
-title, content = route_fetch(
+# In orchestrator._run_pipeline():
+from fetch_router import fetch_article as _fetch
+title, content = _fetch(
     source="wikipedia",
+    topic=None,
     config=self.config,
-    content_lang=content_lang,
+    learning_language=learning_language,
     article_filter=article_filter,
 )
 ```

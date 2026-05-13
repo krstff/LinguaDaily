@@ -177,6 +177,31 @@ conda run -n lingua python src/web_ui.py --host 0.0.0.0 --port 8089 --password m
 | `schedule.time` | string | Daily lesson time, HH:MM (24h) |
 | `schedule.tz` | string | Timezone, e.g. `Europe/Berlin` |
 
+## Environment Check
+
+Before starting the daemon, run the environment health check to verify your setup:
+
+```bash
+# Full check (config + packages + network connectivity)
+conda run -n lingua python src/env_check.py --config config.json
+
+# Quick check (skip network — fast offline validation)
+conda run -n lingua python src/env_check.py --config config.json --quick
+```
+
+The env check validates:
+- **Config file**: exists, valid JSON, correct structure
+- **Profiles**: language codes, chat IDs (numeric, no conflicts), source validity, article filter ranges, schedule times
+- **Python packages**: all 6 required dependencies installed with version info
+- **Directories**: data dir, output dir, per-profile vocab files
+- **LLM endpoint**: `/v1/models` reachable, configured models exist on server
+- **Kiwix servers**: HTTP root + `/random` article fetch works
+- **Telegram bot**: `getMe` call confirms token is valid and returns bot username
+- **TTS endpoint**: `/v1/models` reachable
+- **News RSS feeds**: accessible (if using news source)
+
+A sample config (`config.sample.json`) with profiles "alice" and "bob" is included for reference.
+
 ## Testing Individual Components
 
 Quick examples:
@@ -219,6 +244,7 @@ conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
 | `src/wikipedia_fetcher.py` | Kiwix/ZIM client for offline Wikipedia articles |
 | `src/news_fetcher.py` | RSS feed fetching for current events |
 | `src/tts.py` | OmniVoice TTS wrapper (OpenAI-compatible API) |
+| `src/env_check.py` | Deployment health check — config, packages, connectivity validation |
 
 ## Documentation
 
@@ -238,13 +264,16 @@ conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
 conda run -n lingua pytest tests/ -v
 ```
 
-122 passing tests across 6 test files (all mocked — zero real LLM calls during testing).
+172 passing tests across 9 test files (all mocked — zero real LLM calls during testing).
 
 | Test file | Count | What it covers |
 |-----------|-------|----------------|
+| `test_fetch_router.py` | 11 | Source routing (wikipedia/news), CLI |
 | `test_llama_client.py` | 20 | Model resolution, translate, vocab extraction, tutor chat, health check |
-| `test_telegram_bot.py` | 29 | Bot init, lesson delivery, tutor chat, commands, history DB |
-| `test_scheduler.py` | 20 | Schedule discovery, job building, delivery callback, CLI |
 | `test_main.py` | 20 | Daemon startup, service wiring, signal handling, CLI |
-| `test_orchestrator.py` | 18 | Config/profile utils, clean_content, full pipeline, CLI |
+| `test_news_fetcher.py` | 21 | Feed loading, topic resolution, article truncation |
+| `test_orchestrator.py` | 21 | Config/profile utils, clean_content, full pipeline, CLI |
 | `test_processor.py` | 15 | Vocab file init, read/update/dedup, markdown persistence |
+| `test_scheduler.py` | 17 | Schedule discovery, job building, delivery callback, CLI |
+| `test_telegram_bot.py` | 28 | Bot init, lesson delivery, tutor chat, commands, history DB |
+| `test_wikipedia_fetcher.py` | 19 | KiwixClient, extract_wiki_text, smart/hard truncation |
