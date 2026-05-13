@@ -574,6 +574,9 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to store lesson for '%s': %s", profile_name, e)
 
+        # Auto-switch tutor context to the profile that just received a lesson
+        self.select_profile(chat_id, profile_name)
+
     # ── Tutor chat handler ─────────────────────────────────────────
 
     async def handle_tutor_message(self, chat_id: int, text: str):
