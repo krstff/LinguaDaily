@@ -38,6 +38,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -226,6 +227,9 @@ class TelegramBot:
 
         # aiogram bot instance
         self._bot = None
+
+        # Study handler (flashcards + quiz, lazy-init in start())
+        self.study_handler: Optional["StudyHandler"] = None
 
     # ── Config / mapping ───────────────────────────────────────────
 
@@ -688,6 +692,8 @@ class TelegramBot:
                     f"Lessons will be delivered automatically at your scheduled time.\n\n"
                     f"Commands:\n"
                     f"/start — Show this message\n"
+                    f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
+                    f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
                     f"/chatid — Show your Telegram Chat ID\n"
                     f"/profiles — List your profiles\n"
                     f"/switch &lt;name&gt; — Switch active profile\n"
@@ -859,6 +865,10 @@ class TelegramBot:
         from aiogram import Dispatcher, types
         from aiogram.filters import Command
 
+        # Suppress aiogram's verbose INFO logs for callback queries
+        logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+        logging.getLogger("aiogram.dispatcher").setLevel(logging.WARNING)
+
         bot = await self._get_aiogram_bot()
         if bot is None:
             logger.error("Cannot start — no bot token configured")
@@ -874,6 +884,18 @@ class TelegramBot:
 
         dp = Dispatcher()
 
+        # ── Study integration (flashcards + quiz) ────────────────
+        try:
+            from flashcards import StudyHandler, DEFAULT_CARD_COUNT, DEFAULT_QUIZ_COUNT
+            self.study_handler = StudyHandler(
+                config=self.config, telegram_bot=self
+            )
+            logger.info("Study handler initialised (flashcards + quiz)")
+        except Exception as e:
+            logger.warning("Study module not available: %s", e)
+            DEFAULT_CARD_COUNT = 10
+            DEFAULT_QUIZ_COUNT = 10
+
         # ── Command handlers ──
         @dp.message(Command("start"))
         async def cmd_start(message: types.Message):
@@ -886,7 +908,8 @@ class TelegramBot:
             if subcommand.strip() == "clear":
                 await self.handle_history_clear(message.chat.id)
             else:
-                await self._get_aiogram_bot().send_message(
+                bot = await self._get_aiogram_bot()
+                await bot.send_message(
                     message.chat.id, text="Usage: /history clear"
                 )
 
@@ -910,6 +933,141 @@ class TelegramBot:
                 await self.handle_profiles(message.chat.id)
             else:
                 await self.handle_switch(message.chat.id, subcommand)
+
+        # ── Flashcard command ────────────────────────────────────
+        @dp.message(Command("flashcards"))
+        async def cmd_flashcards(message: types.Message):
+            if self.study_handler is None:
+                await message.answer("⚠️ Study module not available.")
+                return
+            profile_name = self.resolve_profile(message.chat.id)
+            if not profile_name:
+                await message.answer(
+                    "⚠️ Not registered. Ask an admin to add your Telegram chat ID."
+                )
+                return
+
+            # Parse optional count argument: /flashcards 15
+            args = message.text.split(maxsplit=1)
+            count = DEFAULT_CARD_COUNT
+            if len(args) > 1:
+                try:
+                    count = int(args[1].strip())
+                    count = max(1, min(count, 50))
+                except ValueError:
+                    pass
+
+            await self.study_handler.start_flashcards(
+                chat_id=message.chat.id,
+                profile_name=profile_name,
+                count=count,
+            )
+
+        # ── Quiz command ─────────────────────────────────────────
+        @dp.message(Command("quiz"))
+        async def cmd_quiz(message: types.Message):
+            if self.study_handler is None:
+                await message.answer("⚠️ Study module not available.")
+                return
+            profile_name = self.resolve_profile(message.chat.id)
+            if not profile_name:
+                await message.answer(
+                    "⚠️ Not registered. Ask an admin to add your Telegram chat ID."
+                )
+                return
+
+            # Parse optional count argument: /quiz 20
+            args = message.text.split(maxsplit=1)
+            count = DEFAULT_QUIZ_COUNT
+            if len(args) > 1:
+                try:
+                    count = int(args[1].strip())
+                    count = max(2, min(count, 50))
+                except ValueError:
+                    pass
+
+            await self.study_handler.start_quiz(
+                chat_id=message.chat.id,
+                profile_name=profile_name,
+                count=count,
+            )
+
+        # ── Study callback queries (flashcards + quiz) ───────────
+        @dp.callback_query(lambda c: c.data and (c.data.startswith("fc:") or c.data.startswith("qz:")))
+        async def study_callback(callback_query: types.CallbackQuery):
+            if self.study_handler is None:
+                return
+
+            # Handle post-quiz result buttons (retry_missed / new_quiz)
+            # These arrive after the main session is destroyed
+            data = callback_query.data
+            if data.startswith("qz:") and self.study_handler:
+                parts = data.split(":", 4)
+                if len(parts) >= 3:
+                    result_chat_id = int(parts[1])
+                    # Handle both old format (no token) and new format (with token)
+                    action = parts[3] if len(parts) >= 4 else parts[2]
+                    # Check for a results-mode session
+                    result_session = self.study_handler._sessions.get(result_chat_id)
+                    if result_session and result_session.get("mode") == "quiz_results":
+                        # Always use currently active profile (respects /switch)
+                        active_profile = self.resolve_profile(result_chat_id)
+                        if not active_profile:
+                            await callback_query.answer("⚠️ No profile found")
+                            return
+
+                        if action == "retry_missed":
+                            await callback_query.answer()
+                            from flashcards import VocabLoader
+
+                            missed = result_session.get("missed_words", [])
+                            if missed:
+                                # Get learning language from current active profile config
+                                profile_cfg = self.config.get("profiles", {}).get(
+                                    active_profile, {})
+                                lang = profile_cfg.get("learning_language", "de")
+                                loader = VocabLoader(
+                                    profile=active_profile,
+                                    learning_language=lang,
+                                )
+                                all_entries = loader.all_entries()
+                                questions = self.study_handler._build_questions(
+                                    missed, all_entries)
+                                self.study_handler._sessions[result_chat_id] = {
+                                    "mode": "quiz",
+                                    "profile": active_profile,
+                                    "questions": questions,
+                                    "index": 0,
+                                    "created_at": time.time(),
+                                    "message_id": None,
+                                    "score": 0,
+                                    "answered": False,
+                                    "missed_words": [],
+                                    "answer_log": [],
+                                }
+                                await self.study_handler._render_question(result_chat_id)
+                                return
+                        elif action == "new_quiz":
+                            await callback_query.answer()
+                            self.study_handler._end_session(result_chat_id)
+                            await self.study_handler.start_quiz(
+                                chat_id=result_chat_id,
+                                profile_name=active_profile,
+                                count=result_session.get("questions_count", DEFAULT_QUIZ_COUNT),
+                            )
+                            return
+
+                        elif action == "to_flashcards":
+                            await callback_query.answer()
+                            self.study_handler._end_session(result_chat_id)
+                            await self.study_handler.start_flashcards(
+                                chat_id=result_chat_id,
+                                profile_name=result_session["profile"],
+                                count=DEFAULT_CARD_COUNT,
+                            )
+                            return
+
+            await self.study_handler.handle_callback(callback_query)
 
         # ── All other messages → tutor chat ──
         @dp.message(lambda msg: True)  # catch-all
