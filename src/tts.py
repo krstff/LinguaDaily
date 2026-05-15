@@ -17,7 +17,16 @@ import re
 import sys
 import uuid
 
-from config import OUTPUT_DIR as DEFAULT_OUTPUT_DIR, load_config
+from config import (
+    DEFAULT_LEARNING_LANGUAGE,
+    OUTPUT_DIR,
+    TTS_DEFAULT_MAX_AGE_DAYS,
+    TTS_DEFAULT_MAX_FILES,
+    TTS_DEFAULT_MODEL,
+    TTS_DEFAULT_NUM_STEP,
+    TTS_DEFAULT_VOICE,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +84,11 @@ def _get_client(config):
     return OpenAI(base_url=base_url, api_key=api_key or "none")
 
 
-def _cleanup_old_files(output_dir, max_age_days=7, max_files=10):
+def _cleanup_old_files(
+    output_dir,
+    max_age_days=TTS_DEFAULT_MAX_AGE_DAYS,
+    max_files=TTS_DEFAULT_MAX_FILES,
+):
     """Remove old TTS WAV files from a profile output directory.
 
     Keeps the most recent `max_files` WAVs and deletes anything older than
@@ -94,7 +107,6 @@ def _cleanup_old_files(output_dir, max_age_days=7, max_files=10):
     if not os.path.isdir(output_dir):
         return
 
-    now = os.path.getmtime(__file__)  # current time as timestamp proxy
     import time
     now = time.time()
 
@@ -138,7 +150,13 @@ def _cleanup_old_files(output_dir, max_age_days=7, max_files=10):
                     removed, output_dir)
 
 
-def synthesize(text, language_id="de", config=None, output_dir=None, voice=None):
+def synthesize(
+    text,
+    language_id=DEFAULT_LEARNING_LANGUAGE,
+    config=None,
+    output_dir=None,
+    voice=None,
+):
     """
     Generate speech from text using the local OmniVoice server.
 
@@ -178,18 +196,18 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
     if output_dir is None:
         # Per-profile output directory
         profile = config.get("default_profile", "default")
-        output_dir = os.path.join(DEFAULT_OUTPUT_DIR, profile)
+        output_dir = os.path.join(OUTPUT_DIR, profile)
 
     os.makedirs(output_dir, exist_ok=True)
 
     tts_cfg = config.get("tts", {})
-    model = tts_cfg.get("model", "omnivoice")
+    model = tts_cfg.get("model", TTS_DEFAULT_MODEL)
     if voice is None:
-        voice = tts_cfg.get("default_voice", "male")
+        voice = tts_cfg.get("default_voice", TTS_DEFAULT_VOICE)
 
     # Read cleanup settings from config (tts.max_age_days, tts.max_files)
-    max_age_days = int(tts_cfg.get("max_age_days", 7))
-    max_files = int(tts_cfg.get("max_files", 10))
+    max_age_days = int(tts_cfg.get("max_age_days", TTS_DEFAULT_MAX_AGE_DAYS))
+    max_files = int(tts_cfg.get("max_files", TTS_DEFAULT_MAX_FILES))
 
     filename = f"lingua_{uuid.uuid4().hex[:8]}.wav"
     filepath = os.path.join(output_dir, filename)
@@ -202,7 +220,7 @@ def synthesize(text, language_id="de", config=None, output_dir=None, voice=None)
             model=model,
             voice=voice,
             input=text,
-            extra_body={"language_id": language_id, "num_step": 16},
+            extra_body={"language_id": language_id, "num_step": TTS_DEFAULT_NUM_STEP},
         ) as response:
             response.stream_to_file(filepath)
 

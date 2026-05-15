@@ -19,12 +19,19 @@ import argparse
 import asyncio
 import logging
 import os
-import random
 import re
 import sys
 from typing import Callable, Optional
 
-from config import CONFIG_PATH, PROJECT_DIR, resolve_language_name, load_config
+from config import (
+    CONFIG_PATH,
+    DEFAULT_LEARNING_LANGUAGE,
+    DEFAULT_NATIVE_LANGUAGE,
+    PROJECT_DIR,
+    TTS_DEFAULT_VOICE,
+    resolve_language_name,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +190,7 @@ class Orchestrator:
             raise ValueError(f"Profile '{profile_name}' not found")
 
         source = profile.get("source", "wikipedia")
-        learning_language = profile.get("learning_language", "en")
+        learning_language = profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
         article_filter = profile.get("article_filter")
 
         logger.info("[%s] Fetching random %s article (lang: %s)...",
@@ -244,7 +251,7 @@ class Orchestrator:
                 language_id=learning_language,
                 config=self.config,
                 output_dir=output_dir,
-                voice=profile.get("tts_voice", "male"),
+                voice=profile.get("tts_voice", TTS_DEFAULT_VOICE),
             )
             if wav_path:
                 logger.info("[%s] TTS audio: %s", profile_name, wav_path)
@@ -416,8 +423,8 @@ class Orchestrator:
 
         profile = profiles[profile_name]
 
-        native_language = profile.get("native_language", "en")
-        learning_language = profile.get("learning_language", "de")
+        native_language = profile.get("native_language", DEFAULT_NATIVE_LANGUAGE)
+        learning_language = profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
 
         try:
             # Step 1+2: Fetch and clean

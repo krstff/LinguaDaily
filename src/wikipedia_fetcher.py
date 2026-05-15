@@ -12,17 +12,37 @@ Usage:
 
 import json
 import os
-import random
+import re
 import sys
 from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
 
-DEFAULT_BASE_URL = "http://192.168.100.52:8080"
-DEFAULT_ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
-DEFAULT_ARTICLE_FILTER = {"min_words": 250, "max_words": 600}
+from config import (
+    KIWIX_DEFAULT_BASE_URL,
+    KIWIX_DEFAULT_ZIM_NAME,
+    ARTICLE_FILTER_DEFAULTS,
+)
 
+
+# ── Paragraph-break detection regex ────────────────────────────────
+# Matches sentence-ending punctuation + newline + uppercase letter (Latin-
+# extended range covering DE, ES, IT, HU, FR, PL diacritics).  Used to
+# insert proper paragraph breaks in Wikipedia text.
+_PARAGRAPH_BREAK_RE = re.compile(
+    r'([.!?])\n'
+    r'([A-Z'
+    r'\u00C0\u0104\u0126\u0138\u015A\u017D'
+    r'\u0181\u0182\u0184\u0186\u0193'
+    r'\u01A0\u01A2\u01B5\u01BF\u01C5\u01C7'
+    r'\u01C9\u01CA\u01CC\u01CE\u01D0\u01D2'
+    r'\u01D4\u01D6\u01D8\u01DA\u01DC\u01DE'
+    r'\u01E0\u01E2\u01E4\u01E6\u01E8\u01EA'
+    r'\u01EC\u01EE\u01F1\u01F3\u01F5\u01F7'
+    r'\u01F9\u01FB\u01FD\u01FF'
+    r'])',
+)
 
 # ── Kiwix client ────────────────────────────────────────────────────
 
@@ -397,8 +417,7 @@ def extract_wiki_text(html, skip_infoboxes=True):
     # between paragraphs (no real blank lines). Insert double-newlines after
     # sentence-ending punctuation followed by a newline and an uppercase letter,
     # so smart_truncate can split on paragraph boundaries.
-    import re
-    text = re.sub(r'([.!?])\n([A-Z\u00C0\u0104\u0126\u0138\u015A\u017D\u0181\u0182\u0184\u0186\u0193\u01A0\u01A2\u01B5\u01BF\u01C5\u01C7\u01C9\u01CA\u01CC\u01CE\u01D0\u01D2\u01D4\u01D6\u01D8\u01DA\u01DC\u01DE\u01E0\u01E2\u01E4\u01E6\u01E8\u01EA\u01EC\u01EE\u01F1\u01F3\u01F5\u01F7\u01F9\u01FB\u01FD\u01FF])', r'\1\n\n\2', text)
+    text = _PARAGRAPH_BREAK_RE.sub(r'\1\n\n\2', text)
 
     # Remove footer noise
     for marker in KiwixClient.FOOTER_MARKERS:
@@ -459,7 +478,6 @@ def _split_sections(text):
     Returns a list of (header_line_or_None, body_text) tuples.
     Non-header lines before any header are grouped under None.
     """
-    import re
     sections = []
     current_header = None
     current_body_lines = []
@@ -511,7 +529,6 @@ def _accumulate_by_sections(text, max_words, min_words):
 
 def _accumulate_by_sentences(text, max_words, min_words):
     r"""Accumulate sentences (split on [.!?]\s+) until hitting max_words."""
-    import re
     # Split on sentence-ending punctuation followed by whitespace/newline
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -599,9 +616,9 @@ def load_fetcher_config(config_path=None, learning_language=None):
         from config import CONFIG_PATH as config_path
 
     settings = {
-        "base_url": DEFAULT_BASE_URL,
-        "zim_name": DEFAULT_ZIM_NAME,
-        "article_filter": DEFAULT_ARTICLE_FILTER.copy(),
+        "base_url": KIWIX_DEFAULT_BASE_URL,
+        "zim_name": KIWIX_DEFAULT_ZIM_NAME,
+        "article_filter": ARTICLE_FILTER_DEFAULTS.copy(),
     }
 
     if os.path.exists(config_path):

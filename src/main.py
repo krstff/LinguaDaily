@@ -53,9 +53,14 @@ class LinguaDaemon:
         ))
         root.addHandler(console)
 
-        # File handler (rotating would be ideal, but keeping it simple)
+        # Rotating file handler — keeps last 5 × 2 MB = 10 MB total
+        from logging.handlers import RotatingFileHandler
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            LOG_FILE, encoding="utf-8",
+            maxBytes=2 * 1024 * 1024,  # 2 MB
+            backupCount=5,
+        )
         file_handler.setLevel(logging.DEBUG)  # always full detail in file
         file_handler.setFormatter(logging.Formatter(
             "%(asctime)s [%(name)s] %(levelname)s: %(message)s",

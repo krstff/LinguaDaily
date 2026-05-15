@@ -19,84 +19,13 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+from config import (
+    DEFAULT_NATIVE_LANGUAGE,
+    NEWS_FEED_CATALOGUE,
+    NEWS_DEFAULT_FEEDS,
+)
+
 logger = logging.getLogger(__name__)
-
-# ── Feed catalogue (fallback defaults) ─────────────────────────────
-# Language-keyed dict: { lang_code: { topic: [urls] } }.
-# These are used only when config.json has no sources.news.feeds section.
-# In production, feeds should be configured in config.json under
-# "sources" → "news" → "feeds".
-
-FEED_CATALOGUE = {
-    "en": {
-        "Technology": [
-            "https://feeds.bbci.co.uk/news/technology/rss.xml",
-            "https://www.theregister.com/security/headlines.atom",
-        ],
-        "Science": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Mathematics": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "History": [
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-        ],
-        "Art": [
-            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-        ],
-        "Music": [
-            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-        ],
-        "Philosophy": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Literature": [
-            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-        ],
-        "Architecture": [
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-        ],
-        "Biology": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Physics": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Chemistry": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Geography": [
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-            "https://www.nationalgeographic.com/news/",
-        ],
-        "Astronomy": [
-            "https://www.nasa.gov/rss/dyn/breaking_news.rss",
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Psychology": [
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Economics": [
-            "https://feeds.bbci.co.uk/news/business/rss.xml",
-        ],
-        "Politics": [
-            "https://feeds.bbci.co.uk/news/politics/rss.xml",
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-        ],
-        "Medicine": [
-            "https://feeds.bbci.co.uk/news/health/rss.xml",
-        ],
-        "Culture": [
-            "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-        ],
-    },
-}
-
-# Fallback: general feeds used when a topic has no specific mapping
-DEFAULT_FEEDS = [
-    "https://feeds.bbci.co.uk/news/rss.xml",
-]
 
 
 def load_feeds_from_config(config=None):
@@ -143,22 +72,19 @@ def load_feeds_from_config(config=None):
             else:
                 # Legacy flat format — wrap under "en"
                 return {"en": cfg_feeds}
-    return FEED_CATALOGUE
+    return NEWS_FEED_CATALOGUE
 
 
 class NewsFetcher:
     """Fetch news articles from RSS feeds."""
 
-    def __init__(self, feeds=None, categories=None, config=None,
+    def __init__(self, feeds=None, config=None,
                  learning_language=None):
         """
         Parameters
         ----------
         feeds : dict, optional
             Override the feed catalogue. Maps topic → [feed URLs].
-        categories : dict, optional
-            Future-proof: maps topic → API provider categories (for when
-            an API backend is added). Not used by RSS fetcher.
         config : dict, optional
             Full config.json contents. Used to load feeds from
             sources.news.feeds if `feeds` is not provided directly.
@@ -171,8 +97,8 @@ class NewsFetcher:
         elif config:
             self._feeds = load_feeds_from_config(config)
         else:
-            self._feeds = FEED_CATALOGUE
-        self._learning_language = learning_language or "en"
+            self._feeds = NEWS_FEED_CATALOGUE
+        self._learning_language = learning_language or DEFAULT_NATIVE_LANGUAGE
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": "LinguaDaily/1.0 (language-learning)"
@@ -187,7 +113,7 @@ class NewsFetcher:
           1. Feeds for the learning_language + exact topic match
           2. Feeds for the learning_language + case-insensitive topic match
           3. Same two steps falling back to English feeds
-          4. DEFAULT_FEEDS (general BBC news)
+          4. NEWS_DEFAULT_FEEDS (general BBC news)
         """
         lang = self._learning_language.lower()
 
@@ -208,7 +134,7 @@ class NewsFetcher:
             return list(found)
 
         logger.warning("No feeds for topic '%s', using defaults.", topic)
-        return list(DEFAULT_FEEDS)
+        return list(NEWS_DEFAULT_FEEDS)
 
     @staticmethod
     def _find_topic_in_catalogue(topic, catalogue):

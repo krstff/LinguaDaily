@@ -488,13 +488,13 @@ def check_files(config):
     # Per-profile data dirs and vocab files
     for name, profile in config.get("profiles", {}).items():
         pdir = DATA_DIR / name
-        vfile = pdir / "vocabulary.md"
+        vfile = pdir / "vocabulary.csv"
         if pdir.exists():
             if vfile.exists():
-                results.append((True, f"  ✅ {name}: data dir + vocabulary.md OK"))
+                results.append((True, f"  ✅ {name}: data dir + vocabulary.csv OK"))
             else:
                 results.append(
-                    (True, f"  ℹ️  {name}: data dir exists, vocabulary.md created on first lesson")
+                    (True, f"  ℹ️  {name}: data dir exists, vocabulary.csv created on first lesson")
                 )
         else:
             results.append(

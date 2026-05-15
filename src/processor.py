@@ -7,7 +7,7 @@ appending new words extracted by the LLM, and tracking frequency / last-seen dat
 
 Usage (import):
     from src.processor import LinguaProcessor
-    proc = LinguaProcessor(learning_language="de", profile="krystof")
+    proc = LinguaProcessor(profile="krystof")
     proc.update_vocab(vocab_list)  # list of {word, meaning} dicts
 
 Vocabulary file format (data/<profile>/vocabulary.csv):
@@ -19,15 +19,25 @@ import csv
 import os
 from datetime import date
 
-from config import PROJECT_DIR
+from config import (
+    DEFAULT_LEARNING_LANGUAGE,
+    DEFAULT_PROFILE_NAME,
+    PROJECT_DIR,
+    resolve_language_name,
+)
 
 
 class LinguaProcessor:
     """Manages vocabulary persistence for a single profile."""
 
-    def __init__(self, learning_language="de", profile="default",
-                 vocab_path=None):
+    def __init__(
+        self,
+        learning_language=DEFAULT_LEARNING_LANGUAGE,
+        profile=DEFAULT_PROFILE_NAME,
+        vocab_path=None,
+    ):
         self.learning_language = learning_language
+        self.learning_language_name = resolve_language_name(learning_language)
         self.profile = profile
 
         # Resolve vocab_path: explicit > per-profile default

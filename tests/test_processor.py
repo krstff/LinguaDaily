@@ -51,18 +51,17 @@ class TestVocabFile:
             assert "existing content" in f.read()
 
     def test_read_existing_vocab(self, processor):
-        # Write a sample vocab file
-        with open(processor.vocab_path, "w") as f:
-            f.write("# Vocab\n\n| Word | Meaning | Frequency | Last Seen |\n")
-            f.write("|---|---|---|---|\n")
-            f.write("| hello | greeting | 3 | 2026-01-01 |\n")
-            f.write("| world | earth | 1 | 2026-01-02 |\n")
+        # Write a sample vocab file (CSV format)
+        with open(processor.vocab_path, "w", newline="") as f:
+            f.write("word,meaning,frequency,last_seen\n")
+            f.write("hello,greeting,3,2026-01-01\n")
+            f.write("world,earth,1,2026-01-02\n")
 
         vocab = processor._read_existing_vocab()
         assert "hello" in vocab
-        assert vocab["hello"] == 3
+        assert vocab["hello"]["frequency"] == 3
         assert "world" in vocab
-        assert vocab["world"] == 1
+        assert vocab["world"]["frequency"] == 1
 
     def test_read_existing_vocab_empty_file(self, processor):
         with open(processor.vocab_path, "w") as f:
@@ -102,7 +101,7 @@ class TestUpdateVocab:
         processor.update_vocab(["hello"])
         processor.update_vocab(["hello"])  # duplicate
         vocab = processor._read_existing_vocab()
-        assert vocab.get("hello", 0) == 1  # Should still be 1, not incremented
+        assert vocab["hello"]["frequency"] == 1  # Should still be 1, not incremented
 
     def test_skip_empty_words(self, processor):
         processor._ensure_vocab_file()

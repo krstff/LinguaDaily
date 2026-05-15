@@ -19,7 +19,8 @@ class TestNewsFetcherInit:
         assert "Custom" in fetcher._feeds
 
     def test_resolve_feeds_exact_match(self):
-        from src.news_fetcher import NewsFetcher, FEED_CATALOGUE
+        from src.news_fetcher import NewsFetcher
+        from src.config import NEWS_FEED_CATALOGUE
         fetcher = NewsFetcher()
         feeds = fetcher._resolve_feeds("Technology")
         assert isinstance(feeds, list)
@@ -33,10 +34,11 @@ class TestNewsFetcherInit:
         assert feeds_upper == feeds_lower
 
     def test_resolve_feeds_unknown_topic_fallback(self):
-        from src.news_fetcher import NewsFetcher, DEFAULT_FEEDS
+        from src.news_fetcher import NewsFetcher
+        from src.config import NEWS_DEFAULT_FEEDS
         fetcher = NewsFetcher()
         feeds = fetcher._resolve_feeds("NonexistentTopic")
-        assert feeds == DEFAULT_FEEDS
+        assert feeds == NEWS_DEFAULT_FEEDS
 
 
 class TestHtmlToText:
@@ -333,7 +335,7 @@ class TestFeedCatalogue:
     """Test that the feed catalogue covers all expected topics."""
 
     def test_all_topics_have_feeds(self):
-        from src.news_fetcher import FEED_CATALOGUE, DEFAULT_FEEDS
+        from src.config import NEWS_FEED_CATALOGUE, NEWS_DEFAULT_FEEDS
         # Check that every topic in the default config has a mapping
         expected_topics = [
             "Technology", "Science", "Mathematics", "History", "Art", "Music",
@@ -341,15 +343,15 @@ class TestFeedCatalogue:
             "Chemistry", "Geography", "Astronomy", "Psychology", "Economics",
             "Politics", "Medicine", "Culture",
         ]
-        # FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
-        for lang, topics in FEED_CATALOGUE.items():
+        # NEWS_FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
+        for lang, topics in NEWS_FEED_CATALOGUE.items():
             for topic in expected_topics:
                 assert topic in topics, f"Missing feed mapping for topic: {topic} (lang: {lang})"
 
     def test_feeds_are_http_urls(self):
-        from src.news_fetcher import FEED_CATALOGUE
-        # FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
-        for lang, topics in FEED_CATALOGUE.items():
+        from src.config import NEWS_FEED_CATALOGUE
+        # NEWS_FEED_CATALOGUE is structured as {lang: {topic: [urls]}}
+        for lang, topics in NEWS_FEED_CATALOGUE.items():
             for topic, feeds in topics.items():
                 for url in feeds:
                     assert url.startswith("http"), f"{lang}/{topic}: URL should start with http: {url}"

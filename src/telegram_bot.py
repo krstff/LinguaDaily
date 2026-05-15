@@ -42,7 +42,19 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 
-from config import CONFIG_PATH, DATA_DIR, resolve_language_name, load_config
+from config import (
+    CONFIG_PATH,
+    DATA_DIR,
+    DEFAULT_LEARNING_LANGUAGE,
+    DEFAULT_NATIVE_LANGUAGE,
+    FLASHCARD_DEFAULT_CARD_COUNT,
+    FLASHCARD_DEFAULT_QUIZ_COUNT,
+    TG_HISTORY_PURGE_DAYS,
+    TG_MAX_MSG_LEN,
+    TG_SAFE_TRUNCATE,
+    resolve_language_name,
+    load_config,
+)
 
 CHAT_DB_PATH = DATA_DIR / "chat_history.db"
 
@@ -121,7 +133,7 @@ class ChatHistoryDB:
         )
         self.conn.commit()
 
-    def purge_old_entries(self, max_age_days: int = 30):
+    def purge_old_entries(self, max_age_days: int = TG_HISTORY_PURGE_DAYS):
         """
         Delete entries older than max_age_days to prevent unbounded DB growth.
 
@@ -324,15 +336,13 @@ class TelegramBot:
 
     # ── Lesson delivery ────────────────────────────────────────────
 
-    # Telegram message size limit
-    _TG_MAX_MSG_LEN = 4096
-    _TG_SAFE_TRUNCATE = 3900  # leave room for appended suffixes
+
 
     def _truncate_for_telegram(self, text: str, suffix: str = "\n…") -> str:
-        """Truncate text to fit Telegram's 4096 char limit."""
-        if len(text) <= self._TG_MAX_MSG_LEN:
+        """Truncate text to fit Telegram's message length limit."""
+        if len(text) <= TG_MAX_MSG_LEN:
             return text
-        return text[:self._TG_SAFE_TRUNCATE] + suffix
+        return text[:TG_SAFE_TRUNCATE] + suffix
 
     def _escape_html(self, text: str) -> str:
         """Escape text for Telegram HTML parse mode.
@@ -572,10 +582,10 @@ class TelegramBot:
             msg3 = f"📝 <b>Vocabulary ({len(vocab)} words)</b>\n"
             msg3 += "\n".join(vocab_lines)
 
-            if len(msg3) > self._TG_MAX_MSG_LEN:
+            if len(msg3) > TG_MAX_MSG_LEN:
                 logger.warning("Vocab message exceeds Telegram limit for '%s', truncating",
                                title)
-                msg3 = msg3[:self._TG_SAFE_TRUNCATE] + "\n…"
+                msg3 = msg3[:TG_SAFE_TRUNCATE] + "\n…"
 
             try:
                 await bot.send_message(
@@ -625,9 +635,9 @@ class TelegramBot:
             return
 
         profile = self.config.get("profiles", {}).get(profile_name, {})
-        learning_language = profile.get("learning_language", "de")
+        learning_language = profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
         language_name = resolve_language_name(learning_language)
-        native_lang = profile.get("native_language", "en")
+        native_lang = profile.get("native_language", DEFAULT_NATIVE_LANGUAGE)
 
         # Get conversation history
         history = self.db.get_history(chat_id, profile_name, max_turns=10)
@@ -682,7 +692,7 @@ class TelegramBot:
         if profile_name:
             profile = self.config.get("profiles", {}).get(profile_name, {})
             lang = resolve_language_name(
-                profile.get("learning_language", "de"))
+                profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE))
             await bot.send_message(
                 chat_id=chat_id,
                 text=(
@@ -876,7 +886,7 @@ class TelegramBot:
 
         # Purge old chat history entries on startup (prevents unbounded DB growth)
         try:
-            purged = self.db.purge_old_entries(max_age_days=30)
+            purged = self.db.purge_old_entries(max_age_days=TG_HISTORY_PURGE_DAYS)
             if purged > 0:
                 logger.info("Purged %d stale chat history entries on startup", purged)
         except Exception as e:
@@ -886,15 +896,13 @@ class TelegramBot:
 
         # ── Study integration (flashcards + quiz) ────────────────
         try:
-            from flashcards import StudyHandler, DEFAULT_CARD_COUNT, DEFAULT_QUIZ_COUNT
+            from flashcards import StudyHandler
             self.study_handler = StudyHandler(
                 config=self.config, telegram_bot=self
             )
             logger.info("Study handler initialised (flashcards + quiz)")
         except Exception as e:
             logger.warning("Study module not available: %s", e)
-            DEFAULT_CARD_COUNT = 10
-            DEFAULT_QUIZ_COUNT = 10
 
         # ── Command handlers ──
         @dp.message(Command("start"))
@@ -949,7 +957,7 @@ class TelegramBot:
 
             # Parse optional count argument: /flashcards 15
             args = message.text.split(maxsplit=1)
-            count = DEFAULT_CARD_COUNT
+            count = FLASHCARD_DEFAULT_CARD_COUNT
             if len(args) > 1:
                 try:
                     count = int(args[1].strip())
@@ -978,7 +986,7 @@ class TelegramBot:
 
             # Parse optional count argument: /quiz 20
             args = message.text.split(maxsplit=1)
-            count = DEFAULT_QUIZ_COUNT
+            count = FLASHCARD_DEFAULT_QUIZ_COUNT
             if len(args) > 1:
                 try:
                     count = int(args[1].strip())
@@ -998,74 +1006,80 @@ class TelegramBot:
             if self.study_handler is None:
                 return
 
-            # Handle post-quiz result buttons (retry_missed / new_quiz)
+            # Handle post-quiz result buttons (retry_missed / new_quiz / to_flashcards)
             # These arrive after the main session is destroyed
             data = callback_query.data
             if data.startswith("qz:") and self.study_handler:
                 parts = data.split(":", 4)
-                if len(parts) >= 3:
-                    result_chat_id = int(parts[1])
-                    # Handle both old format (no token) and new format (with token)
-                    action = parts[3] if len(parts) >= 4 else parts[2]
-                    # Check for a results-mode session
-                    result_session = self.study_handler._sessions.get(result_chat_id)
-                    if result_session and result_session.get("mode") == "quiz_results":
-                        # Always use currently active profile (respects /switch)
-                        active_profile = self.resolve_profile(result_chat_id)
-                        if not active_profile:
-                            await callback_query.answer("⚠️ No profile found")
-                            return
+                if len(parts) < 4:
+                    return  # malformed — ignore
+                result_chat_id = int(parts[1])
+                token = parts[2]
+                action = parts[3]
+                # Check for a results-mode session and verify token
+                result_session = self.study_handler._sessions.get(result_chat_id)
+                if not (result_session and result_session.get("mode") == "quiz_results"):
+                    return  # no active results session — stale button
+                if result_session.get("_token") != token:
+                    await callback_query.answer("⚠️ Session expired, start a new quiz")
+                    self.study_handler._end_session(result_chat_id)
+                    return
+                # Always use currently active profile (respects /switch)
+                active_profile = self.resolve_profile(result_chat_id)
+                if not active_profile:
+                    await callback_query.answer("⚠️ No profile found")
+                    return
 
-                        if action == "retry_missed":
-                            await callback_query.answer()
-                            from flashcards import VocabLoader
+                if action == "retry_missed":
+                    await callback_query.answer()
+                    from flashcards import VocabLoader
 
-                            missed = result_session.get("missed_words", [])
-                            if missed:
-                                # Get learning language from current active profile config
-                                profile_cfg = self.config.get("profiles", {}).get(
-                                    active_profile, {})
-                                lang = profile_cfg.get("learning_language", "de")
-                                loader = VocabLoader(
-                                    profile=active_profile,
-                                    learning_language=lang,
-                                )
-                                all_entries = loader.all_entries()
-                                questions = self.study_handler._build_questions(
-                                    missed, all_entries)
-                                self.study_handler._sessions[result_chat_id] = {
-                                    "mode": "quiz",
-                                    "profile": active_profile,
-                                    "questions": questions,
-                                    "index": 0,
-                                    "created_at": time.time(),
-                                    "message_id": None,
-                                    "score": 0,
-                                    "answered": False,
-                                    "missed_words": [],
-                                    "answer_log": [],
-                                }
-                                await self.study_handler._render_question(result_chat_id)
-                                return
-                        elif action == "new_quiz":
-                            await callback_query.answer()
-                            self.study_handler._end_session(result_chat_id)
-                            await self.study_handler.start_quiz(
-                                chat_id=result_chat_id,
-                                profile_name=active_profile,
-                                count=result_session.get("questions_count", DEFAULT_QUIZ_COUNT),
-                            )
-                            return
+                    missed = result_session.get("missed_words", [])
+                    if missed:
+                        # Get learning language from current active profile config
+                        profile_cfg = self.config.get("profiles", {}).get(
+                            active_profile, {})
+                        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
+                        loader = VocabLoader(
+                            profile=active_profile,
+                            learning_language=lang,
+                        )
+                        all_entries = loader.all_entries()
+                        questions = self.study_handler._build_questions(
+                            missed, all_entries)
+                        self.study_handler._sessions[result_chat_id] = {
+                            "mode": "quiz",
+                            "profile": active_profile,
+                            "questions": questions,
+                            "index": 0,
+                            "created_at": time.time(),
+                            "message_id": None,
+                            "score": 0,
+                            "answered": False,
+                            "missed_words": [],
+                            "answer_log": [],
+                        }
+                        await self.study_handler._render_question(result_chat_id)
+                        return
+                elif action == "new_quiz":
+                    await callback_query.answer()
+                    self.study_handler._end_session(result_chat_id)
+                    await self.study_handler.start_quiz(
+                        chat_id=result_chat_id,
+                        profile_name=active_profile,
+                        count=result_session.get("questions_count", FLASHCARD_DEFAULT_QUIZ_COUNT),
+                    )
+                    return
 
-                        elif action == "to_flashcards":
-                            await callback_query.answer()
-                            self.study_handler._end_session(result_chat_id)
-                            await self.study_handler.start_flashcards(
-                                chat_id=result_chat_id,
-                                profile_name=result_session["profile"],
-                                count=DEFAULT_CARD_COUNT,
-                            )
-                            return
+                elif action == "to_flashcards":
+                    await callback_query.answer()
+                    self.study_handler._end_session(result_chat_id)
+                    await self.study_handler.start_flashcards(
+                        chat_id=result_chat_id,
+                        profile_name=result_session["profile"],
+                        count=FLASHCARD_DEFAULT_CARD_COUNT,
+                    )
+                    return
 
             await self.study_handler.handle_callback(callback_query)
 

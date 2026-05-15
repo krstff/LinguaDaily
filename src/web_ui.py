@@ -23,8 +23,16 @@ from pathlib import Path
 # ── Ensure src/ is on path for standalone execution ─────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.config import (CONFIG_PATH, LOG_FILE, PROJECT_DIR,
-                        resolve_language_name, load_config)
+from src.config import (
+    CONFIG_PATH,
+    DEFAULT_LEARNING_LANGUAGE,
+    LOG_FILE,
+    PROJECT_DIR,
+    TTS_DEFAULT_MODEL,
+    TTS_DEFAULT_VOICE,
+    resolve_language_name,
+    load_config,
+)
 
 try:
     from flask import Flask, jsonify, render_template, request
@@ -486,7 +494,7 @@ def create_app(config_path=None, log_file=None, password=None,
         profile_data = {
             "telegram_chat_id": request.form.get(
                 "telegram_chat_id", "").strip() or None,
-            "native_language": request.form.get("native_language", "en"),
+            "native_language": request.form.get("native_language", DEFAULT_LEARNING_LANGUAGE),
             "learning_language": request.form.get("learning_language", ""),
             "source": request.form.get("source", "wikipedia"),
             "article_filter": {
@@ -494,7 +502,7 @@ def create_app(config_path=None, log_file=None, password=None,
                 "max_words": int(request.form.get("max_words", 150)),
             },
             "use_tts": request.form.get("use_tts") == "on",
-            "tts_voice": request.form.get("tts_voice", "male"),
+            "tts_voice": request.form.get("tts_voice", TTS_DEFAULT_VOICE),
             "enabled": request.form.get("enabled") != "false",
         }
 
@@ -718,7 +726,7 @@ def create_app(config_path=None, log_file=None, password=None,
         {
             "translate_model": "model-name",
             "tutor_model": "model-name",
-            "tts_model": "omnivoice"
+            "tts_model": TTS_DEFAULT_MODEL
         }
         """
         data = request.get_json(force=True, silent=True)
@@ -750,7 +758,7 @@ def create_app(config_path=None, log_file=None, password=None,
 
         if "tts_model" in data:
             val = data["tts_model"]
-            tts_cfg["model"] = val if val else "omnivoice"
+            tts_cfg["model"] = val if val else TTS_DEFAULT_MODEL
             changed.append("tts_model")
 
         try:
@@ -778,7 +786,7 @@ def create_app(config_path=None, log_file=None, password=None,
             "default_model": llm_cfg.get("default_model", ""),
             "translate_model": llm_cfg.get("translate_model", ""),
             "tutor_model": llm_cfg.get("tutor_model", ""),
-            "tts_model": tts_cfg.get("model", "omnivoice"),
+            "tts_model": tts_cfg.get("model", TTS_DEFAULT_MODEL),
         })
 
     return app

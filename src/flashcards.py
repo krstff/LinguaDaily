@@ -22,25 +22,24 @@ import asyncio
 import csv
 import html
 import logging
-import os
 import random
 import secrets
-import string
 import time
 from datetime import date
 from typing import Optional
 
-from config import PROJECT_DIR, resolve_language_name, load_config
+from config import (
+    FLASHCARD_DEFAULT_CARD_COUNT,
+    FLASHCARD_DEFAULT_QUIZ_COUNT,
+    FLASHCARD_REVIEW_COOLDOWN_DAYS,
+    FLASHCARD_SESSION_TIMEOUT_SECS,
+    FLASHCARD_QUIZ_AUTO_ADVANCE_SECS,
+    FLASHCARD_QUIZ_DISTRACTORS,
+    PROJECT_DIR,
+    resolve_language_name,
+)
 
 logger = logging.getLogger(__name__)
-
-# ── Constants ───────────────────────────────────────────────────────
-SESSION_TIMEOUT_SECS = 300      # 5 min inactivity → session expires
-DEFAULT_CARD_COUNT = 10         # words per flashcard session
-DEFAULT_QUIZ_COUNT = 10         # questions per quiz session
-CARD_REVIEW_COOLDAY_DAYS = 3    # don't re-show a word for this many days
-QUIZ_AUTO_ADVANCE_SECS = 3       # seconds after answering before next question
-QUIZ_DISTRACTORS = 3            # number of wrong answer choices (total = 4)
 
 
 # ── Vocabulary Loader ───────────────────────────────────────────────
@@ -76,25 +75,6 @@ class VocabLoader:
     # ── Writing / exposure tracking ───────────────────────────────
 
     def record_exposure(self, words: list[str]):
-        """Increment frequency and update last_seen for a set of words."""
-        if not self._csv_path.exists():
-            return
-        entries = self._parse_vocab()
-        today = date.today().isoformat()
-        word_map = {e["word"]: e for e in entries}
-        updated = False
-        for w in words:
-            if w in word_map:
-                word_map[w]["frequency"] += 1
-                word_map[w]["last_seen"] = today
-                updated = True
-        if updated:
-            with open(self._csv_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["word", "meaning", "frequency", "last_seen"])
-                writer.writeheader()
-                writer.writerows(entries)
-
-    def record_exposure(self, words: list[str]):
         """Increment frequency and update last_seen for a set of words.
 
         Called after a flashcard or quiz session to track which words the user saw.
@@ -121,11 +101,11 @@ class VocabLoader:
 
     # ── Spaced-repetition selection ───────────────────────────────
 
-    def pick_review_words(self, count: int = DEFAULT_CARD_COUNT) -> list[dict]:
+    def pick_review_words(self, count: int = FLASHCARD_DEFAULT_CARD_COUNT) -> list[dict]:
         """Select words for review using spaced-repetition heuristics.
 
         Priority order:
-          1. Words NOT seen in the last CARD_REVIEW_COOLDAY_DAYS days (oldest first)
+          1. Words NOT seen in the last FLASHCARD_REVIEW_COOLDOWN_DAYS days (oldest first)
           2. Words with lowest frequency (seen fewest times)
           3. Random shuffle within each tier to avoid deterministic ordering
         """
@@ -149,7 +129,7 @@ class VocabLoader:
             else:
                 days_since = 999  # never seen in a review session
 
-            if days_since >= CARD_REVIEW_COOLDAY_DAYS:
+            if days_since >= FLASHCARD_REVIEW_COOLDOWN_DAYS:
                 due.append(entry)
             else:
                 not_due.append(entry)
@@ -192,7 +172,7 @@ class StudyHandler:
         session = self._sessions.get(chat_id)
         if not session:
             return None
-        if time.time() - session["created_at"] > SESSION_TIMEOUT_SECS:
+        if time.time() - session["created_at"] > FLASHCARD_SESSION_TIMEOUT_SECS:
             del self._sessions[chat_id]
             return None
         # Refresh timeout
@@ -232,7 +212,7 @@ class StudyHandler:
 
         # Get learning language from config
         profile_cfg = self.config.get("profiles", {}).get(profile, {})
-        lang = profile_cfg.get("learning_language", "de")
+        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
 
         try:
             loader = VocabLoader(profile=profile, learning_language=lang)
@@ -263,14 +243,16 @@ class StudyHandler:
 
     # ── Public API: Flashcards ────────────────────────────────────
 
-    async def start_flashcards(self, chat_id: int, profile_name: str, count: int = DEFAULT_CARD_COUNT):
+    async def start_flashcards(self, chat_id: int, profile_name: str, count: int = FLASHCARD_DEFAULT_CARD_COUNT):
         """Start a flashcard review session."""
         # Save old message_id before ending session so we can delete it
         old_session = self._sessions.get(chat_id)
         old_msg_id = old_session.get("message_id") if old_session else None
         self._end_session(chat_id)  # close any existing session
 
-        loader = VocabLoader(profile=profile_name, learning_language="de")
+        profile_cfg = self.config.get("profiles", {}).get(profile_name, {})
+        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
+        loader = VocabLoader(profile=profile_name, learning_language=lang)
         words = loader.pick_review_words(count=count)
 
         if not words:
@@ -301,7 +283,7 @@ class StudyHandler:
 
     # ── Public API: Quiz ──────────────────────────────────────────
 
-    async def start_quiz(self, chat_id: int, profile_name: str, count: int = DEFAULT_QUIZ_COUNT):
+    async def start_quiz(self, chat_id: int, profile_name: str, count: int = FLASHCARD_DEFAULT_QUIZ_COUNT):
         """Start a quiz session.
 
         The quiz alternates between forward (word→meaning) and reverse
@@ -312,7 +294,9 @@ class StudyHandler:
         old_msg_id = old_session.get("message_id") if old_session else None
         self._end_session(chat_id)  # close any existing session
 
-        loader = VocabLoader(profile=profile_name, learning_language="de")
+        profile_cfg = self.config.get("profiles", {}).get(profile_name, {})
+        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
+        loader = VocabLoader(profile=profile_name, learning_language=lang)
         words = loader.pick_review_words(count=count)
         all_entries = loader.all_entries()
 
@@ -537,7 +521,7 @@ class StudyHandler:
                 distractors = self._pick_distractors(
                     pool=all_meanings,
                     exclude={correct_answer},
-                    count=QUIZ_DISTRACTORS,
+                    count=FLASHCARD_QUIZ_DISTRACTORS,
                 )
                 choices = self._shuffle_with_correct(correct_answer, distractors)
 
@@ -547,7 +531,7 @@ class StudyHandler:
                 distractors = self._pick_distractors(
                     pool=all_words,
                     exclude={correct_answer},
-                    count=QUIZ_DISTRACTORS,
+                    count=FLASHCARD_QUIZ_DISTRACTORS,
                 )
                 choices = self._shuffle_with_correct(correct_answer, distractors)
 
@@ -634,8 +618,10 @@ class StudyHandler:
             missed = session.pop("missed_words", [])
             if missed:
                 # Start a new quiz with just the missed words
+                profile_cfg = self.config.get("profiles", {}).get(session["profile"], {})
+                lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
                 all_entries = VocabLoader(
-                    profile=session["profile"], learning_language="de"
+                    profile=session["profile"], learning_language=lang
                 ).all_entries()
                 questions = self._build_questions(missed, all_entries)
                 session.update({
@@ -887,7 +873,7 @@ class StudyHandler:
             return
         my_gen = session.get("generation")
         try:
-            await asyncio.sleep(QUIZ_AUTO_ADVANCE_SECS)
+            await asyncio.sleep(FLASHCARD_QUIZ_AUTO_ADVANCE_SECS)
         except asyncio.CancelledError:
             return
         # Only advance if this is still the current generation (prevents stale tasks
@@ -956,22 +942,23 @@ class StudyHandler:
         # Buttons: retry missed, new quiz, flashcards
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+        token = secrets.token_urlsafe(4)[:6]
         buttons = []
         if missed:
             buttons.append([
                 InlineKeyboardButton(
                     text="🔄 Retry missed",
-                    callback_data=f"qz:{chat_id}::retry_missed",
+                    callback_data=f"qz:{chat_id}:{token}:retry_missed",
                 ),
             ])
         buttons.append([
             InlineKeyboardButton(
                 text="🆕 New quiz",
-                callback_data=f"qz:{chat_id}::new_quiz",
+                callback_data=f"qz:{chat_id}:{token}:new_quiz",
             ),
             InlineKeyboardButton(
                 text="📚 Flashcards",
-                callback_data=f"qz:{chat_id}::to_flashcards",
+                callback_data=f"qz:{chat_id}:{token}:to_flashcards",
             ),
         ])
 
@@ -992,15 +979,5 @@ class StudyHandler:
             "missed_words": missed_copy,
             "created_at": time.time(),
             "questions_count": total,
+            "_token": token,  # prevents stale-button attacks
         }
-
-    # ── Legacy alias ──────────────────────────────────────────────
-
-    @staticmethod
-    def register_handlers(telegram_bot):
-        """Legacy — no-op, integration is now in telegram_bot.py directly."""
-        pass
-
-
-# Expose for external registration
-__all__ = ["VocabLoader", "StudyHandler"]

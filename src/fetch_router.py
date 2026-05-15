@@ -11,7 +11,6 @@ Usage (CLI):
 """
 
 import json
-import os
 
 
 def fetch_article(source, topic, config,

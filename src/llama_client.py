@@ -16,8 +16,8 @@ Usage (import):
 Config structure in config.json:
     {
       "llm": {
-        "base_url": "http://localhost:8080/v1",
-        "default_model": "gemma-4-26B-language",
+        "base_url": "http://llama-swap:8080/v1",  # see LLM_DEFAULT_BASE_URL
+        "default_model": "see LLM_DEFAULT_MODEL",
         "api_key": "",
         "timeout": 600
       },
@@ -38,7 +38,15 @@ import re
 import sys
 from typing import Optional
 
-from config import PROJECT_DIR, load_config
+from config import (
+    DEFAULT_LEARNING_LANGUAGE,
+    DEFAULT_NATIVE_LANGUAGE,
+    LLM_DEFAULT_BASE_URL,
+    LLM_DEFAULT_MODEL,
+    LLM_DEFAULT_TIMEOUT,
+    PROJECT_DIR,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,16 +188,16 @@ class LlamaClient:
         self.profile_name = profile_name
         self.llm_cfg = config.get("llm", {})
         self.base_url = self.llm_cfg.get(
-            "base_url", os.environ.get("LLAMA_BASE_URL", "http://localhost:8080/v1")
+            "base_url", os.environ.get("LLAMA_BASE_URL", LLM_DEFAULT_BASE_URL)
         )
         self.default_model = self.llm_cfg.get(
-            "default_model", os.environ.get("LLAMA_MODEL", "gemma-4-26B-language")
+            "default_model", os.environ.get("LLAMA_MODEL", LLM_DEFAULT_MODEL)
         )
         self.api_key = self.llm_cfg.get("api_key", "") or "none"
 
         # Timeout for LLM requests (model swap can be slow with large models)
         self.timeout = float(self.llm_cfg.get(
-            "timeout", os.environ.get("LLAMA_TIMEOUT", "600")
+            "timeout", os.environ.get("LLAMA_TIMEOUT", str(LLM_DEFAULT_TIMEOUT))
         ))
 
         # Resolve profile-level overrides
@@ -301,7 +309,12 @@ class LlamaClient:
 
     # ── Public API ─────────────────────────────────────────────────
 
-    def translate(self, text: str, source_lang: str = "de", target_lang: str = "en") -> Optional[str]:
+    def translate(
+        self,
+        text: str,
+        source_lang: str = DEFAULT_LEARNING_LANGUAGE,
+        target_lang: str = DEFAULT_NATIVE_LANGUAGE,
+    ) -> Optional[str]:
         """
         Translate a text from source_lang to target_lang.
 
@@ -336,8 +349,8 @@ class LlamaClient:
         self,
         original_text: str,
         translated_text: Optional[str] = None,
-        source_lang: str = "de",
-        target_lang: str = "en",
+        source_lang: str = DEFAULT_LEARNING_LANGUAGE,
+        target_lang: str = DEFAULT_NATIVE_LANGUAGE,
         max_words: int = 30,
     ) -> list:
         """
