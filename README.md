@@ -2,34 +2,13 @@
 
 A standalone language-learning daemon that delivers daily lessons via Telegram — fetching articles, translating them with a local LLM, generating TTS audio, and providing interactive tutoring. Includes a web UI for profile management and model selection.
 
-## Architecture
+## Features
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│                    main.py (daemon)                                │
-│                                                                   │
-│  ┌──────────────┐  ┌──────────────────┐  ┌─────────────────────┐ │
-│  │ scheduler.py │  │ telegram_bot.py  │  │ web_ui.py           │ │
-│  │              │  │                  │  │                     │ │
-│  │ cron jobs    │  │ • lesson delivery│  │ • Dashboard         │ │
-│  │ serial queue │  │ • tutor chat     │  │ • Model selection   │ │
-│  │              │  │ • lesson context │  │ • Config editor     │ │
-│  └──────┬───────┘  │    (SQLite)      │  │ • Live log viewer   │ │
-│         │          └──────────────────┘  └─────────────────────┘ │
-│         ▼                                                         │
-│  ┌──────────────────────────────────────────────────────────────┐ │
-│  │                   orchestrator.py                            │ │
-│  │                                                              │ │
-│  │  Orchestrator.run_lesson():                                  │ │
-│  │    1. fetch_router → article                                 │ │
-│  │    2. clean_content()                                        │ │
-│  │    3+4. tts.py + llama_client.translate() (parallel)         │ │
-│  │    5. llama_client.extract_vocab()                           │ │
-│  │    6. processor.update_vocab()                               │ │
-│  │    7. delivery_callback()                                    │ │
-│  └──────────────────────────────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────────────────┘
-```
+### Daily language lessons
+
+### Tutor chat
+
+### Vocab quiz and flashcards
 
 ## Quick Start
 
@@ -37,49 +16,12 @@ A standalone language-learning daemon that delivers daily lessons via Telegram �
 
 ```bash
 conda create -n lingua python=3.11 -y
-conda run -n lingua pip install aiogram openai pytest pytest-asyncio apscheduler flask jinja2
+conda run -n lingua pip install -r requierements.txt
 ```
 
 ### 2. Configure `config.json`
 
-```json
-{
-  "default_profile": "krystof",
-  "llm": {
-    "base_url": "http://llama-swap:8080/v1",
-    "default_model": "gemma-4-26B-language",
-    "api_key": "",
-    "timeout": 600
-  },
-  "tts": {
-    "base_url": "http://llama-swap:8080/v1",
-    "model": "omnivoice",
-    "api_key": ""
-  },
-  "telegram": {
-    "bot_token": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
-  },
-  "profiles": {
-    "krystof": {
-      "native_language": "en",
-      "learning_language": "de",
-      "source": "wikipedia",
-      "article_filter": {
-        "min_words": 50,
-        "max_words": 300
-      },
-      "use_tts": true,
-      "tts_voice": "male",
-      "telegram_chat_id": 111222333,
-      "enabled": true,
-      "schedule": {
-        "time": "08:00",
-        "tz": "Europe/Berlin"
-      }
-    }
-  }
-}
-```
+*See config.sample.json*
 
 ### 3. Start the daemon
 
@@ -107,43 +49,6 @@ The startup banner shows all configured profiles, schedules, and service status:
   Telegram:   ✅ configured (token: ...ST-TOKEN)
   LLM:        gemma-4-26B-language @ http://llama-swap:8080/v1
 ============================================================
-```
-
-## Web UI
-
-The web UI is a lightweight admin panel for managing profiles, selecting models, and viewing logs.
-
-### Dashboard (`/`)
-- Profile table with enable/disable toggle per profile
-- Model selection panel — choose translation, tutoring, and TTS models from dropdowns (populated by calling `/v1/models` on your LLM server)
-- Add/Edit/Delete profiles via modal form
-
-### Logs (`/logs`)
-- Live tail of `lingua.log` with color-coded severity levels
-- Auto-refresh every 3 seconds
-
-### Config (`/config`)
-- Raw JSON editor for `config.json` with validation and backup
-
-### Model Selection
-The dashboard has a **Model Selection** panel that queries your LLM server's `/v1/models` endpoint and populates three dropdowns:
-
-| Dropdown | Config key | Used by |
-|----------|-----------|---------|
-| Translation Model | `llm.translate_model` | Article translation + vocabulary extraction |
-| Tutoring Model | `llm.tutor_model` | Interactive tutor chat |
-| TTS Model | `tts.model` | Text-to-speech synthesis |
-
-Leave a dropdown on "→ default" to use the global `default_model`. Changes are saved globally and apply to all profiles.
-
-### Standalone
-
-```bash
-# Defaults (localhost:8089, no auth)
-conda run -n lingua python src/web_ui.py
-
-# Remote access with basic auth
-conda run -n lingua python src/web_ui.py --host 0.0.0.0 --port 8089 --password mypass
 ```
 
 ## Config Reference
@@ -182,11 +87,7 @@ conda run -n lingua python src/web_ui.py --host 0.0.0.0 --port 8089 --password m
 Before starting the daemon, run the environment health check to verify your setup:
 
 ```bash
-# Full check (config + packages + network connectivity)
 conda run -n lingua python src/env_check.py --config config.json
-
-# Quick check (skip network — fast offline validation)
-conda run -n lingua python src/env_check.py --config config.json --quick
 ```
 
 The env check validates:
