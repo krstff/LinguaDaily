@@ -28,28 +28,32 @@ A lightweight language-learning daemon that delivers daily language lessons via 
   </tr>
 </table>
 
+## Quick start
+
 ### 1. Install dependencies
 
 ```bash
-conda create -n lingua python=3.11 -y
-conda run -n lingua pip install -r requierements.txt
+conda create lingua -y
+conda run -n lingua pip install -r requirements.txt
+conda activate lingua
 ```
 
 ### 2. Configure `config.json`
 
-*See config.sample.json*
+*See config.sample.json*\
+I recommend handling profiles through the web UI.
 
 ### 3. Start the daemon
 
 ```bash
 # Daemon only (scheduler + Telegram bot)
-conda run -n lingua python src/main.py --config config.json
+python src/main.py --config config.json
 
 # Daemon + Web UI
-conda run -n lingua python src/main.py --config config.json --web-ui
+python src/main.py --config config.json --web-ui
 
 # Web UI standalone (no scheduler/bot)
-conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
+python src/web_ui.py --host 127.0.0.1 --port 8089
 ```
 
 The startup banner shows all configured profiles, schedules, and service status:
@@ -68,12 +72,40 @@ The startup banner shows all configured profiles, schedules, and service status:
 ```
 ## Connections
 
-This project relies heavily on self hosted services (eg. Kiwix for wiki articles, locally deployed LLM and TTS). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
+This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.kiwix.org/wiki/Main_Page) for wiki articles, locally deployed LLM and TTS). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
+
+### Telegram
+
+- Find BotFather: Open Telegram and search for @BotFather.
+- Start the Chat: Hit the Start button and send the command /newbot.
+- Atfer creating the bot, save the bot token and pass it to the config.
+- A command /chatid should print your ChatId to use in your config.
+
+***Security risks***
+- I highly recommend using some sort of env passing for the bot token.
+- The LLM calls are not sanitized - watch out for prompt injection with the tutor chat.
+
+My command setup:
+```
+start - Get usage information
+history - Clears chat history on server.
+status - Get information about profile status.
+chatid - Get your chat id.
+profiles - List all available profiles.
+switch - Switch between profile chats.
+flashcards - Show flashcards.
+quiz - Play quiz.
+```
+
+### Web UI
+
+A very simple web UI is available for easy of use - updates the config.json where everything is configured. \
+Features CRUD ops for profiles and articles sources, logs and config editing.
 
 ## Yapping
 
-With local LLMs becoming increasingly capable and me being very interested in AI, I wanted to created something I would actually personally use.
-At first I wanted a simple skill for OpenClaw that would help me with learning languages. However after realizing how bloated and annoying it is to use I decided to just do a rewrite with the help of:
+With local LLMs becoming increasingly capable and me being very interested in AI, I wanted to create something I would actually personally use.
+At first, I wanted a simple skill for OpenClaw that would help me with learning languages. However, after realizing how bloated and annoying it is to use, I decided to just do a rewrite with the help of:
 
 ### Pi.dev
 
@@ -83,16 +115,18 @@ My focus went into how the LLM calling works, which models to use together so I 
 ### Choices
 
 My server runs two RTX 3060s 12gb giving me 24gb of VRAM. As of right now the most capable open-weight models for this purpose seem to be: 
-- **Gemma4** for translation. I use the MoE 26b Q4_K_M quant with thinking mode turned off. Thinking mode is not really necessary for translation and it is much slower. The dense version would be probably better but slower and most importantly take up more VRAM.
+- **Gemma4** for translation. I use the MoE 26b Q4_K_M quant with thinking mode turned off. Thinking mode is not really necessary for translation and it is much slower. The dense version would probably be better but slower and most importantly take up more VRAM.
 - **OmniVoice** for TTS. It is fast, the sound quality is great and it takes at most about 4gb of VRAM. Sometimes there are issues when English names are in the text as the model forgets that it should not be speaking English for the next few words. 
 
 I recommend doing your own research on model selection. [https://euroeval.com/leaderboards/](https://euroeval.com/leaderboards/)
 
 I went with **Kiwix** because I did not want to rely on an online Wiki API. Setting it up in its own LXC takes less time than downloading the .zim file itself :)
 
-Personally I use [llama-swap](https://github.com/mostlygeek/llama-swap) for model deployment with the follwoing config for this project:
+Personally, I use [llama-swap](https://github.com/mostlygeek/llama-swap) for model deployment with the following config for this project:
 ```yml
-gemma-4-26B-language:
+models:
+  # Split so that the TTS fits on one of the cards
+  gemma-4-26B-language:
     cmd: llama-server --port ${PORT} --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf -c 32000 -ngl 99 -ctk q8_0 -ctv q8_0 --temp 1.0 --top-p 0.95 --top-k 64 --metrics -ts 37,63 --chat-template-kwargs '{"enable_thinking":false}'
   
   omnivoice:
@@ -116,7 +150,7 @@ gemma-4-26B-language:
 Before starting the daemon, run the environment health check to verify your setup and connections:
 
 ```bash
-conda run -n lingua python src/env_check.py --config config.json
+python src/env_check.py --config config.json
 ```
 
 ## Documentation
