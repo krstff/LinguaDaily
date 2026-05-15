@@ -1,16 +1,32 @@
 # LinguaDaily
 
-A standalone language-learning daemon that delivers daily lessons via Telegram — fetching articles, translating them with a local LLM, generating TTS audio, and providing interactive tutoring. Includes a web UI for profile management and model selection.
+A lightweight language-learning daemon that delivers daily language lessons via Telegram — fetching articles, translating them with a *local LLM*, generating TTS audio, and providing chat tutoring. Includes a simple web UI for configuration.
 
 ## Features
 
-### Daily language lessons
-
-### Tutor chat
-
-### Vocab quiz and flashcards
-
-## Quick Start
+<table>
+  <tr>
+    <td><b>Daily language lessons</b></td>
+    <td><b>Tutor chat</b></td>
+    <td><b>Vocab quiz and flashcards</b></td>
+  </tr>
+  <tr>
+    <td>
+      <video src="https://github.com/user-attachments/assets/48bfcb3e-7dc7-487d-8ffd-bfd872ec39ef" width="320" controls></video>
+    </td>
+    <td>
+      <video src="https://github.com/user-attachments/assets/976848d0-f73c-41e9-8dad-227ddbd3575c" width="250" controls></video>
+    </td>
+    <td>
+      <video src="https://github.com/user-attachments/assets/61a6d65f-661c-4870-9779-5bdc3529c511" width="320" controls></video>
+    </td>
+  </tr>
+  <tr>
+    <td>Recieve articles, TTS, translation and vocabulary daily.</td>
+    <td>Ask questions about your lesson or grammar in general.</td>
+    <td>Train your vocab knowledge with simple in-chat games.</td>
+  </tr>
+</table>
 
 ### 1. Install dependencies
 
@@ -50,105 +66,61 @@ The startup banner shows all configured profiles, schedules, and service status:
   LLM:        gemma-4-26B-language @ http://llama-swap:8080/v1
 ============================================================
 ```
+## Connections
 
-## Config Reference
+This project relies heavily on self hosted services (eg. Kiwix for wiki articles, locally deployed LLM and TTS). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
 
-### Global settings
+## Yapping
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `default_profile` | string | Default profile for CLI tools |
-| `llm.base_url` | string | OpenAI-compatible API base URL (e.g. `http://llama-swap:8080/v1`) |
-| `llm.default_model` | string | Fallback model when no task-specific override is set |
-| `llm.translate_model` | string *(optional)* | Model for translation + vocab extraction |
-| `llm.tutor_model` | string *(optional)* | Model for interactive tutoring |
-| `tts.base_url` | string | TTS API base URL |
-| `tts.model` | string | TTS model name (default: `omnivoice`) |
-| `telegram.bot_token` | string | Telegram BotFather token |
+With local LLMs becoming increasingly capable and me being very interested in AI, I wanted to created something I would actually personally use.
+At first I wanted a simple skill for OpenClaw that would help me with learning languages. However after realizing how bloated and annoying it is to use I decided to just do a rewrite with the help of:
 
-### Profile settings
+### Pi.dev
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `native_language` | string | User's native language code (`en`, `de`, …) |
-| `learning_language` | string | Language the user is learning |
-| `source` | string | Content source: `wikipedia` or `news` |
-| `article_filter.min_words` | int | Minimum article length |
-| `article_filter.max_words` | int | Maximum article length |
-| `use_tts` | bool | Generate TTS audio (default: `true`) |
-| `tts_voice` | string | Voice name (`male`, `female`) |
-| `telegram_chat_id` | string/int | Telegram chat ID for lesson delivery + tutor chat |
-| `enabled` | bool | Whether the profile is scheduled (default: `true`). Toggle from Web UI. |
-| `schedule.time` | string | Daily lesson time, HH:MM (24h) |
-| `schedule.tz` | string | Timezone, e.g. `Europe/Berlin` |
+The aim of this project was never about coding an app therefore I don't really care about simply using Pi.dev together with Qwen3.6 27B to basically build the entire project. To me learning how to actually leverage local AIs in a useful way is way more valuable than coding a *simple* app. \
+My focus went into how the LLM calling works, which models to use together so I don't get any OOM and learning that instead of wasting thousands of tokens with an unnecessarily complicated harness just to schedule a cron job, I can simply ask Qwen to show me how to do it in a more efficient way. Why make so many calls to a LLM when I only need it for a few steps...
+
+### Choices
+
+My server runs two RTX 3060s 12gb giving me 24gb of VRAM. As of right now the most capable open-weight models for this purpose seem to be: 
+- **Gemma4** for translation. I use the MoE 26b Q4_K_M quant with thinking mode turned off. Thinking mode is not really necessary for translation and it is much slower. The dense version would be probably better but slower and most importantly take up more VRAM.
+- **OmniVoice** for TTS. It is fast, the sound quality is great and it takes at most about 4gb of VRAM. Sometimes there are issues when English names are in the text as the model forgets that it should not be speaking English for the next few words. 
+
+I recommend doing your own research on model selection. [https://euroeval.com/leaderboards/](https://euroeval.com/leaderboards/)
+
+I went with **Kiwix** because I did not want to rely on an online Wiki API. Setting it up in its own LXC takes less time than downloading the .zim file itself :)
+
+Personally I use [llama-swap](https://github.com/mostlygeek/llama-swap) for model deployment with the follwoing config for this project:
+```yml
+gemma-4-26B-language:
+    cmd: llama-server --port ${PORT} --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf -c 32000 -ngl 99 -ctk q8_0 -ctv q8_0 --temp 1.0 --top-p 0.95 --top-k 64 --metrics -ts 37,63 --chat-template-kwargs '{"enable_thinking":false}'
+  
+  omnivoice:
+    name: "OmniVoice TTS"
+    cmd: |
+      docker run --rm --name ${MODEL_ID} \
+      -p 8880:8880 \
+      --network ai_stack \
+      --gpus 'device=0' \
+      --env 'MODEL_ID=k2-fsa/OmniVoice' \
+      --env 'DEVICE=cuda:0' \
+      -v /models/:/app/models \
+      diogod2r/omnivoice-fastapi:latest
+    cmdStop: docker stop ${MODEL_ID}
+    proxy: "http://omnivoice:8880"
+    checkEndpoint: "/health"
+```
 
 ## Environment Check
 
-Before starting the daemon, run the environment health check to verify your setup:
+Before starting the daemon, run the environment health check to verify your setup and connections:
 
 ```bash
 conda run -n lingua python src/env_check.py --config config.json
 ```
 
-The env check validates:
-- **Config file**: exists, valid JSON, correct structure
-- **Profiles**: language codes, chat IDs (numeric, no conflicts), source validity, article filter ranges, schedule times
-- **Python packages**: all 6 required dependencies installed with version info
-- **Directories**: data dir, output dir, per-profile vocab files
-- **LLM endpoint**: `/v1/models` reachable, configured models exist on server
-- **Kiwix servers**: HTTP root + `/random` article fetch works
-- **Telegram bot**: `getMe` call confirms token is valid and returns bot username
-- **TTS endpoint**: `/v1/models` reachable
-- **News RSS feeds**: accessible (if using news source)
-
-A sample config (`config.sample.json`) with profiles "alice" and "bob" is included for reference.
-
-## Testing Individual Components
-
-Quick examples:
-
-```bash
-# Test LLM endpoint health
-conda run -n lingua python src/llama_client.py health --config config.json
-
-# Run a single lesson pipeline manually
-conda run -n lingua python src/orchestrator.py --profile krystof
-
-# List scheduled profiles
-conda run -n lingua python src/scheduler.py --list
-
-# Run all scheduled jobs once and exit (quick test)
-conda run -n lingua python src/scheduler.py --once
-
-# Run all jobs now + keep daemon alive
-conda run -n lingua python src/scheduler.py --run-now
-
-# Run the Telegram bot standalone (for testing)
-conda run -n lingua python src/telegram_bot.py --config config.json
-
-# Web UI standalone
-conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
-```
-
-## Components
-
-| File | Role |
-|------|------|
-| `src/main.py` | Daemon entry — wires scheduler + Telegram bot, signal handling, optional Web UI |
-| `src/orchestrator.py` | **Lesson pipeline** — fetch → clean → TTS → translate → vocab → deliver |
-| `src/scheduler.py` | APScheduler daily lessons per profile (delegates to orchestrator) |
-| `src/telegram_bot.py` | aiogram 3.x bot — lesson delivery + interactive tutor chat with lesson context |
-| `src/web_ui.py` | Flask admin panel — dashboard, model selection, config editor, log viewer |
-| `src/llama_client.py` | Local LLM client — translate, extract vocab, tutor chat (with lesson injection) |
-| `src/processor.py` | Vocabulary persistence — markdown file management |
-| `src/fetch_router.py` | Routes fetch requests to wikipedia or news sources |
-| `src/wikipedia_fetcher.py` | Kiwix/ZIM client for offline Wikipedia articles |
-| `src/news_fetcher.py` | RSS feed fetching for current events |
-| `src/tts.py` | OmniVoice TTS wrapper (OpenAI-compatible API) |
-| `src/env_check.py` | Deployment health check — config, packages, connectivity validation |
-
 ## Documentation
-
+So i don't forget how this works :))
 - [Daemon (main.py)](docs/daemon.md) — Startup, service wiring, signal handling, systemd/Docker
 - [Web UI](docs/webui-design.md) — Dashboard, model selection, config editor, log viewer
 - [Orchestrator Guide](docs/orchestrator.md) — Pipeline steps, utility functions, CLI usage
@@ -158,23 +130,3 @@ conda run -n lingua python src/web_ui.py --host 127.0.0.1 --port 8089
 - [LLM Client Guide](docs/llama-client.md) — Model resolution, translate, vocab extraction, tutor chat
 - [TTS Module Guide](docs/tts.md) — OmniVoice wrapper, text sanitization
 - [Wikipedia Fetcher Guide](docs/wikipedia-fetcher.md) — Kiwix/ZIM client, HTML extraction, smart truncation
-
-## Tests
-
-```bash
-conda run -n lingua pytest tests/ -v
-```
-
-172 passing tests across 9 test files (all mocked — zero real LLM calls during testing).
-
-| Test file | Count | What it covers |
-|-----------|-------|----------------|
-| `test_fetch_router.py` | 11 | Source routing (wikipedia/news), CLI |
-| `test_llama_client.py` | 20 | Model resolution, translate, vocab extraction, tutor chat, health check |
-| `test_main.py` | 20 | Daemon startup, service wiring, signal handling, CLI |
-| `test_news_fetcher.py` | 21 | Feed loading, topic resolution, article truncation |
-| `test_orchestrator.py` | 21 | Config/profile utils, clean_content, full pipeline, CLI |
-| `test_processor.py` | 15 | Vocab file init, read/update/dedup, markdown persistence |
-| `test_scheduler.py` | 17 | Schedule discovery, job building, delivery callback, CLI |
-| `test_telegram_bot.py` | 28 | Bot init, lesson delivery, tutor chat, commands, history DB |
-| `test_wikipedia_fetcher.py` | 19 | KiwixClient, extract_wiki_text, smart/hard truncation |
