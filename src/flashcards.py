@@ -29,6 +29,7 @@ from datetime import date
 from typing import Optional
 
 from config import (
+    DEFAULT_LEARNING_LANGUAGE,
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
     FLASHCARD_REVIEW_COOLDOWN_DAYS,

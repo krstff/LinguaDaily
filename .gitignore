@@ -8,6 +8,7 @@ output/
 nohup.out
 *.bak
 config.json
+*.log*
 
 ### Linux ###
 *~

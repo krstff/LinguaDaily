@@ -1007,79 +1007,79 @@ class TelegramBot:
                 return
 
             # Handle post-quiz result buttons (retry_missed / new_quiz / to_flashcards)
-            # These arrive after the main session is destroyed
+            # These arrive after the main session is destroyed.
+            # Only intercept known result actions — everything else falls through
+            # to handle_callback for active quiz/flashcard sessions.
             data = callback_query.data
             if data.startswith("qz:") and self.study_handler:
                 parts = data.split(":", 4)
-                if len(parts) < 4:
-                    return  # malformed — ignore
-                result_chat_id = int(parts[1])
-                token = parts[2]
-                action = parts[3]
-                # Check for a results-mode session and verify token
-                result_session = self.study_handler._sessions.get(result_chat_id)
-                if not (result_session and result_session.get("mode") == "quiz_results"):
-                    return  # no active results session — stale button
-                if result_session.get("_token") != token:
-                    await callback_query.answer("⚠️ Session expired, start a new quiz")
-                    self.study_handler._end_session(result_chat_id)
-                    return
-                # Always use currently active profile (respects /switch)
-                active_profile = self.resolve_profile(result_chat_id)
-                if not active_profile:
-                    await callback_query.answer("⚠️ No profile found")
-                    return
+                if len(parts) >= 4:
+                    result_chat_id = int(parts[1])
+                    token = parts[2]
+                    action = parts[3]
+                    # Check for a results-mode session
+                    result_session = self.study_handler._sessions.get(result_chat_id)
+                    if result_session and result_session.get("mode") == "quiz_results":
+                        if result_session.get("_token") != token:
+                            await callback_query.answer("⚠️ Session expired, start a new quiz")
+                            self.study_handler._end_session(result_chat_id)
+                            return
+                        active_profile = self.resolve_profile(result_chat_id)
+                        if not active_profile:
+                            await callback_query.answer("⚠️ No profile found")
+                            return
 
-                if action == "retry_missed":
-                    await callback_query.answer()
-                    from flashcards import VocabLoader
+                        if action == "retry_missed":
+                            await callback_query.answer()
+                            from flashcards import VocabLoader
 
-                    missed = result_session.get("missed_words", [])
-                    if missed:
-                        # Get learning language from current active profile config
-                        profile_cfg = self.config.get("profiles", {}).get(
-                            active_profile, {})
-                        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
-                        loader = VocabLoader(
-                            profile=active_profile,
-                            learning_language=lang,
-                        )
-                        all_entries = loader.all_entries()
-                        questions = self.study_handler._build_questions(
-                            missed, all_entries)
-                        self.study_handler._sessions[result_chat_id] = {
-                            "mode": "quiz",
-                            "profile": active_profile,
-                            "questions": questions,
-                            "index": 0,
-                            "created_at": time.time(),
-                            "message_id": None,
-                            "score": 0,
-                            "answered": False,
-                            "missed_words": [],
-                            "answer_log": [],
-                        }
-                        await self.study_handler._render_question(result_chat_id)
-                        return
-                elif action == "new_quiz":
-                    await callback_query.answer()
-                    self.study_handler._end_session(result_chat_id)
-                    await self.study_handler.start_quiz(
-                        chat_id=result_chat_id,
-                        profile_name=active_profile,
-                        count=result_session.get("questions_count", FLASHCARD_DEFAULT_QUIZ_COUNT),
-                    )
-                    return
+                            missed = result_session.get("missed_words", [])
+                            if missed:
+                                profile_cfg = self.config.get("profiles", {}).get(
+                                    active_profile, {})
+                                lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
+                                loader = VocabLoader(
+                                    profile=active_profile,
+                                    learning_language=lang,
+                                )
+                                all_entries = loader.all_entries()
+                                questions = self.study_handler._build_questions(
+                                    missed, all_entries)
+                                import secrets
+                                self.study_handler._sessions[result_chat_id] = {
+                                    "mode": "quiz",
+                                    "profile": active_profile,
+                                    "questions": questions,
+                                    "index": 0,
+                                    "created_at": time.time(),
+                                    "message_id": None,
+                                    "score": 0,
+                                    "answered": False,
+                                    "missed_words": [],
+                                    "answer_log": [],
+                                    "_token": secrets.token_urlsafe(4)[:6],
+                                }
+                                await self.study_handler._render_question(result_chat_id)
+                            return
+                        elif action == "new_quiz":
+                            await callback_query.answer()
+                            self.study_handler._end_session(result_chat_id)
+                            await self.study_handler.start_quiz(
+                                chat_id=result_chat_id,
+                                profile_name=active_profile,
+                                count=result_session.get("questions_count", FLASHCARD_DEFAULT_QUIZ_COUNT),
+                            )
+                            return
 
-                elif action == "to_flashcards":
-                    await callback_query.answer()
-                    self.study_handler._end_session(result_chat_id)
-                    await self.study_handler.start_flashcards(
-                        chat_id=result_chat_id,
-                        profile_name=result_session["profile"],
-                        count=FLASHCARD_DEFAULT_CARD_COUNT,
-                    )
-                    return
+                        elif action == "to_flashcards":
+                            await callback_query.answer()
+                            self.study_handler._end_session(result_chat_id)
+                            await self.study_handler.start_flashcards(
+                                chat_id=result_chat_id,
+                                profile_name=result_session["profile"],
+                                count=FLASHCARD_DEFAULT_CARD_COUNT,
+                            )
+                            return
 
             await self.study_handler.handle_callback(callback_query)
 
