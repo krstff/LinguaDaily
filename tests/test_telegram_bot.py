@@ -464,6 +464,87 @@ class TestCommands:
         assert "Europe/Berlin" in sent
         bot.db.close()
 
+    @pytest.mark.asyncio
+    async def test_command_another_lesson_requests_lesson(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = AsyncMock(return_value={"title": "Test"})
+            MockOrch.return_value = mock_orch
+
+            await bot.handle_another_lesson(111222333)
+
+            # Confirmation message sent before pipeline starts
+            sent = mock_aiogram.send_message.call_args[1]["text"]
+            assert "Requesting a new lesson" in sent
+            assert "krystof" in sent
+
+            # Orchestrator called with correct profile and delivery callback
+            mock_orch.run_lesson.assert_called_once()
+            positional, kwargs = mock_orch.run_lesson.call_args
+            assert positional[0] == "krystof"
+            assert kwargs["delivery_callback"] == bot.deliver_lesson
+
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_command_another_lesson_cooldown(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # Manually set a recent timestamp to trigger cooldown
+        import time
+        bot._last_lesson_request[111222333] = time.time()
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            await bot.handle_another_lesson(111222333)
+
+            # Should have sent cooldown message, NOT started pipeline
+            sent = mock_aiogram.send_message.call_args[1]["text"]
+            assert "Please wait" in sent
+            MockOrch.assert_not_called()
+
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_command_another_lesson_unregistered(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        await bot.handle_another_lesson(999999999)
+
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "not registered" in sent.lower() or "register" in sent.lower()
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_command_another_lesson_cooldown_expires(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        from src.config import TG_LESSON_COOLDOWN_SECS
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # Set timestamp well before cooldown window
+        import time
+        bot._last_lesson_request[111222333] = time.time() - TG_LESSON_COOLDOWN_SECS - 1
+
+        with patch("orchestrator.Orchestrator") as MockOrch:
+            mock_orch = MagicMock()
+            mock_orch.run_lesson = AsyncMock(return_value={"title": "Test"})
+            MockOrch.return_value = mock_orch
+
+            await bot.handle_another_lesson(111222333)
+
+            # Cooldown expired — should proceed
+            mock_orch.run_lesson.assert_called_once()
+
+        bot.db.close()
+
 
 # ── Bot lifecycle tests ─────────────────────────────────────────────
 

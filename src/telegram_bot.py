@@ -50,6 +50,7 @@ from config import (
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
     TG_HISTORY_PURGE_DAYS,
+    TG_LESSON_COOLDOWN_SECS,
     TG_MAX_MSG_LEN,
     TG_SAFE_TRUNCATE,
     resolve_language_name,
@@ -242,6 +243,9 @@ class TelegramBot:
 
         # Study handler (flashcards + quiz, lazy-init in start())
         self.study_handler: Optional["StudyHandler"] = None
+
+        # Cooldown tracking for /another command (chat_id → timestamp)
+        self._last_lesson_request: dict[int, float] = {}
 
     # ── Config / mapping ───────────────────────────────────────────
 
@@ -702,6 +706,7 @@ class TelegramBot:
                     f"Lessons will be delivered automatically at your scheduled time.\n\n"
                     f"Commands:\n"
                     f"/start — Show this message\n"
+                    f"/another — Request another daily lesson\n"
                     f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
                     f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
                     f"/chatid — Show your Telegram Chat ID\n"
@@ -806,6 +811,53 @@ class TelegramBot:
             ),
             parse_mode="HTML",
         )
+
+    async def handle_another_lesson(self, chat_id: int):
+        """Trigger an on-demand lesson for the user's active profile.
+
+        Enforces a cooldown window (TG_LESSON_COOLDOWN_SECS) per chat to
+        prevent spam.  The full pipeline runs asynchronously in the background;
+        the user only sees a confirmation message here.
+        """
+        bot = await self._get_aiogram_bot()
+        profile_name = self.resolve_profile(chat_id)
+        if not profile_name:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ Not registered. Ask an admin to add your Telegram chat ID.",
+            )
+            return
+
+        cid = int(chat_id)
+        now = time.time()
+        last = self._last_lesson_request.get(cid, 0)
+        remaining = TG_LESSON_COOLDOWN_SECS - (now - last)
+
+        if remaining > 0:
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⏳ Please wait {mins}m {secs}s before requesting another lesson.",
+            )
+            return
+
+        self._last_lesson_request[cid] = now
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"📖 Requesting a new lesson for <b>{self._escape_html(profile_name)}</b>…",
+            parse_mode="HTML",
+        )
+
+        from orchestrator import Orchestrator
+        orch = Orchestrator(config=self.config)
+        try:
+            await orch.run_lesson(
+                profile_name,
+                delivery_callback=self.deliver_lesson,
+            )
+        except Exception as e:
+            logger.error("[%s] On-demand lesson failed: %s", profile_name, e, exc_info=True)
 
     async def handle_switch(self, chat_id: int, args: str):
         """Switch the active profile for this chat ID."""
@@ -941,6 +993,10 @@ class TelegramBot:
                 await self.handle_profiles(message.chat.id)
             else:
                 await self.handle_switch(message.chat.id, subcommand)
+
+        @dp.message(Command("another"))
+        async def cmd_another(message: types.Message):
+            await self.handle_another_lesson(message.chat.id)
 
         # ── Flashcard command ────────────────────────────────────
         @dp.message(Command("flashcards"))

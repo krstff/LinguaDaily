@@ -134,9 +134,10 @@ FLASHCARD_QUIZ_AUTO_ADVANCE_SECS = 2
 FLASHCARD_QUIZ_DISTRACTORS     = 3
 
 # ── Telegram ───────────────────────────────────────────────────
-TG_MAX_MSG_LEN      = 4096
-TG_SAFE_TRUNCATE    = 3900
-TG_HISTORY_PURGE_DAYS = 30
+TG_MAX_MSG_LEN           = 4096
+TG_SAFE_TRUNCATE         = 3900
+TG_HISTORY_PURGE_DAYS    = 30
+TG_LESSON_COOLDOWN_SECS  = 600   # minutes between /another requests
 
 # ── Profile defaults (fallbacks when config is silent) ──────────
 DEFAULT_LEARNING_LANGUAGE = "de"
