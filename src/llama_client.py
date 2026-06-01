@@ -153,6 +153,19 @@ Rules:
 Keep meanings concise. For highlight lists, be thorough — include every
 inflected form (plural, past tense, etc.) that appears in the respective texts."""
 
+# ── Intent classification prompt ─────────────────────────────────────
+# Lightweight LLM call to decide whether RAG grounding is needed.
+# Returns JSON: {"intent": "chitchat" | "grammar_query" | "vocab_query"}
+
+INTENT_SYSTEM_PROMPT = """You classify a language learner's message into one category. Reply with ONLY a JSON object:
+{"intent": "chitchat"}  — casual conversation, greetings, opinions, non-educational
+{"intent": "grammar_query"}  — grammar rules, conjugation, syntax, sentence structure, cases, tenses
+{"intent": "vocab_query"}  — word meaning, translation, vocabulary, phrases, idioms, usage
+
+The user is learning {language_name}. Respond in JSON only."""
+
+# ── Tutor system prompt (base) ───────────────────────────────────────
+
 TUTOR_SYSTEM_PROMPT = """You are a language tutor helping someone learn {language_name}.
 
 Rules:
@@ -165,6 +178,21 @@ Rules:
 - Never start responses with exclamations, praise, or commentary. Jump straight into
   the answer.
 - Keep responses concise unless the user explicitly asks for detail."""
+
+# ── RAG-injected block appended to tutor system prompt ───────────────
+
+RAG_REFERENCE_BLOCK = """
+You have access to reference material from textbooks and learning resources.
+Use it to ground your answers.  If the reference material contradicts your own
+knowledge, prefer the reference.  Do NOT mention that you are using references
+unless the user asks.
+
+=== REFERENCE MATERIAL ===
+{references}
+=== END REFERENCES ==="""
+
+# ── RAG intent label → display name (for logging) ───────────────────
+_INTENT_LABELS = {"chitchat": "chat", "grammar_query": "grammar", "vocab_query": "vocab"}
 
 
 # ── Client ───────────────────────────────────────────────────────────
@@ -417,6 +445,76 @@ class LlamaClient:
             logger.warning("Failed to parse vocab JSON: %s — raw: %s", e, result[:200])
             return []
 
+    def _classify_intent(
+        self,
+        message: str,
+        language_name: str = "German",
+    ) -> str:
+        """
+        Lightweight intent classifier.  Returns one of:
+          "chitchat", "grammar_query", "vocab_query"
+
+        Uses a dedicated system prompt so the LLM returns clean JSON.
+        Falls back to "chitchat" on any error (safe default — no RAG).
+        """
+        model = self.resolve_model("tutor")
+        system = INTENT_SYSTEM_PROMPT.format(language_name=language_name)
+
+        result = self._chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": message},
+            ],
+            model=model,
+            temperature=0.0,
+        )
+        if not result:
+            return "chitchat"
+
+        # Parse JSON from response (strip fences if present)
+        text = result.strip()
+        if text.startswith("`"):
+            lines = text.split("\n")
+            text = "\n".join(l for l in lines if not l.strip().startswith("`"))
+
+        try:
+            data = json.loads(text)
+            intent = data.get("intent", "chitchat")
+            if intent in _INTENT_LABELS:
+                return intent
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        # Fuzzy fallback — check for keywords in raw output
+        lower = text.lower()
+        if "grammar" in lower:
+            return "grammar_query"
+        if "vocab" in lower:
+            return "vocab_query"
+        return "chitchat"
+
+    def _fetch_rag_context(
+        self,
+        message: str,
+        language_code: str = "",
+    ) -> list[str]:
+        """
+        Query the RAG knowledge base and return relevant text chunks.
+
+        Returns empty list on any failure (graceful degradation).
+        """
+        try:
+            from src.rag_service import get_rag_service
+            rag = get_rag_service()
+            return rag.get_contextual_chunks(
+                query_text=message,
+                language=language_code,
+                top_k=5,
+            )
+        except Exception as e:
+            logger.debug("RAG query failed (continuing without grounding): %s", e)
+            return []
+
     def tutor_chat(
         self,
         message: str,
@@ -428,6 +526,12 @@ class LlamaClient:
     ) -> Optional[str]:
         """
         Handle an interactive tutoring chat message.
+
+        Flow:
+          1. Classify intent (chitchat / grammar_query / vocab_query)
+          2. If grammar or vocab → query RAG for textbook grounding
+          3. Inject lesson + RAG references into system prompt
+          4. Generate tutor reply
 
         Parameters
         ----------
@@ -452,12 +556,36 @@ class LlamaClient:
             Tutor's reply, or None on failure.
         """
         model = self.resolve_model("tutor")
+
+        # ── Step 1: Classify intent ───────────────────────────────
+        intent = self._classify_intent(message, language_name)
+        logger.info("Tutor intent=%s | msg=%s", _INTENT_LABELS.get(intent, intent), message[:60])
+
+        # ── Step 2: Fetch RAG context for educational queries ─────
+        references = []
+        if intent in ("grammar_query", "vocab_query"):
+            # Derive language code from name (e.g. "German" → "de")
+            from config import LANGUAGE_NAMES
+            lang_code = ""
+            for code, name in LANGUAGE_NAMES.items():
+                if name.lower() == language_name.lower():
+                    lang_code = code
+                    break
+            references = self._fetch_rag_context(message, lang_code)
+            logger.info("RAG returned %d chunks", len(references))
+
+        # ── Step 3: Build system prompt ───────────────────────────
         system = TUTOR_SYSTEM_PROMPT.format(
             language_name=language_name,
             native_lang=native_lang,
         )
 
-        # ── Inject today's lesson into the system prompt ────────
+        # Inject RAG references (if any)
+        if references:
+            ref_text = "\n---\n".join(references[:5])  # cap at 5 chunks
+            system += RAG_REFERENCE_BLOCK.format(references=ref_text)
+
+        # Inject today's lesson
         if lesson:
             original = (lesson.get("original_content") or "")[:2000]
             translated = (lesson.get("translated_content") or "")[:2000]
@@ -490,9 +618,9 @@ Translation ({native_lang}):
             lesson_block += "\n=== END LESSON ==="
             system += lesson_block
 
+        # ── Step 4: Generate reply ────────────────────────────────
         messages = [{"role": "system", "content": system}]
 
-        # Add history (trim to max_history turns = pairs of user/assistant)
         if history:
             keep = history[-max_history * 2:]
             messages.extend(keep)

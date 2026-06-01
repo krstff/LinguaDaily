@@ -62,13 +62,14 @@ The embedding API URL always reuses `llm.base_url` — no separate config needed
 - [x] **`requirements.txt`** — qdrant-client, pdfplumber, python-docx added
 - [x] **Qdrant compatibility fix** — `query_points(query_filter=)` → `search(query_filter=)` + client-side filtering in `list_sources()`
 
-### Phase 2: Real-time Tutor Integration 🔜 NEXT
+### Phase 2: Real-time Tutor Integration ✅ DONE
 
-- [ ] **Update `src/llama_client.py`**:
-  - Import `rag_service`
-  - **Intent Router** — lightweight LLM call to classify messages (`CHITCHAT` vs `GRAMMAR_QUERY` / `VOCAB_QUERY`)
-  - **Augmented Prompt** — inject retrieved chunks as `[Reference Material]` when intent is grammar/vocab related
-- [ ] **Testing** — Verify RAG triggers on relevant queries and stays silent on chitchat
+- [x] **`src/llama_client.py`** — RAG-integrated tutor flow:
+  - `_classify_intent()` — lightweight LLM call (temp=0.0) returns `chitchat` / `grammar_query` / `vocab_query`
+  - `_fetch_rag_context()` — queries RAG knowledge base by language code, graceful fallback to empty list
+  - `tutor_chat()` — routes through intent classifier, injects `[Reference Material]` block into system prompt for educational queries
+- [x] **Graceful degradation** — if Qdrant is down or no docs indexed, tutor works normally without RAG
+- [x] **Logging** — intent label + chunk count logged per message for debugging
 
 ### Phase 3: Super Lesson — SKIPPED (not doing this)
 
@@ -80,7 +81,29 @@ The embedding API URL always reuses `llm.base_url` — no separate config needed
 
 ---
 
-## External Dependencies
+## Tutor Flow (Phase 2)
+
+```
+User message
+    │
+    ▼
+_classify_intent()          ← lightweight LLM call (temp=0.0)
+    │                         returns: chitchat | grammar_query | vocab_query
+    ├── chitchat ──────────────→ normal tutor (no RAG)
+    │
+    ├── grammar/vocab ────────→ _fetch_rag_context()
+    │                              ↓
+    │                          get_contextual_chunks(language=code, top_k=5)
+    │                              ↓
+    │                          0–5 text chunks
+    │
+    ▼
+tutor_chat() ────────────────→ system prompt + [Reference Material] block
+                                   + today's lesson (if any)
+                                   + conversation history
+```
+
+### External Dependencies
 
 | Service | Setup | Configured Where |
 |---|---|---|
