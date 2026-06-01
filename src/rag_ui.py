@@ -244,14 +244,14 @@ def register_rag_ui(app, config_path=None):
             if not target:
                 return jsonify({"message": f"Document '{source_file}' not found"}), 404
 
-            rag.delete_by_source(target["source_id"])
+            deleted_count = rag.delete_by_source_file(source_file)
 
             raw_path = _documents_dir / source_file
             if raw_path.exists():
                 os.remove(str(raw_path))
 
             return jsonify({
-                "message": f"Deleted '{source_file}' ({target['chunk_count']} chunks removed)"
+                "message": f"Deleted '{source_file}' ({deleted_count} chunks removed)"
             })
 
         except Exception as e:

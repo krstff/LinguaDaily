@@ -158,9 +158,9 @@ inflected form (plural, past tense, etc.) that appears in the respective texts."
 # Returns JSON: {"intent": "chitchat" | "grammar_query" | "vocab_query"}
 
 INTENT_SYSTEM_PROMPT = """You classify a language learner's message into one category. Reply with ONLY a JSON object:
-{"intent": "chitchat"}  — casual conversation, greetings, opinions, non-educational
-{"intent": "grammar_query"}  — grammar rules, conjugation, syntax, sentence structure, cases, tenses
-{"intent": "vocab_query"}  — word meaning, translation, vocabulary, phrases, idioms, usage
+{{"intent": "chitchat"}}  — casual conversation, greetings, opinions, non-educational
+{{"intent": "grammar_query"}}  — grammar rules, conjugation, syntax, sentence structure, cases, tenses
+{{"intent": "vocab_query"}}  — word meaning, translation, vocabulary, phrases, idioms, usage
 
 The user is learning {language_name}. Respond in JSON only."""
 
@@ -506,13 +506,15 @@ class LlamaClient:
         try:
             from src.rag_service import get_rag_service
             rag = get_rag_service()
-            return rag.get_contextual_chunks(
-                query_text=message,
+            hits = rag.query_knowledge_base(
+                query_vector=rag.embed_text(message),
                 language=language_code,
                 top_k=5,
             )
+            logger.info("RAG search: %d hits (lang=%s)", len(hits), language_code or "(any)")
+            return [h["text"] for h in hits]
         except Exception as e:
-            logger.debug("RAG query failed (continuing without grounding): %s", e)
+            logger.warning("RAG query failed (continuing without grounding): %s", e)
             return []
 
     def tutor_chat(
@@ -584,6 +586,11 @@ class LlamaClient:
         if references:
             ref_text = "\n---\n".join(references[:5])  # cap at 5 chunks
             system += RAG_REFERENCE_BLOCK.format(references=ref_text)
+            logger.info(
+                "RAG grounding injected (%d chunks, %d chars):\n%s",
+                len(references), len(ref_text),
+                "\n".join(f"  [{i}] {r[:100]}..." for i, r in enumerate(references[:5])),
+            )
 
         # Inject today's lesson
         if lesson:

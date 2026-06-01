@@ -56,21 +56,39 @@ class RAGService:
 
             self._qdrant_client = QdrantClient(url=self.qdrant_url)
 
-            # Ensure collection exists (dimension probed on first upsert)
+            # Ensure collection exists with correct dimension.
+            # Probes the embedding API first, then recreates if mismatched.
             try:
+                dim = self._probe_embedding_dimension()
                 collections = self._qdrant_client.get_collections()
                 names = [c.name for c in collections.collections]
+
                 if self.collection_name not in names:
-                    logger.info("Creating Qdrant collection '%s' …", self.collection_name)
-                    dim = self._probe_embedding_dimension()
+                    logger.info("Creating Qdrant collection '%s' (dim=%d)…", self.collection_name, dim)
                     self._qdrant_client.create_collection(
                         collection_name=self.collection_name,
                         vectors_config=models.VectorParams(
                             size=dim, distance=models.Distance.COSINE
                         ),
                     )
+                else:
+                    # Check existing dimension — recreate if model changed
+                    info = self._qdrant_client.get_collection(self.collection_name)
+                    existing_dim = info.config.params.vectors.size
+                    if existing_dim != dim:
+                        logger.warning(
+                            "Dimension mismatch: collection=%d, model=%d — recreating '%s'",
+                            existing_dim, dim, self.collection_name,
+                        )
+                        self._qdrant_client.delete_collection(self.collection_name)
+                        self._qdrant_client.create_collection(
+                            collection_name=self.collection_name,
+                            vectors_config=models.VectorParams(
+                                size=dim, distance=models.Distance.COSINE
+                            ),
+                        )
             except Exception as e:
-                logger.warning("Collection check failed (may already exist): %s", e)
+                logger.warning("Collection setup failed: %s", e)
 
         return self._qdrant_client
 
@@ -88,7 +106,7 @@ class RAGService:
             self._openai_client = OpenAI(
                 base_url=self.embedding_base_url,
                 api_key="not-needed",
-                timeout=60,
+                timeout=120,  # embedding models can be slow to cold-start
             )
         return self._openai_client
 
@@ -211,38 +229,93 @@ class RAGService:
         """Semantic search in Qdrant."""
         client = self._get_qdrant_client()
 
-        from qdrant_client.http import models
-        from qdrant_client import models as qm
+        from qdrant_client.http import models as http_models
 
+        # Build filter conditions
         must_conditions = []
         if language:
             must_conditions.append(
-                qm.FieldCondition(key="language", match=qm.MatchValue(value=language))
+                http_models.FieldCondition(key="language", match=http_models.MatchValue(value=language))
             )
         if tags:
             for tag in tags:
                 must_conditions.append(
-                    qm.FieldCondition(key="tags", match=qm.MatchValue(value=tag))
+                    http_models.FieldCondition(key="tags", match=http_models.MatchValue(value=tag))
                 )
 
-        search_filter = models.Filter(must=must_conditions) if must_conditions else None
+        search_filter = http_models.Filter(must=must_conditions) if must_conditions else None
 
-        results = client.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector,
-            query_filter=search_filter,
-            limit=top_k,
-        )
+        # Detect the correct API by inspecting method signatures at runtime.
+        import inspect
+
+        results = None
+        error_log = []
+
+        # Strategy 1: query_points() — try all known filter param names
+        if hasattr(client, "query_points"):
+            sig = inspect.signature(client.query_points)
+            params = set(sig.parameters.keys())
+            for filter_kw in ("query_filter", "filter", "search_filter"):
+                if filter_kw in params and "query" in params:
+                    kwargs = {
+                        "collection_name": self.collection_name,
+                        "query": query_vector,
+                        "limit": top_k,
+                    }
+                    if search_filter:
+                        kwargs[filter_kw] = search_filter
+                    try:
+                        results = client.query_points(**kwargs)
+                        break
+                    except Exception as e:
+                        error_log.append(f"query_points({filter_kw}=): {e}")
+
+        # Strategy 2: search() with query_vector=
+        if results is None and hasattr(client, "search"):
+            sig = inspect.signature(client.search)
+            params = set(sig.parameters.keys())
+            for filter_kw in ("query_filter", "filter", "search_filter"):
+                if "query_vector" in params:
+                    kwargs = {
+                        "collection_name": self.collection_name,
+                        "query_vector": query_vector,
+                        "limit": top_k,
+                    }
+                    if search_filter and filter_kw in params:
+                        kwargs[filter_kw] = search_filter
+                    try:
+                        results = client.search(**kwargs)
+                        break
+                    except Exception as e:
+                        error_log.append(f"search({filter_kw}=): {e}")
+
+        # Strategy 3: query_points() without filter (last resort)
+        if results is None and hasattr(client, "query_points"):
+            try:
+                results = client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    limit=top_k,
+                )
+            except Exception as e:
+                error_log.append(f"query_points(no filter): {e}")
+
+        if results is None:
+            raise RuntimeError(
+                f"No working Qdrant search method found. Tried:\n" +
+                "\n".join("  - " + e for e in error_log)
+            )
 
         hits = []
-        for hit in results:
+        for hit in getattr(results, "points", results):
+            payload = getattr(hit, "payload", {}) or {}
             hits.append({
-                "text": hit.payload.get("text", ""),
-                "source_id": hit.payload.get("source_id", ""),
-                "source_file": hit.payload.get("source_file", ""),
-                "language": hit.payload.get("language", ""),
-                "chunk_index": hit.payload.get("chunk_index", 0),
-                "score": hit.score,
+                "text": payload.get("text", ""),
+                "source_id": payload.get("source_id", ""),
+                "source_file": payload.get("source_file", ""),
+                "language": payload.get("language", ""),
+                "chunk_index": payload.get("chunk_index", 0),
+                "score": getattr(hit, "score", 0),
             })
 
         return hits
@@ -264,7 +337,7 @@ class RAGService:
     # ── Deletion / Management ──────────────────────────────────────
 
     def delete_by_source(self, source_id: str) -> bool:
-        """Delete all chunks belonging to a source document."""
+        """Delete all chunks belonging to a source document (by chunk-level source_id)."""
         client = self._get_qdrant_client()
 
         from qdrant_client.http import models
@@ -280,6 +353,25 @@ class RAGService:
         )
         logger.info("Deleted chunks for source_id='%s'", source_id)
         return True
+
+    def delete_by_source_file(self, source_file: str) -> int:
+        """Delete all chunks belonging to a source file. Returns count of deleted points."""
+        client = self._get_qdrant_client()
+
+        from qdrant_client.http import models
+        from qdrant_client import models as qm
+
+        result = client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(must=[
+                    qm.FieldCondition(key="source_file", match=qm.MatchValue(value=source_file))
+                ])
+            ),
+        )
+        deleted = getattr(result, "deleted", 0) if result else 0
+        logger.info("Deleted %d chunks for source_file='%s'", deleted, source_file)
+        return deleted
 
     def delete_by_language(self, language: str) -> bool:
         """Delete all chunks for a given language."""
@@ -299,29 +391,42 @@ class RAGService:
         logger.info("Deleted all chunks for language='%s'", language)
         return True
 
+    def _scroll_all(self) -> list:
+        """Scroll all points from the collection. Handles both old and new qdrant-client APIs."""
+        client = self._get_qdrant_client()
+
+        scroll_result = client.scroll(
+            collection_name=self.collection_name,
+            limit=10000,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        # New API (>=1.7): ScrollResponse with .points attribute
+        if hasattr(scroll_result, "points"):
+            return scroll_result.points
+        # Old API: tuple of (points, next_offset)
+        if isinstance(scroll_result, tuple):
+            return scroll_result[0]
+        # Fallback: treat as iterable directly
+        return list(scroll_result)
+
     def get_document_stats(self) -> dict:
         """Return stats about indexed documents."""
         client = self._get_qdrant_client()
 
-        info = client.get_collection(self.collection_name)
-        total_chunks = info.vectors_count if hasattr(info, "vectors_count") else 0
-
         languages: dict[str, int] = {}
         sources: dict[str, int] = {}
+        total_chunks = 0
 
         try:
-            scroll_results = client.scroll(
-                collection_name=self.collection_name,
-                limit=10000,
-                with_payload=True,
-                with_vectors=False,
-            )
-            for point, _ in scroll_results[0]:
-                payload = point.payload or {}
+            for point in self._scroll_all():
+                payload = getattr(point, "payload", point) or {}
                 lang = payload.get("language", "unknown")
                 source = payload.get("source_file", "unknown")
                 languages[lang] = languages.get(lang, 0) + 1
                 sources[source] = sources.get(source, 0) + 1
+                total_chunks += 1
         except Exception as e:
             logger.warning("Failed to get document stats: %s", e)
 
@@ -329,19 +434,11 @@ class RAGService:
 
     def list_sources(self, language: str = "") -> list[dict]:
         """List all indexed source documents."""
-        client = self._get_qdrant_client()
-
         sources: dict[str, dict] = {}
 
         try:
-            scroll_results = client.scroll(
-                collection_name=self.collection_name,
-                limit=10000,
-                with_payload=True,
-                with_vectors=False,
-            )
-            for point, _ in scroll_results[0]:
-                payload = point.payload or {}
+            for point in self._scroll_all():
+                payload = getattr(point, "payload", point) or {}
                 lang = payload.get("language", "")
 
                 if language and lang != language:
