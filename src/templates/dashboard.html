@@ -28,8 +28,8 @@
 <!-- ── Model Selection Panel ──────────────────────────── -->
 <div class="model-panel">
   <h2>Model Selection</h2>
-  <p class="subtitle">Choose models for translation, tutoring and TTS (applies to all profiles)</p>
-  <div class="form-grid" style="grid-template-columns:repeat(3,1fr);">
+  <p class="subtitle">Choose models for translation, tutoring, TTS and RAG embeddings (applies to all profiles)</p>
+  <div class="form-grid" style="grid-template-columns:repeat(4,1fr);">
     <div class="form-row">
       <label>Translation Model</label>
       <select id="model_translate">
@@ -46,6 +46,12 @@
       <label>TTS Model</label>
       <select id="model_tts">
         <option value="">→ default (omnivoice)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Embedding Model (RAG)</label>
+      <select id="model_embed">
+        <option value="nomic-embed-text">→ nomic-embed-text</option>
       </select>
     </div>
   </div>

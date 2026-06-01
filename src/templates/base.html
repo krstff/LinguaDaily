@@ -362,6 +362,7 @@ textarea { resize: vertical; }
   <a href="/" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
   <a href="/sources" {% if active == 'sources' %}class="active"{% endif %}>Sources</a>
   <a href="/logs" {% if active == 'logs' %}class="active"{% endif %}>Logs</a>
+  <a href="/documents" {% if active == 'documents' %}class="active"{% endif %}>Documents</a>
   <a href="/config" {% if active == 'config' %}class="active"{% endif %}>Config</a>
 </nav>
 <div class="container">
@@ -661,10 +662,11 @@ async function loadModels() {
       statusEl.textContent = `⚠ ${fetchData.error}`;
     }
 
-    // Populate dropdowns
+    // Populate dropdowns (all models go in every dropdown)
     populateDropdown('model_translate', fetchData.llm_models || []);
     populateDropdown('model_tutor', fetchData.llm_models || []);
     populateDropdown('model_tts', fetchData.tts_models || []);
+    populateDropdown('model_embed', fetchData.llm_models || []);
 
     // Fetch current selections from config
     const curRes = await fetch('/api/models/current');
@@ -678,6 +680,10 @@ async function loadModels() {
     }
     // tts_model always has a default
     document.getElementById('model_tts').value = curData.tts_model || 'omnivoice';
+    // embedding model
+    if (curData.embedding_model) {
+      document.getElementById('model_embed').value = curData.embedding_model;
+    }
 
     statusEl.textContent = fetchData.errors?.length
       ? `Loaded (${fetchData.errors.length} endpoint(s) unreachable)`
@@ -711,6 +717,7 @@ async function saveModels() {
     translate_model: document.getElementById('model_translate').value,
     tutor_model: document.getElementById('model_tutor').value,
     tts_model: document.getElementById('model_tts').value,
+    embedding_model: document.getElementById('model_embed')?.value || 'nomic-embed-text',
   };
 
   try {

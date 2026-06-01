@@ -726,7 +726,8 @@ def create_app(config_path=None, log_file=None, password=None,
         {
             "translate_model": "model-name",
             "tutor_model": "model-name",
-            "tts_model": TTS_DEFAULT_MODEL
+            "tts_model": TTS_DEFAULT_MODEL,
+            "embedding_model": "nomic-embed-text"
         }
         """
         data = request.get_json(force=True, silent=True)
@@ -736,6 +737,7 @@ def create_app(config_path=None, log_file=None, password=None,
         config = load_config(_config_path)
         llm_cfg = config.setdefault("llm", {})
         tts_cfg = config.setdefault("tts", {})
+        rag_cfg = config.setdefault("rag", {})
 
         changed = []
 
@@ -761,6 +763,11 @@ def create_app(config_path=None, log_file=None, password=None,
             tts_cfg["model"] = val if val else TTS_DEFAULT_MODEL
             changed.append("tts_model")
 
+        if "embedding_model" in data:
+            val = data["embedding_model"]
+            rag_cfg["embedding_model"] = val if val else "nomic-embed-text"
+            changed.append("embedding_model")
+
         try:
             backup = _config_path.with_suffix(".json.bak")
             if _config_path.exists():
@@ -782,11 +789,13 @@ def create_app(config_path=None, log_file=None, password=None,
         config = load_config(_config_path)
         llm_cfg = config.get("llm", {})
         tts_cfg = config.get("tts", {})
+        rag_cfg = config.get("rag", {})
         return jsonify({
             "default_model": llm_cfg.get("default_model", ""),
             "translate_model": llm_cfg.get("translate_model", ""),
             "tutor_model": llm_cfg.get("tutor_model", ""),
             "tts_model": tts_cfg.get("model", TTS_DEFAULT_MODEL),
+            "embedding_model": rag_cfg.get("embedding_model", "nomic-embed-text"),
         })
 
     return app

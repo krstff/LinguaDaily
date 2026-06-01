@@ -139,6 +139,13 @@ TG_SAFE_TRUNCATE         = 3900
 TG_HISTORY_PURGE_DAYS    = 30
 TG_LESSON_COOLDOWN_SECS  = 600   # minutes between /another requests
 
+# ── RAG ───────────────────────────────────────────────────
+RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"
+RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
+RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
+RAG_DEFAULT_CHUNK_SIZE    = 500
+RAG_DEFAULT_CHUNK_OVERLAP = 100
+
 # ── Profile defaults (fallbacks when config is silent) ──────────
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE   = "en"
@@ -170,3 +177,43 @@ def load_config(path=None, fallback=None):
         if fallback is not None:
             return fallback
         raise
+
+
+def get_llm_base_url(path=None) -> str:
+    """Return the LLM base_url from config.json, falling back to default."""
+    import os
+    cfg = load_config(path, fallback={})
+    return (
+        (cfg.get("llm", {}) or {}).get("base_url")
+        or os.environ.get("LLAMA_BASE_URL")
+        or LLM_DEFAULT_BASE_URL
+    )
+
+
+def get_rag_config(path=None) -> dict:
+    """Return resolved RAG config: config.json values merged with defaults.
+
+    Returns a dict with keys:
+        qdrant_url, collection_name, embedding_model,
+        chunk_size, chunk_overlap, embedding_base_url
+    """
+    import os
+    cfg = load_config(path, fallback={})
+    rag = cfg.get("rag", {}) or {}
+
+    return {
+        "qdrant_url": (
+            rag.get("qdrant_url")
+            or os.environ.get("QDRANT_URL")
+            or RAG_DEFAULT_QDRANT_URL
+        ),
+        "collection_name": rag.get("collection_name", RAG_DEFAULT_COLLECTION),
+        "embedding_model": (
+            rag.get("embedding_model")
+            or os.environ.get("EMBEDDING_MODEL")
+            or RAG_DEFAULT_EMBED_MODEL
+        ),
+        "chunk_size": rag.get("chunk_size", RAG_DEFAULT_CHUNK_SIZE),
+        "chunk_overlap": rag.get("chunk_overlap", RAG_DEFAULT_CHUNK_OVERLAP),
+        "embedding_base_url": rag.get("embedding_base_url") or get_llm_base_url(path),
+    }

@@ -215,6 +215,13 @@ class LinguaDaemon:
                 bot=self.bot,               # for config reload
             )
 
+            # Register RAG document management routes (separate module)
+            try:
+                from rag_ui import register_rag_ui
+                register_rag_ui(flask_app, config_path=str(CONFIG_PATH))
+            except Exception as e:
+                logger.warning("Failed to register RAG UI: %s", e)
+
             from werkzeug.serving import make_server
             self.web_server = make_server(host, port, flask_app, threaded=True)
             thread = threading.Thread(target=self.web_server.serve_forever, daemon=True)
