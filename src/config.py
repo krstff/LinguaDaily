@@ -152,6 +152,61 @@ DEFAULT_NATIVE_LANGUAGE   = "en"
 DEFAULT_PROFILE_NAME      = "default"
 
 
+# ── Shared OpenAI client (singleton) ──────────────────────────────
+#
+# All modules that talk to llama.cpp share ONE OpenAI client instance.
+# This avoids multiple HTTP connection pools fighting over the same
+# server — especially important when llama-swap is loading/unloading
+# models and transient timeouts trigger independent retries from
+# separate clients ("zombie" duplicate requests).
+
+def get_openai_client(base_url: str = None, api_key: str = "none", timeout: float = 60):
+    """
+    Get or create the shared OpenAI-compatible client for llama.cpp.
+
+    Only ONE instance is ever created (module-level singleton) regardless
+    of how many times this function is called. The base_url, api_key, and
+    timeout are used on first creation only — subsequent calls return the
+    same instance.
+
+    Parameters
+    ----------
+    base_url : str or None
+        API base URL (default: from config or LLM_DEFAULT_BASE_URL).
+    api_key : str
+        API key (default: "none" for local llama.cpp).
+    timeout : float
+        Default request timeout in seconds (default: 60).
+
+    Returns
+    -------
+    OpenAI client instance, or None if the package is not installed.
+    """
+    import logging
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger_cfg = logging.getLogger("lingua")
+        logger_cfg.warning("'openai' package not installed — LLM calls will fail.")
+        return None
+
+    if not hasattr(get_openai_client, "_instance") or get_openai_client._instance is None:
+        resolved_url = base_url or get_llm_base_url()
+        get_openai_client._instance = OpenAI(
+            base_url=resolved_url,
+            api_key=api_key or "none",
+            timeout=timeout,
+        )
+    return get_openai_client._instance
+
+
+def reset_openai_client():
+    """Reset the shared OpenAI client (for tests / config reload)."""
+    if hasattr(get_openai_client, "_instance"):
+        get_openai_client._instance = None
+
+
 # ── Config loader ────────────────────────────────────────────────────
 
 def load_config(path=None, fallback=None):

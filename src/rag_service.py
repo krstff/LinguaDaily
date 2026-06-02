@@ -38,7 +38,6 @@ class RAGService:
         self.chunk_overlap = rcfg["chunk_overlap"]
 
         self._qdrant_client = None
-        self._openai_client = None
 
     # ── Lazy init helpers ────────────────────────────────────────
 
@@ -104,22 +103,13 @@ class RAGService:
                 # Keep existing collection — dim is fine if it was working before
 
     def _get_openai_client(self):
-        """Get an OpenAI-compatible client for embeddings (lazy)."""
-        if self._openai_client is None:
-            try:
-                from openai import OpenAI
-            except ImportError:
-                raise ImportError(
-                    "openai package required for RAG embeddings. "
-                    "Install with: pip install openai"
-                )
+        """Get the shared OpenAI-compatible client for embeddings.
 
-            self._openai_client = OpenAI(
-                base_url=self.embedding_base_url,
-                api_key="not-needed",
-                timeout=120,  # embedding models can be slow to cold-start
-            )
-        return self._openai_client
+        Uses the module-level singleton from config so all callers
+        (RAG, LLM chat, TTS) share ONE connection pool to llama.cpp.
+        """
+        from config import get_openai_client
+        return get_openai_client(base_url=self.embedding_base_url)
 
     def _probe_embedding_dimension(self) -> int:
         """Probe the embedding dimension by sending a test vector."""

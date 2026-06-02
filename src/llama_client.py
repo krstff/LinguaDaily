@@ -240,8 +240,6 @@ class LlamaClient:
         if profile_name and config.get("profiles"):
             self.profile = config["profiles"].get(profile_name, {})
 
-        self._client = None
-
     # ── Model resolution ───────────────────────────────────────────
 
     def resolve_model(self, task: str = "default") -> str:
@@ -280,23 +278,16 @@ class LlamaClient:
 
         return self.default_model
 
-    # ── OpenAI client ──────────────────────────────────────────────
+    # ── OpenAI client (shared singleton) ────────────────────────
 
     def _get_client(self):
-        """Lazy-initialize the OpenAI-compatible client."""
-        if self._client is None:
-            try:
-                from openai import OpenAI
-            except ImportError:
-                logger.error("'openai' package not installed — LLM calls will fail.")
-                return None
+        """Get the shared OpenAI-compatible client.
 
-            self._client = OpenAI(
-                base_url=self.base_url,
-                api_key=self.api_key,
-                timeout=self.timeout,
-            )
-        return self._client
+        All LlamaClient instances share ONE underlying OpenAI client
+        to avoid multiple connection pools fighting llama.cpp.
+        """
+        from config import get_openai_client
+        return get_openai_client(base_url=self.base_url, api_key=self.api_key)
 
     # ── Core chat completion ───────────────────────────────────────
 
