@@ -242,6 +242,10 @@ def register_rag_ui(app, config_path=None):
             rag = _get_rag()
             text = _extract_text(dest)
 
+            # Clean up PDF extraction artifacts before chunking
+            if dest.suffix.lower() == ".pdf":
+                text = rag.clean_pdf_text(text)
+
             if not text.strip():
                 os.remove(str(dest))
                 return jsonify({"message": "No text extracted from file"}), 400
@@ -326,6 +330,9 @@ def register_rag_ui(app, config_path=None):
                     break
 
             text = _extract_text(raw_path)
+            # Clean up PDF extraction artifacts before chunking
+            if raw_path.suffix.lower() == ".pdf":
+                text = rag.clean_pdf_text(text)
             source_id = hashlib.sha256(source_file.encode()).hexdigest()[:16]
             chunks = rag.chunk_text(text, source_id=source_id)
             upserted = rag.upsert_chunks(

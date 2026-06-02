@@ -18,6 +18,7 @@ Usage:
 
 import hashlib
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger("lingua")
@@ -178,6 +179,92 @@ class RAGService:
                 time.sleep(0.1)
 
         return all_embeddings
+
+    # ── PDF text cleanup ──────────────────────────────────────────
+
+    @staticmethod
+    def clean_pdf_text(text: str) -> str:
+        """Remove common PDF extraction artifacts from raw text.
+
+        Handles:
+          • Lone page numbers on their own line (e.g. '42', '103')
+          • Repeated running headers / footers (same line appearing 3+ times)
+          • Widows & orphans — single short words on their own line (< 5 chars)
+          • Lines that are only punctuation, dashes, dots, etc.
+          • Excessive blank lines (collapse runs of 3+ into 2)
+          • Hyphenation artifacts from line-break word splits
+
+        Parameters
+        ----------
+        text : str
+            Raw extracted text (from pdfplumber, etc.).
+
+        Returns
+        -------
+        str
+            Cleaned text suitable for chunking and embedding.
+        """
+        lines = text.split("\n")
+        cleaned: list[str] = []
+
+        # ── Count occurrences to detect repeated headers/footers ──
+        line_counts: dict[str, int] = {}
+        for line in lines:
+            stripped = line.strip()
+            if stripped:
+                line_counts[stripped] = line_counts.get(stripped, 0) + 1
+
+        repeated_lines = {
+            line for line, count in line_counts.items() if count >= 3 and len(line) < 200
+        }
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Skip empty lines (handled later)
+            if not stripped:
+                cleaned.append("")
+                continue
+
+            # Skip repeated running headers / footers
+            if stripped in repeated_lines:
+                continue
+
+            # Skip lone page numbers (1-4 digits)
+            if re.fullmatch(r'\d{1,4}', stripped):
+                continue
+
+            # Skip lines that are only punctuation, dashes, dots, asterisks
+            if re.fullmatch(r'[\s\u2014\u2013\-\*\.=~\\|/;:!,?@#%^&()+\[\]{}<>"\']{1,}', stripped):
+                continue
+
+            # Skip widows/orphans — single very short words (< 5 chars) on their own line
+            if len(stripped.split()) == 1 and len(stripped) < 5:
+                word = stripped.rstrip(".,;:!?'")
+                if not re.fullmatch(r'IV{0,3}|V?I{0,3}\.?', word.upper()) and word.lower() not in (
+                    "yes", "no", "the", "and", "for", "but", "not", "all", "can",
+                    "had", "has", "was", "are", "his", "her", "its", "our",
+                ):
+                    continue
+
+            cleaned.append(stripped)
+
+        # ── Post-processing on joined text ────────────────────────
+        result = "\n".join(cleaned)
+
+        # Fix hyphenation artifacts: word split across lines with trailing hyphen
+        result = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', result)
+
+        # Collapse runs of 3+ blank lines into exactly 2
+        result = re.sub(r'\n{4,}', '\n\n\n', result)
+
+        # Remove trailing whitespace from each line
+        result = "\n".join(line.rstrip() for line in result.split("\n"))
+
+        # Collapse multiple spaces within lines to single space
+        result = re.sub(r'(?<!\n) {2,}(?!\n)', ' ', result)
+
+        return result.strip()
 
     # ── Chunking ───────────────────────────────────────────────────
 
