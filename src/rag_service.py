@@ -43,11 +43,14 @@ class RAGService:
     # ── Lazy init helpers ────────────────────────────────────────
 
     def _get_qdrant_client(self):
-        """Get a Qdrant client (lazy)."""
+        """Get a Qdrant client (lazy). Does NOT probe embeddings.
+
+        Embedding probing is deferred until an actual upsert/query needs it,
+        so page loads and read-only operations stay fast.
+        """
         if self._qdrant_client is None:
             try:
                 from qdrant_client import QdrantClient
-                from qdrant_client.http import models
             except ImportError:
                 raise ImportError(
                     "qdrant-client is required for RAG. "
@@ -55,42 +58,50 @@ class RAGService:
                 )
 
             self._qdrant_client = QdrantClient(url=self.qdrant_url)
+        return self._qdrant_client
 
-            # Ensure collection exists with correct dimension.
-            # Probes the embedding API first, then recreates if mismatched.
+    def _ensure_collection(self):
+        """Ensure the Qdrant collection exists, probing embeddings only when needed.
+
+        Called by upsert/query methods — NOT during page loads or stats reads.
+        """
+        from qdrant_client.http import models
+
+        client = self._get_qdrant_client()
+        collections = client.get_collections()
+        names = [c.name for c in collections.collections]
+
+        if self.collection_name not in names:
+            # Collection doesn't exist — must probe to know dimension
+            dim = self._probe_embedding_dimension()
+            logger.info("Creating Qdrant collection '%s' (dim=%d)…", self.collection_name, dim)
+            client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=models.VectorParams(
+                    size=dim, distance=models.Distance.COSINE
+                ),
+            )
+        else:
+            # Collection exists — check dimension only if we can probe quickly
+            info = client.get_collection(self.collection_name)
+            existing_dim = info.config.params.vectors.size
             try:
                 dim = self._probe_embedding_dimension()
-                collections = self._qdrant_client.get_collections()
-                names = [c.name for c in collections.collections]
-
-                if self.collection_name not in names:
-                    logger.info("Creating Qdrant collection '%s' (dim=%d)…", self.collection_name, dim)
-                    self._qdrant_client.create_collection(
+                if existing_dim != dim:
+                    logger.warning(
+                        "Dimension mismatch: collection=%d, model=%d — recreating '%s'",
+                        existing_dim, dim, self.collection_name,
+                    )
+                    client.delete_collection(self.collection_name)
+                    client.create_collection(
                         collection_name=self.collection_name,
                         vectors_config=models.VectorParams(
                             size=dim, distance=models.Distance.COSINE
                         ),
                     )
-                else:
-                    # Check existing dimension — recreate if model changed
-                    info = self._qdrant_client.get_collection(self.collection_name)
-                    existing_dim = info.config.params.vectors.size
-                    if existing_dim != dim:
-                        logger.warning(
-                            "Dimension mismatch: collection=%d, model=%d — recreating '%s'",
-                            existing_dim, dim, self.collection_name,
-                        )
-                        self._qdrant_client.delete_collection(self.collection_name)
-                        self._qdrant_client.create_collection(
-                            collection_name=self.collection_name,
-                            vectors_config=models.VectorParams(
-                                size=dim, distance=models.Distance.COSINE
-                            ),
-                        )
             except Exception as e:
-                logger.warning("Collection setup failed: %s", e)
-
-        return self._qdrant_client
+                logger.debug("Skipping dimension check (embedding API unavailable): %s", e)
+                # Keep existing collection — dim is fine if it was working before
 
     def _get_openai_client(self):
         """Get an OpenAI-compatible client for embeddings (lazy)."""
@@ -189,6 +200,7 @@ class RAGService:
         if not chunks:
             return 0
 
+        self._ensure_collection()
         client = self._get_qdrant_client()
         texts = [c["text"] for c in chunks]
         embeddings = self.embed_batch(texts)
@@ -227,6 +239,7 @@ class RAGService:
         tags: list[str] = None,
     ) -> list[dict]:
         """Semantic search in Qdrant."""
+        self._ensure_collection()
         client = self._get_qdrant_client()
 
         from qdrant_client.http import models as http_models
@@ -391,42 +404,79 @@ class RAGService:
         logger.info("Deleted all chunks for language='%s'", language)
         return True
 
-    def _scroll_all(self) -> list:
-        """Scroll all points from the collection. Handles both old and new qdrant-client APIs."""
+    def _scroll_sources(self, language: str = "") -> list[dict]:
+        """Scroll only the payload fields needed for stats/sources.
+
+        Fetches minimal payload (language, source_file, tags, chunk_index)
+        in paginated batches of 256. No vectors, no full text content.
+        """
         client = self._get_qdrant_client()
+        from qdrant_client.http import models
 
-        scroll_result = client.scroll(
-            collection_name=self.collection_name,
-            limit=10000,
-            with_payload=True,
-            with_vectors=False,
-        )
+        filter_must = []
+        if language:
+            filter_must.append(
+                models.FieldCondition(
+                    key="language",
+                    match=models.MatchValue(value=language),
+                )
+            )
+        search_filter = models.Filter(must=filter_must) if filter_must else None
 
-        # New API (>=1.7): ScrollResponse with .points attribute
-        if hasattr(scroll_result, "points"):
-            return scroll_result.points
-        # Old API: tuple of (points, next_offset)
-        if isinstance(scroll_result, tuple):
-            return scroll_result[0]
-        # Fallback: treat as iterable directly
-        return list(scroll_result)
+        offset = None
+        all_points: list[dict] = []
+        batch_size = 256
+
+        while True:
+            scroll_result = client.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["language", "source_file", "tags", "chunk_index"],
+                with_vectors=False,
+                scroll_filter=search_filter,
+            )
+
+            points = getattr(scroll_result, "points", scroll_result[0]) if isinstance(scroll_result, tuple) else getattr(scroll_result, "points", [])
+            if not points:
+                break
+
+            for pt in points:
+                payload = getattr(pt, "payload", {}) or {}
+                all_points.append(payload)
+
+            last = points[-1]
+            offset = getattr(last, "id", None)
+            if len(points) < batch_size:
+                break
+
+        return all_points
 
     def get_document_stats(self) -> dict:
-        """Return stats about indexed documents."""
+        """Return stats about indexed documents.
+
+        Uses server-side count for total_chunks (instant),
+        then scrolls only needed payload fields for breakdowns.
+        """
         client = self._get_qdrant_client()
+
+        # Server-side count — no scrolling needed
+        try:
+            count_result = client.count(collection_name=self.collection_name, exact=True)
+            total_chunks = getattr(count_result, "count", 0)
+        except Exception as e:
+            logger.warning("Failed to count chunks: %s", e)
+            total_chunks = 0
 
         languages: dict[str, int] = {}
         sources: dict[str, int] = {}
-        total_chunks = 0
 
         try:
-            for point in self._scroll_all():
-                payload = getattr(point, "payload", point) or {}
+            for payload in self._scroll_sources():
                 lang = payload.get("language", "unknown")
                 source = payload.get("source_file", "unknown")
                 languages[lang] = languages.get(lang, 0) + 1
                 sources[source] = sources.get(source, 0) + 1
-                total_chunks += 1
         except Exception as e:
             logger.warning("Failed to get document stats: %s", e)
 
@@ -437,13 +487,8 @@ class RAGService:
         sources: dict[str, dict] = {}
 
         try:
-            for point in self._scroll_all():
-                payload = getattr(point, "payload", point) or {}
+            for payload in self._scroll_sources(language=language):
                 lang = payload.get("language", "")
-
-                if language and lang != language:
-                    continue
-
                 source_file = payload.get("source_file", "unknown")
                 tags = payload.get("tags", [])
 

@@ -37,7 +37,6 @@ import logging
 import os
 import re
 import sqlite3
-import sys
 import time
 from datetime import datetime, timedelta
 from typing import Optional
