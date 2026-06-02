@@ -91,6 +91,12 @@
     </div>
   </form>
 
+  <div id="upload-progress-container" style="margin-top:12px;display:none;">
+    <div id="upload-progress-bar-bg" style="width:100%;height:20px;background:var(--bg_panel);border-radius:6px;overflow:hidden;border:1px solid var(--border);">
+      <div id="upload-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg, var(--green), #27ae60);transition:width 0.3s ease;text-align:center;color:#fff;font-size:11px;line-height:20px;border-radius:6px;">0%</div>
+    </div>
+    <div id="upload-progress-text" style="margin-top:4px;font-size:12px;color:var(--fg_dim);"></div>
+  </div>
   <div id="upload-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
 </div>
 
@@ -282,11 +288,74 @@ async function testConnection() {
   }
 }
 
-// ── Upload handler ────────────────────────────────────────
+// ── Upload handler with progress tracking ─────────────────
+let _progressPollTimer = null;
+
+function startProgressPoll(fileName) {
+  const container = document.getElementById('upload-progress-container');
+  const bar = document.getElementById('upload-progress-bar');
+  const text = document.getElementById('upload-progress-text');
+  container.style.display = 'block';
+
+  _progressPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/documents/upload-progress');
+      if (!res.ok) return;
+      const allProgress = await res.json();
+
+      // Find progress for our file (keys are source filenames)
+      const progress = allProgress[fileName];
+      if (!progress) {
+        // No progress yet — still uploading
+        text.textContent = 'Uploading file…';
+        bar.style.width = '5%';
+        bar.textContent = '5%';
+        return;
+      }
+
+      const pct = progress.total_batches > 0
+        ? Math.round(progress.completed_batches / progress.total_batches * 100)
+        : 0;
+
+      bar.style.width = `${pct}%`;
+      bar.textContent = `${pct}%`;
+      text.textContent = progress.message || '';
+
+      // Check if done or error
+      if (progress.status === 'done') {
+        clearInterval(_progressPollTimer);
+        _progressPollTimer = null;
+        bar.style.background = 'linear-gradient(90deg, #27ae60, #2ecc71)';
+        text.textContent = progress.message;
+      } else if (progress.status === 'error') {
+        clearInterval(_progressPollTimer);
+        _progressPollTimer = null;
+        bar.style.background = 'linear-gradient(90deg, #e74c3c, #c0392b)';
+        text.textContent = progress.message;
+      }
+    } catch (err) {
+      // polling error — ignore silently
+    }
+  }, 1500);  // poll every 1.5s
+}
+
+function stopProgressPoll() {
+  if (_progressPollTimer) {
+    clearInterval(_progressPollTimer);
+    _progressPollTimer = null;
+  }
+}
+
 document.getElementById('upload-form').addEventListener('submit', async function(e) {
   e.preventDefault();
   const status = document.getElementById('upload-status');
   status.textContent = 'Uploading & indexing…';
+
+  const fileInput = document.getElementById('upload-file');
+  const fileName = fileInput.files[0] ? fileInput.files[0].name : '';
+
+  // Start progress polling
+  startProgressPoll(fileName);
 
   const formData = new FormData(this);
 
@@ -300,14 +369,17 @@ document.getElementById('upload-form').addEventListener('submit', async function
     if (res.ok) {
       status.textContent = `✓ ${data.message}`;
       showToast(data.message, false);
-      setTimeout(() => location.reload(), 800);
+      stopProgressPoll();
+      setTimeout(() => location.reload(), 1200);
     } else {
       status.textContent = `⚠ ${data.message || 'Upload failed'}`;
       showToast(data.message || 'Upload failed', true);
+      stopProgressPoll();
     }
   } catch (err) {
     status.textContent = `⚠ Network error`;
     showToast('Network error during upload', true);
+    stopProgressPoll();
   }
 });
 

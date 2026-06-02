@@ -138,6 +138,20 @@ def register_rag_ui(app, config_path=None):
                 except (ValueError, TypeError):
                     pass
 
+            if "embed_batch_size" in data:
+                try:
+                    rag_cfg["embed_batch_size"] = int(data["embed_batch_size"])
+                    changed.append("embed_batch_size")
+                except (ValueError, TypeError):
+                    pass
+
+            if "embed_delay_secs" in data:
+                try:
+                    rag_cfg["embed_delay_secs"] = float(data["embed_delay_secs"])
+                    changed.append("embed_delay_secs")
+                except (ValueError, TypeError):
+                    pass
+
             backup = CONFIG_PATH.with_suffix(".json.bak")
             if CONFIG_PATH.exists():
                 shutil.copy2(CONFIG_PATH, backup)
@@ -240,6 +254,12 @@ def register_rag_ui(app, config_path=None):
 
         try:
             rag = _get_rag()
+            # Start progress tracking
+            rag._set_progress(
+                safe_name,
+                status="extracting",
+                message=f"Extracting text from '{safe_name}'…",
+            )
             text = _extract_text(dest)
 
             # Clean up PDF extraction artifacts before chunking
@@ -249,6 +269,13 @@ def register_rag_ui(app, config_path=None):
             if not text.strip():
                 os.remove(str(dest))
                 return jsonify({"message": "No text extracted from file"}), 400
+
+            # Update progress: chunking
+            rag._set_progress(
+                safe_name,
+                status="chunking",
+                message=f"Chunking text ({len(text):,} chars)…",
+            )
 
             source_id = hashlib.sha256(safe_name.encode()).hexdigest()[:16]
             chunks = rag.chunk_text(text, source_id=source_id)
@@ -369,6 +396,27 @@ def register_rag_ui(app, config_path=None):
             return jsonify({"sources": rag.list_sources(language=lang)})
         except Exception as e:
             return jsonify({"message": f"Failed to list sources: {e}"}), 500
+
+    @bp.route("/api/documents/upload-progress")
+    def upload_progress():
+        """Get upload progress for all active uploads.
+
+        Returns a dict of source_file -> progress info:
+        {
+            "file.pdf": {
+                "status": "embedding",
+                "total_batches": 19,
+                "completed_batches": 7,
+                "message": "Embedding: 7/19 batches (37%)",
+                "started_at": 1234567890.0
+            }
+        }
+        """
+        try:
+            rag = _get_rag()
+            return jsonify(rag.get_progress())
+        except Exception as e:
+            return jsonify({"message": f"Failed to get progress: {e}"}), 500
 
     app.register_blueprint(bp)
     logger.info("RAG document management UI registered at /documents")

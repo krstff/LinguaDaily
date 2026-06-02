@@ -145,7 +145,8 @@ RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
 RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
 RAG_DEFAULT_CHUNK_SIZE    = 500
 RAG_DEFAULT_CHUNK_OVERLAP   = 100
-RAG_DEFAULT_EMBED_BATCH_SZ  = 8    # texts per embeddings API call (keeps llama-swap send buffer from overflowing)
+RAG_DEFAULT_EMBED_BATCH_SZ   = 16   # texts per batch — small enough that llama.cpp finishes before we send the next one
+RAG_DEFAULT_EMBED_DELAY_SECS = 3.0  # seconds between batches — gives llama.cpp time to fully drain the response
 
 # ── Profile defaults (fallbacks when config is silent) ──────────
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -206,6 +207,48 @@ def reset_openai_client():
     """Reset the shared OpenAI client (for tests / config reload)."""
     if hasattr(get_openai_client, "_instance"):
         get_openai_client._instance = None
+
+
+def get_embedding_client(base_url: str = None, timeout: float = 300):
+    """Get a dedicated OpenAI client for embedding requests.
+
+    This is separate from the main LLM client because embeddings need
+    different settings:
+      - NO auto-retries (retries during congestion double the load on
+        llama-swap's already-full send buffer)
+      - Longer timeout (larger batches take more time)
+
+    Parameters
+    ----------
+    base_url : str or None
+        API base URL. Falls back to LLM base URL.
+    timeout : float
+        Request timeout in seconds (default 300 = 5 minutes for large batches).
+
+    Returns
+    -------
+    OpenAI client instance with retries disabled, or None.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+
+    if not hasattr(get_embedding_client, "_instance") or get_embedding_client._instance is None:
+        resolved_url = base_url or get_llm_base_url()
+        get_embedding_client._instance = OpenAI(
+            base_url=resolved_url,
+            api_key="none",
+            timeout=timeout,
+            max_retries=0,   # CRITICAL: retries during congestion make llama-swap worse
+        )
+    return get_embedding_client._instance
+
+
+def reset_embedding_client():
+    """Reset the embedding client (for tests / config reload)."""
+    if hasattr(get_embedding_client, "_instance"):
+        get_embedding_client._instance = None
 
 
 # ── Config loader ────────────────────────────────────────────────────
@@ -272,5 +315,6 @@ def get_rag_config(path=None) -> dict:
         "chunk_size": rag.get("chunk_size", RAG_DEFAULT_CHUNK_SIZE),
         "chunk_overlap": rag.get("chunk_overlap", RAG_DEFAULT_CHUNK_OVERLAP),
         "embed_batch_size": int(rag.get("embed_batch_size", RAG_DEFAULT_EMBED_BATCH_SZ)),
+        "embed_delay_secs": float(rag.get("embed_delay_secs", RAG_DEFAULT_EMBED_DELAY_SECS)),
         "embedding_base_url": rag.get("embedding_base_url") or get_llm_base_url(path),
     }

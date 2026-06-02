@@ -19,9 +19,24 @@ Usage:
 import hashlib
 import logging
 import re
+import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger("lingua")
+
+
+# ── Upload progress tracker (shared across all RAGService instances) ──
+#
+# Structure: dict[source_file] -> {
+#     "status": "extracting" | "chunking" | "embedding" | "upserting" | "done" | "error",
+#     "total_batches": int,
+#     "completed_batches": int,
+#     "message": str,
+#     "started_at": float (timestamp),
+# }
+_upload_progress: dict[str, dict] = {}
+_progress_lock = threading.Lock()
 
 
 class RAGService:
@@ -40,7 +55,53 @@ class RAGService:
 
         self.embed_batch_size = rcfg.get("embed_batch_size", 32)
 
+        self.embed_delay_secs = rcfg.get("embed_delay_secs", 0.5)
+
         self._qdrant_client = None
+        # Global lock to prevent concurrent embedding requests from overwhelming llama-swap
+        self._embed_lock = threading.Lock()
+
+    # ── Progress tracking helpers (module-level, shared across instances) ──
+
+    @staticmethod
+    def _set_progress(source_file: str, **kwargs):
+        """Update upload progress for a source file."""
+        with _progress_lock:
+            if source_file not in _upload_progress:
+                _upload_progress[source_file] = {
+                    "status": "extracting",
+                    "total_batches": 0,
+                    "completed_batches": 0,
+                    "message": "",
+                    "started_at": time.time(),
+                }
+            _upload_progress[source_file].update(kwargs)
+
+    @staticmethod
+    def get_progress(source_file: str = None) -> dict:
+        """Get upload progress.
+
+        If source_file is given, return progress for that file.
+        If source_file is None, return progress for all active uploads.
+        """
+        with _progress_lock:
+            if source_file:
+                entry = _upload_progress.get(source_file)
+                if entry:
+                    return dict(entry)  # copy
+                return {"status": "not_found", "message": f"No progress for '{source_file}'"}
+            else:
+                result = {}
+                for name, entry in _upload_progress.items():
+                    if entry["status"] not in ("done", "error"):
+                        result[name] = dict(entry)
+                return result
+
+    @staticmethod
+    def clear_progress(source_file: str):
+        """Clear progress for a completed upload."""
+        with _progress_lock:
+            _upload_progress.pop(source_file, None)
 
     # ── Lazy init helpers ────────────────────────────────────────
 
@@ -105,19 +166,21 @@ class RAGService:
                 logger.debug("Skipping dimension check (embedding API unavailable): %s", e)
                 # Keep existing collection — dim is fine if it was working before
 
-    def _get_openai_client(self):
-        """Get the shared OpenAI-compatible client for embeddings.
+    def _get_embedding_client(self):
+        """Get the dedicated embedding client (no retries, long timeout).
 
-        Uses the module-level singleton from config so all callers
-        (RAG, LLM chat, TTS) share ONE connection pool to llama.cpp.
+        Uses a separate client from the main LLM client because embeddings
+        need different settings:
+          - NO auto-retries (retries during congestion double llama-swap load)
+          - Longer timeout (larger batches take more time)
         """
-        from config import get_openai_client
-        return get_openai_client(base_url=self.embedding_base_url)
+        from config import get_embedding_client
+        return get_embedding_client(base_url=self.embedding_base_url)
 
     def _probe_embedding_dimension(self) -> int:
         """Probe the embedding dimension by sending a test vector."""
         try:
-            client = self._get_openai_client()
+            client = self._get_embedding_client()
             resp = client.embeddings.create(
                 model=self.embedding_model,
                 input=["dimension_probe"],
@@ -131,52 +194,168 @@ class RAGService:
 
     def embed_text(self, text: str) -> list[float]:
         """Convert text into a vector embedding via the OpenAI-compatible API."""
-        client = self._get_openai_client()
+        client = self._get_embedding_client()
         resp = client.embeddings.create(model=self.embedding_model, input=[text])
         return resp.data[0].embedding
 
-    def embed_batch(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
-        """Embed multiple texts in small batches to avoid overloading llama-swap.
+    def embed_batch(self, texts: list[str], batch_size: int = None, source_file: str = "") -> list[list[float]]:
+        """Embed multiple texts in small batches with congestion-aware backpressure.
 
-        llama-swap has a limited internal SSE send buffer.  Sending hundreds of
-        texts in one request causes the buffer to overflow with
-        '[WARN] handleAPIEvents sendBuffer full, dropped message' and freezes
-        the model provider for all clients (chat, TTS, etc.).
+        llama-swap has a limited internal SSE send buffer.  Sending requests faster
+        than llama-swap can drain its buffer causes:
+            '[WARN] handleAPIEvents sendBuffer full, dropped message'
+        which freezes the model provider for ALL clients (chat, TTS, etc).
 
-        By splitting into small batches (default 32) we keep the response stream
-        short enough that the client can drain it before the buffer fills.  A
-        brief pause between batches gives llama-swap's event loop time to flush.
+        Once this happens, llama-swap enters a degraded state where it can still
+        serve ONE request every ~60 s but collapses under rapid-fire traffic.
+
+        llama.cpp uses a slot-based architecture (n_parallel slots, default ~4).
+        When all slots are busy, requests queue indefinitely with no timeout.
+        A hanging request will block the caller forever unless we enforce our own.
+
+        This method uses strict sequential processing + per-request timeouts:
+          1. Small batch sizes (default 16 texts per request)
+          2. Strictly sequential — waits for full response before sending next
+          3. Per-batch timeout (120s) — prevents indefinite hangs from llama.cpp
+             slot queue
+          4. Congestion detection via response time vs. baseline
+          5. Recovery mode with exponential backoff (15s → 30s → 60s)
+          6. Global threading lock — only ONE caller sends at a time
 
         Parameters
         ----------
         texts : list[str]
             Texts to embed.
-        batch_size : int
-            Maximum number of texts per API call (default 32).  Lower values
-            are safer on constrained hardware; raise if your llama-swap instance
-            has plenty of memory and CPU headroom.
+        batch_size : int or None
+            Maximum number of texts per API call.  Defaults to self.embed_batch_size.
 
         Returns
         -------
         list[list[float]]
             Embeddings in the same order as input texts.
         """
-        import time
+        if batch_size is None:
+            batch_size = self.embed_batch_size
 
-        client = self._get_openai_client()
+        client = self._get_embedding_client()
         all_embeddings: list[list[float]] = []
+        total_batches = (len(texts) + batch_size - 1) // batch_size
 
-        for offset in range(0, len(texts), batch_size):
-            batch = texts[offset : offset + batch_size]
-            resp = client.embeddings.create(model=self.embedding_model, input=batch)
-            embeddings = sorted(resp.data, key=lambda d: d.index)
-            all_embeddings.extend([e.embedding for e in embeddings])
+        # Per-batch timeout — prevents indefinite hangs from llama.cpp slot queue
+        BATCH_TIMEOUT_SECS = 120.0
 
-            # Brief pause between batches so llama-swap can drain its send buffer.
-            # Prevents the 'handleAPIEvents sendBuffer full' overflow that freezes
-            # the model provider.
-            if offset + batch_size < len(texts):
-                time.sleep(0.1)
+        # Recovery mode parameters
+        RECOVERY_INITIAL_DELAY = 15.0   # seconds — first recovery wait after congestion
+        RECOVERY_MAX_DELAY = 60.0       # hard cap on recovery delay
+        CONGESTION_THRESHOLD = 2.0      # response time > 2× baseline = congested
+        RECOVERY_OK_THRESHOLD = 1.3     # probe response < 1.3× baseline = recovered
+
+        with self._embed_lock:
+            baseline_elapsed: Optional[float] = None
+            recovery_delay = RECOVERY_INITIAL_DELAY
+            in_recovery = False
+            completed = 0  # track successfully embedded batches (for progress, excludes retries)
+
+            for i, offset in enumerate(range(0, len(texts), batch_size)):
+                batch = texts[offset : offset + batch_size]
+
+                # Wait before sending (except the very first batch)
+                if i > 0:
+                    wait_label = "RECOVERY" if in_recovery else "normal"
+                    delay = recovery_delay if in_recovery else self.embed_delay_secs
+                    logger.info(
+                        "Embed — waiting %.1f s before batch %d/%d (%s)",
+                        delay, i + 1, total_batches, wait_label,
+                    )
+                    time.sleep(delay)
+
+                # Send with per-batch timeout to prevent indefinite hangs
+                start = time.monotonic()
+                try:
+                    resp = client.embeddings.create(
+                        model=self.embedding_model,
+                        input=batch,
+                        timeout=BATCH_TIMEOUT_SECS,
+                    )
+                except Exception as e:
+                    elapsed_err = time.monotonic() - start
+                    error_msg = str(e)
+                    # Check if this is a timeout
+                    if any(kw in error_msg.lower() for kw in ("timeout", "timed out")):
+                        logger.error(
+                            "Embed batch %d/%d — TIMEOUT after %.1fs (llama.cpp slot queue likely full). "
+                            "Entering recovery mode (delay=%.1fs)",
+                            i + 1, total_batches, elapsed_err, RECOVERY_INITIAL_DELAY,
+                        )
+                        in_recovery = True
+                        recovery_delay = RECOVERY_INITIAL_DELAY
+                        continue  # retry this batch after recovery delay
+                    else:
+                        logger.error(
+                            "Embed batch %d/%d — ERROR after %.1fs: %s",
+                            i + 1, total_batches, elapsed_err, error_msg[:200],
+                        )
+                        raise
+
+                elapsed = time.monotonic() - start
+
+                embeddings = sorted(resp.data, key=lambda d: d.index)
+                all_embeddings.extend([e.embedding for e in embeddings])
+                completed += 1
+
+                # ── Report progress to UI ────────────────────────────
+                if source_file:
+                    pct = int(completed / total_batches * 100)
+                    self._set_progress(
+                        source_file,
+                        status="embedding",
+                        total_batches=total_batches,
+                        completed_batches=completed,
+                        message=f"Embedding: {completed}/{total_batches} batches ({pct}%)",
+                    )
+
+                # ── Congestion detection via response-time vs. baseline ──
+                if i == 0 and baseline_elapsed is None:
+                    # First batch establishes the baseline (cold start is normal)
+                    baseline_elapsed = elapsed
+                    logger.info(
+                        "Embed batch 1/%d — %.1fs (baseline) — next delay: %.2fs",
+                        total_batches, elapsed, self.embed_delay_secs,
+                    )
+                else:
+                    ratio_to_baseline = elapsed / baseline_elapsed if baseline_elapsed else 1.0
+
+                    if in_recovery:
+                        # We're in recovery mode — this batch is a probe.
+                        if ratio_to_baseline < RECOVERY_OK_THRESHOLD:
+                            logger.info(
+                                "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
+                                "✅ RECOVERED, resuming normal pace",
+                                i + 1, total_batches, elapsed, ratio_to_baseline,
+                            )
+                            in_recovery = False
+                            recovery_delay = RECOVERY_INITIAL_DELAY
+                        else:
+                            recovery_delay = min(recovery_delay * 2, RECOVERY_MAX_DELAY)
+                            logger.warning(
+                                "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
+                                "❌ still congested, next recovery delay: %.1fs",
+                                i + 1, total_batches, elapsed, ratio_to_baseline,
+                                recovery_delay,
+                            )
+                    elif ratio_to_baseline > CONGESTION_THRESHOLD:
+                        in_recovery = True
+                        logger.warning(
+                            "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
+                            "🚨 CONGESTION DETECTED, entering recovery mode (delay=%.1fs)",
+                            i + 1, total_batches, elapsed, ratio_to_baseline,
+                            recovery_delay,
+                        )
+                    else:
+                        logger.debug(
+                            "Embed batch %d/%d — %.1fs (×%.1f baseline)",
+                            i + 1, total_batches, elapsed, ratio_to_baseline,
+                        )
 
         return all_embeddings
 
@@ -320,9 +499,27 @@ class RAGService:
         self._ensure_collection()
         client = self._get_qdrant_client()
         texts = [c["text"] for c in chunks]
-        embeddings = self.embed_batch(texts, batch_size=self.embed_batch_size)
+
+        # Start progress tracking
+        total_batches = (len(texts) + self.embed_batch_size - 1) // self.embed_batch_size
+        self._set_progress(
+            source_file,
+            status="embedding",
+            total_batches=total_batches,
+            completed_batches=0,
+            message=f"Embedding: 0/{total_batches} batches (0%)",
+        )
+
+        embeddings = self.embed_batch(texts, batch_size=self.embed_batch_size, source_file=source_file)
 
         from qdrant_client.http import models
+
+        # Report upserting progress
+        self._set_progress(
+            source_file,
+            status="upserting",
+            message=f"Upserting {len(chunks)} chunks into Qdrant…",
+        )
 
         points = []
         for i, chunk in enumerate(chunks):
@@ -344,6 +541,15 @@ class RAGService:
 
         client.upsert(collection_name=self.collection_name, points=points)
         logger.info("Upserted %d chunks for '%s' (lang=%s)", len(points), source_file, language)
+
+        # Mark as done
+        self._set_progress(
+            source_file,
+            status="done",
+            completed_batches=total_batches,
+            message=f"Done — {len(points)} chunks indexed",
+        )
+
         return len(points)
 
     # ── Querying ───────────────────────────────────────────────────
@@ -631,6 +837,7 @@ class RAGService:
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
             "embed_batch_size": self.embed_batch_size,
+            "embed_delay_secs": self.embed_delay_secs,
         }
 
     def test_connection(self) -> dict:
