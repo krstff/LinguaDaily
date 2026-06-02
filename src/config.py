@@ -144,7 +144,8 @@ RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"
 RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
 RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
 RAG_DEFAULT_CHUNK_SIZE    = 500
-RAG_DEFAULT_CHUNK_OVERLAP = 100
+RAG_DEFAULT_CHUNK_OVERLAP   = 100
+RAG_DEFAULT_EMBED_BATCH_SZ  = 8    # texts per embeddings API call (keeps llama-swap send buffer from overflowing)
 
 # ── Profile defaults (fallbacks when config is silent) ──────────
 DEFAULT_LEARNING_LANGUAGE = "de"
@@ -270,5 +271,6 @@ def get_rag_config(path=None) -> dict:
         ),
         "chunk_size": rag.get("chunk_size", RAG_DEFAULT_CHUNK_SIZE),
         "chunk_overlap": rag.get("chunk_overlap", RAG_DEFAULT_CHUNK_OVERLAP),
+        "embed_batch_size": int(rag.get("embed_batch_size", RAG_DEFAULT_EMBED_BATCH_SZ)),
         "embedding_base_url": rag.get("embedding_base_url") or get_llm_base_url(path),
     }

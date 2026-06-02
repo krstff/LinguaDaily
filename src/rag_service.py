@@ -37,6 +37,8 @@ class RAGService:
         self.chunk_size = rcfg["chunk_size"]
         self.chunk_overlap = rcfg["chunk_overlap"]
 
+        self.embed_batch_size = rcfg.get("embed_batch_size", 32)
+
         self._qdrant_client = None
 
     # ── Lazy init helpers ────────────────────────────────────────
@@ -132,12 +134,50 @@ class RAGService:
         resp = client.embeddings.create(model=self.embedding_model, input=[text])
         return resp.data[0].embedding
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Embed multiple texts at once (more efficient)."""
+    def embed_batch(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        """Embed multiple texts in small batches to avoid overloading llama-swap.
+
+        llama-swap has a limited internal SSE send buffer.  Sending hundreds of
+        texts in one request causes the buffer to overflow with
+        '[WARN] handleAPIEvents sendBuffer full, dropped message' and freezes
+        the model provider for all clients (chat, TTS, etc.).
+
+        By splitting into small batches (default 32) we keep the response stream
+        short enough that the client can drain it before the buffer fills.  A
+        brief pause between batches gives llama-swap's event loop time to flush.
+
+        Parameters
+        ----------
+        texts : list[str]
+            Texts to embed.
+        batch_size : int
+            Maximum number of texts per API call (default 32).  Lower values
+            are safer on constrained hardware; raise if your llama-swap instance
+            has plenty of memory and CPU headroom.
+
+        Returns
+        -------
+        list[list[float]]
+            Embeddings in the same order as input texts.
+        """
+        import time
+
         client = self._get_openai_client()
-        resp = client.embeddings.create(model=self.embedding_model, input=texts)
-        embeddings = sorted(resp.data, key=lambda d: d.index)
-        return [e.embedding for e in embeddings]
+        all_embeddings: list[list[float]] = []
+
+        for offset in range(0, len(texts), batch_size):
+            batch = texts[offset : offset + batch_size]
+            resp = client.embeddings.create(model=self.embedding_model, input=batch)
+            embeddings = sorted(resp.data, key=lambda d: d.index)
+            all_embeddings.extend([e.embedding for e in embeddings])
+
+            # Brief pause between batches so llama-swap can drain its send buffer.
+            # Prevents the 'handleAPIEvents sendBuffer full' overflow that freezes
+            # the model provider.
+            if offset + batch_size < len(texts):
+                time.sleep(0.1)
+
+        return all_embeddings
 
     # ── Chunking ───────────────────────────────────────────────────
 
@@ -193,7 +233,7 @@ class RAGService:
         self._ensure_collection()
         client = self._get_qdrant_client()
         texts = [c["text"] for c in chunks]
-        embeddings = self.embed_batch(texts)
+        embeddings = self.embed_batch(texts, batch_size=self.embed_batch_size)
 
         from qdrant_client.http import models
 
@@ -503,6 +543,7 @@ class RAGService:
             "embedding_model": self.embedding_model,
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
+            "embed_batch_size": self.embed_batch_size,
         }
 
     def test_connection(self) -> dict:
