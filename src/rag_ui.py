@@ -40,8 +40,6 @@ _documents_dir = DATA_DIR / "documents"
 
 def register_rag_ui(app, config_path=None):
     """Register the RAG document management routes on a Flask app."""
-    global _documents_dir
-
     _documents_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_rag():
@@ -172,6 +170,50 @@ def register_rag_ui(app, config_path=None):
                 "embeddings": False,
                 "details": f"Error: {e}",
             }), 500
+
+    @bp.route("/api/documents/query", methods=["POST"])
+    def query_rag():
+        """Test RAG retrieval with a free-text query.
+
+        JSON body:
+        {
+            "query": "What is the subjunctive?",
+            "language": "es",       // optional filter
+            "top_k": 5              // optional, default 5
+        }
+
+        Returns hits with score, source file, chunk index, and text.
+        """
+        data = request.get_json(force=True, silent=True)
+        if not data or not data.get("query"):
+            return jsonify({"message": "Missing 'query' field"}), 400
+
+        query_text = data["query"].strip()
+        language = data.get("language", "").strip().lower()
+        try:
+            top_k = int(data.get("top_k", 5))
+        except (ValueError, TypeError):
+            top_k = 5
+
+        try:
+            from src.rag_service import RAGService
+            rag = RAGService()
+            query_vector = rag.embed_text(query_text)
+            hits = rag.query_knowledge_base(
+                query_vector=query_vector,
+                top_k=top_k,
+                language=language if language else None,
+            )
+            return jsonify({
+                "query": query_text,
+                "top_k": top_k,
+                "hits": hits,
+            })
+        except ImportError as e:
+            return jsonify({"message": f"Missing dependency: {e}"}), 500
+        except Exception as e:
+            logger.error("RAG test query failed: %s", e, exc_info=True)
+            return jsonify({"message": f"Query failed: {e}"}), 500
 
     # ── Upload API ───────────────────────────────────────────────
 

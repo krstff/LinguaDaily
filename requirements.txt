@@ -2,6 +2,7 @@
 #
 # Core runtime
 aiogram>=3.28.0          # Telegram bot framework (async)
+telegramify-markdown>=1.1  # Markdown → Telegram entities converter
 apscheduler>=3.11.0      # Cron-style scheduling with async support
 
 # Content fetching & parsing

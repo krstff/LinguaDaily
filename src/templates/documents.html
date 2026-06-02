@@ -94,6 +94,44 @@
   <div id="upload-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
 </div>
 
+<!-- ── RAG Query Test ───────────────────────────────────── -->
+<div class="model-panel" style="border-color: #e67e22;">
+  <h2>Test RAG Query</h2>
+  <p class="subtitle">Search the knowledge base the same way tutor messages do — check chunk relevance, scores, and filter by language.</p>
+
+  <form id="query-form">
+    <div class="form-row">
+      <label>Query text</label>
+      <input type="text" name="query" id="rag-query-text"
+             placeholder="e.g. How do you conjugar regular verbs in Spanish?" required>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Language filter (optional)</label>
+        <select name="language" id="rag-query-language">
+          <option value="">All languages</option>
+          {% for lang in available_languages %}
+          <option value="{{ lang }}">{{ lang }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Top K</label>
+        <input type="number" name="top_k" id="rag-query-topk"
+               value="5" min="1" max="20">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button type="submit" class="btn btn-primary">Search</button>
+    </div>
+  </form>
+
+  <div id="rag-query-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
+  <div id="rag-query-results" style="margin-top:12px;"></div>
+</div>
+
 <!-- ── Indexed documents table ─────────────────────────── -->
 <h2 style="font-size:15px;margin-bottom:10px;">Indexed Documents</h2>
 
@@ -381,6 +419,63 @@ async function refreshTable() {
     showToast('Network error during refresh', true);
   }
 }
+
+// ── RAG query test ─────────────────────────────────────
+document.getElementById('query-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const status = document.getElementById('rag-query-status');
+  const results = document.getElementById('rag-query-results');
+  status.textContent = 'Searching…';
+  results.innerHTML = '';
+
+  const payload = {
+    query: document.getElementById('rag-query-text').value,
+    language: document.getElementById('rag-query-language').value,
+    top_k: parseInt(document.getElementById('rag-query-topk').value) || 5,
+  };
+
+  try {
+    const res = await fetch('/api/documents/query', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      status.textContent = `⚠ ${data.message || 'Query failed'}`;
+      showToast(data.message || 'Query failed', true);
+      return;
+    }
+
+    status.textContent = `✓ Found ${data.hits.length} hits for "${escHtml(data.query)}"`;
+
+    if (data.hits.length === 0) {
+      results.innerHTML = '<p style="color:var(--fg_dim);font-size:13px;">No matching chunks found. Try adjusting the query or language filter.</p>';
+      return;
+    }
+
+    let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+    data.hits.forEach((hit, i) => {
+      const score = (hit.score * 100).toFixed(1);
+      const preview = hit.text.substring(0, 320) + (hit.text.length > 320 ? '…' : '');
+      html += `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;font-size:13px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span class="badge badge-active" style="font-size:10px;">#${i + 1} score: ${score}%</span>
+            <span style="color:var(--fg_dim);font-size:11px;">${escHtml(hit.source_file || 'unknown')} · chunk ${hit.chunk_index}</span>
+          </div>
+          <pre style="margin:0;white-space:pre-wrap;font-family:inherit;font-size:13px;color:var(--fg);line-height:1.5;" title="Click to expand">${escHtml(preview)}</pre>
+        </div>`;
+    });
+    html += '</div>';
+    results.innerHTML = html;
+
+  } catch (err) {
+    status.textContent = '⚠ Network error';
+    showToast('Network error during query', true);
+  }
+});
 
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '\\"'); }
