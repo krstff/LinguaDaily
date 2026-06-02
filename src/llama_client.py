@@ -177,7 +177,14 @@ Rules:
   "Excellent!", "Good job!", or any other praise/encouragement padding.
 - Never start responses with exclamations, praise, or commentary. Jump straight into
   the answer.
-- Keep responses concise unless the user explicitly asks for detail."""
+- Keep responses concise unless the user explicitly asks for detail.
+- NEVER use tables (| column | format). They render poorly in chat.
+  Use bullet points instead:
+    • **word** — meaning/definition
+    • **word2** — another definition
+  For comparisons, use paired bullet lines:
+    • German: *Das ist gut.*
+    • English: *That is good.*"""
 
 # ── RAG-injected block appended to tutor system prompt ───────────────
 

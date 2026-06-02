@@ -42,6 +42,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 
+from telegramify_markdown import convert as md_convert, split_entities
+
 from config import (
     CONFIG_PATH,
     DATA_DIR,
@@ -383,73 +385,6 @@ class TelegramBot:
 
         return pattern.sub(_replace, text)
 
-    def _markdown_to_telegram_html(self, text: str) -> str:
-        """Convert common markdown formatting to Telegram HTML tags.
-
-        Handles:
-          # / ## / ### headers  → <b>header</b>
-          **bold**              → <b>bold</b>
-          *italic*              → <i>italic</i>
-          `code`                → <code>code</code>
-          > blockquote          → <i>blockquote</i>
-          - / * / 1. lists     → escaped as-is (Telegram renders plain text)
-
-        Uses a placeholder strategy so that our own HTML tags are never
-        re-escaped by the final HTML-escape pass.
-        """
-        # ── Normalise Unicode asterisks to ASCII —───────────────
-        # LLMs sometimes emit ∗ (U+2217), ✱ (U+2731), * (U+00B7)
-        text = text.replace('\u2217', '*').replace('\u2731', '*')
-        text = text.replace('\u00b7', '*').replace('\u2042', '*')
-
-        replacements: dict[str, str] = {}
-        counter = 0
-
-        def _store(content: str, tag: str) -> str:
-            nonlocal counter
-            key = f'\x00TG{counter}\x00'
-            replacements[key] = f'{tag}{self._escape_html(content)}</{tag[1:]}'
-            counter += 1
-            return key
-
-        # ── Step 1: Extract block-level markdown (headers, blockquotes) ──
-        # Headers: # / ## / ### → <b>text</b> (Telegram has no <h3>)
-        def _replace_header(m: re.Match):
-            return _store(m.group(2).strip(), '<b>')
-        text = re.sub(r'^(#{1,6})\s+(.+)$', _replace_header, text, flags=re.MULTILINE)
-
-        # Blockquotes: > text → <i>text</i>
-        def _replace_blockquote(m: re.Match):
-            return _store(m.group(1).strip(), '<i>')
-        text = re.sub(r'^>\s*(.+)$', _replace_blockquote, text, flags=re.MULTILINE)
-
-        # ── Step 2: Extract inline markdown (bold, italic, code) ───
-        _inline_re = re.compile(
-            r'\*\*(.+?)\*\*'           # **bold**
-            r'|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)'  # *italic*
-            r'|`(.+?)`',                            # `code`
-        )
-
-        def _replace_inline(m: re.Match):
-            tag_map = {1: '<b>', 2: '<i>', 3: '<code>'}
-            content = m.group(1) or m.group(2) or m.group(3)
-            return _store(content, tag_map[m.lastindex])
-
-        text = _inline_re.sub(_replace_inline, text)
-
-        # ── Step 3: HTML-escape the remaining plain text ─────────
-        text = self._escape_html(text)
-
-        # ── Step 4: Restore all placeholders (contain real <b>/<i> tags) ─
-        for key, value in replacements.items():
-            text = text.replace(self._escape_html(key), value)
-
-        return text
-
-    def _format_text_for_telegram(self, text: str) -> str:
-        """Escape plain text for Telegram HTML messages."""
-        return self._escape_html(text)
-
     async def deliver_lesson(self, profile_name: str, lesson: dict):
         """
         Deliver a completed lesson to the user's Telegram chat as four messages:
@@ -615,6 +550,47 @@ class TelegramBot:
 
     # ── Tutor chat handler ─────────────────────────────────────────
 
+    async def _send_tutor_reply_with_entities(
+        self, bot, chat_id: int, reply: str
+    ):
+        """Send a tutor reply using telegramify-markdown entities.
+
+        Converts markdown from the LLM to Telegram MessageEntity objects,
+        sending plain text + entities (no parse_mode needed).
+        Splits long messages respecting entity boundaries and UTF-16 limits.
+        Caps at ~4096 chars total to avoid spamming with many messages.
+        """
+        # Truncate very long replies before conversion
+        if len(reply) > 4096:
+            reply = reply[:4093] + "..."
+
+        try:
+            text, entities = md_convert(reply)
+        except Exception as e:
+            logger.warning("telegramify-markdown convert failed: %s — sending plain", e)
+            await bot.send_message(chat_id=chat_id, text=reply)
+            return
+
+        entity_dicts = [e.to_dict() for e in entities]
+        chunks = list(split_entities(text, entity_dicts, max_utf16_len=4096))
+
+        for chunk_text, chunk_entities in chunks:
+            if not chunk_text.strip():
+                continue
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk_text,
+                    entities=chunk_entities,
+                )
+            except Exception as e:
+                logger.error("Failed to send tutor reply chunk: %s", e)
+                # Fallback: send as plain text
+                try:
+                    await bot.send_message(chat_id=chat_id, text=chunk_text)
+                except Exception as fallback_err:
+                    logger.error("Fallback send also failed: %s", fallback_err)
+
     async def handle_tutor_message(self, chat_id: int, text: str):
         """
         Route a user message to the LLM tutor and reply on Telegram.
@@ -674,19 +650,9 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to write chat history for %s: %s", chat_id, e)
 
-        # Send reply formatted for Telegram HTML (truncate for limit)
+        # Send reply with markdown→entities conversion (no parse_mode needed)
         bot = await self._get_aiogram_bot()
-        if len(reply) > 4000:
-            reply = reply[:3997] + "..."
-
-        # Convert markdown from LLM to Telegram HTML tags, then escape rest
-        tg_reply = self._markdown_to_telegram_html(reply)
-
-        await bot.send_message(
-            chat_id=chat_id,
-            text=tg_reply,
-            parse_mode="HTML",
-        )
+        await self._send_tutor_reply_with_entities(bot, chat_id, reply)
 
     # ── Command handlers ───────────────────────────────────────────
 
