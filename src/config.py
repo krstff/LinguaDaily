@@ -145,7 +145,7 @@ RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
 RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
 RAG_DEFAULT_CHUNK_SIZE    = 500
 RAG_DEFAULT_CHUNK_OVERLAP   = 100
-RAG_DEFAULT_EMBED_BATCH_SZ   = 16   # texts per batch — small enough that llama.cpp finishes before we send the next one
+RAG_DEFAULT_EMBED_BATCH_SZ   = 32   # texts per batch — small enough that llama.cpp finishes before we send the next one
 RAG_DEFAULT_EMBED_DELAY_SECS = 3.0  # seconds between batches — gives llama.cpp time to fully drain the response
 
 # ── Profile defaults (fallbacks when config is silent) ──────────

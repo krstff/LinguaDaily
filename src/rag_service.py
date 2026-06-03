@@ -166,21 +166,11 @@ class RAGService:
                 logger.debug("Skipping dimension check (embedding API unavailable): %s", e)
                 # Keep existing collection — dim is fine if it was working before
 
-    def _get_embedding_client(self):
-        """Get the dedicated embedding client (no retries, long timeout).
-
-        Uses a separate client from the main LLM client because embeddings
-        need different settings:
-          - NO auto-retries (retries during congestion double llama-swap load)
-          - Longer timeout (larger batches take more time)
-        """
-        from config import get_embedding_client
-        return get_embedding_client(base_url=self.embedding_base_url)
-
     def _probe_embedding_dimension(self) -> int:
         """Probe the embedding dimension by sending a test vector."""
         try:
-            client = self._get_embedding_client()
+            from src.config import get_embedding_client
+            client = get_embedding_client(base_url=self.embedding_base_url)
             resp = client.embeddings.create(
                 model=self.embedding_model,
                 input=["dimension_probe"],
@@ -194,20 +184,13 @@ class RAGService:
 
     def embed_text(self, text: str) -> list[float]:
         """Convert text into a vector embedding via the OpenAI-compatible API."""
-        client = self._get_embedding_client()
+        from src.config import get_embedding_client
+        client = get_embedding_client(base_url=self.embedding_base_url)
         resp = client.embeddings.create(model=self.embedding_model, input=[text])
         return resp.data[0].embedding
 
     def embed_batch(self, texts: list[str], batch_size: int = None, source_file: str = "") -> list[list[float]]:
-        """Embed multiple texts in small batches with congestion-aware backpressure.
-
-        llama-swap has a limited internal SSE send buffer.  Sending requests faster
-        than llama-swap can drain its buffer causes:
-            '[WARN] handleAPIEvents sendBuffer full, dropped message'
-        which freezes the model provider for ALL clients (chat, TTS, etc).
-
-        Once this happens, llama-swap enters a degraded state where it can still
-        serve ONE request every ~60 s but collapses under rapid-fire traffic.
+        """Embed multiple texts in small batches with reactive retry + exponential backoff.
 
         llama.cpp uses a slot-based architecture (n_parallel slots, default ~4).
         When all slots are busy, requests queue indefinitely with no timeout.
@@ -218,9 +201,8 @@ class RAGService:
           2. Strictly sequential — waits for full response before sending next
           3. Per-batch timeout (120s) — prevents indefinite hangs from llama.cpp
              slot queue
-          4. Congestion detection via response time vs. baseline
-          5. Recovery mode with exponential backoff (15s → 30s → 60s)
-          6. Global threading lock — only ONE caller sends at a time
+          4. Reactive retry with exponential backoff on errors/timeouts
+          5. Global threading lock — only ONE caller sends at a time
 
         Parameters
         ----------
@@ -237,125 +219,79 @@ class RAGService:
         if batch_size is None:
             batch_size = self.embed_batch_size
 
-        client = self._get_embedding_client()
+        from src.config import get_embedding_client
+        client = get_embedding_client(base_url=self.embedding_base_url)
         all_embeddings: list[list[float]] = []
         total_batches = (len(texts) + batch_size - 1) // batch_size
 
         # Per-batch timeout — prevents indefinite hangs from llama.cpp slot queue
         BATCH_TIMEOUT_SECS = 120.0
-
-        # Recovery mode parameters
-        RECOVERY_INITIAL_DELAY = 15.0   # seconds — first recovery wait after congestion
-        RECOVERY_MAX_DELAY = 60.0       # hard cap on recovery delay
-        CONGESTION_THRESHOLD = 2.0      # response time > 2× baseline = congested
-        RECOVERY_OK_THRESHOLD = 1.3     # probe response < 1.3× baseline = recovered
+        MAX_RETRIES = 3  # max retry attempts per batch before giving up
 
         with self._embed_lock:
-            baseline_elapsed: Optional[float] = None
-            recovery_delay = RECOVERY_INITIAL_DELAY
-            in_recovery = False
-            completed = 0  # track successfully embedded batches (for progress, excludes retries)
+            completed = 0
 
             for i, offset in enumerate(range(0, len(texts), batch_size)):
                 batch = texts[offset : offset + batch_size]
 
-                # Wait before sending (except the very first batch)
+                # Standard heartbeat delay between batches (except the very first)
                 if i > 0:
-                    wait_label = "RECOVERY" if in_recovery else "normal"
-                    delay = recovery_delay if in_recovery else self.embed_delay_secs
                     logger.info(
-                        "Embed — waiting %.1f s before batch %d/%d (%s)",
-                        delay, i + 1, total_batches, wait_label,
+                        "Embed — waiting %.1f s before batch %d/%d",
+                        self.embed_delay_secs, i + 1, total_batches,
                     )
-                    time.sleep(delay)
+                    time.sleep(self.embed_delay_secs)
 
-                # Send with per-batch timeout to prevent indefinite hangs
-                start = time.monotonic()
-                try:
-                    resp = client.embeddings.create(
-                        model=self.embedding_model,
-                        input=batch,
-                        timeout=BATCH_TIMEOUT_SECS,
-                    )
-                except Exception as e:
-                    elapsed_err = time.monotonic() - start
-                    error_msg = str(e)
-                    # Check if this is a timeout
-                    if any(kw in error_msg.lower() for kw in ("timeout", "timed out")):
-                        logger.error(
-                            "Embed batch %d/%d — TIMEOUT after %.1fs (llama.cpp slot queue likely full). "
-                            "Entering recovery mode (delay=%.1fs)",
-                            i + 1, total_batches, elapsed_err, RECOVERY_INITIAL_DELAY,
+                # ── Inner retry loop with exponential backoff ──
+                retry_count = 0
+                while retry_count < MAX_RETRIES:
+                    start = time.monotonic()
+                    try:
+                        resp = client.embeddings.create(
+                            model=self.embedding_model,
+                            input=batch,
+                            timeout=BATCH_TIMEOUT_SECS,
                         )
-                        in_recovery = True
-                        recovery_delay = RECOVERY_INITIAL_DELAY
-                        continue  # retry this batch after recovery delay
-                    else:
-                        logger.error(
-                            "Embed batch %d/%d — ERROR after %.1fs: %s",
-                            i + 1, total_batches, elapsed_err, error_msg[:200],
-                        )
-                        raise
-
-                elapsed = time.monotonic() - start
-
-                embeddings = sorted(resp.data, key=lambda d: d.index)
-                all_embeddings.extend([e.embedding for e in embeddings])
-                completed += 1
-
-                # ── Report progress to UI ────────────────────────────
-                if source_file:
-                    pct = int(completed / total_batches * 100)
-                    self._set_progress(
-                        source_file,
-                        status="embedding",
-                        total_batches=total_batches,
-                        completed_batches=completed,
-                        message=f"Embedding: {completed}/{total_batches} batches ({pct}%)",
-                    )
-
-                # ── Congestion detection via response-time vs. baseline ──
-                if i == 0 and baseline_elapsed is None:
-                    # First batch establishes the baseline (cold start is normal)
-                    baseline_elapsed = elapsed
-                    logger.info(
-                        "Embed batch 1/%d — %.1fs (baseline) — next delay: %.2fs",
-                        total_batches, elapsed, self.embed_delay_secs,
-                    )
-                else:
-                    ratio_to_baseline = elapsed / baseline_elapsed if baseline_elapsed else 1.0
-
-                    if in_recovery:
-                        # We're in recovery mode — this batch is a probe.
-                        if ratio_to_baseline < RECOVERY_OK_THRESHOLD:
-                            logger.info(
-                                "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
-                                "✅ RECOVERED, resuming normal pace",
-                                i + 1, total_batches, elapsed, ratio_to_baseline,
+                    except Exception as e:
+                        elapsed_err = time.monotonic() - start
+                        retry_count += 1
+                        if retry_count >= MAX_RETRIES:
+                            logger.error(
+                                "Embed batch %d/%d — FAILED after %.1fs (%d retries): %s",
+                                i + 1, total_batches, elapsed_err, retry_count, str(e)[:200],
                             )
-                            in_recovery = False
-                            recovery_delay = RECOVERY_INITIAL_DELAY
-                        else:
-                            recovery_delay = min(recovery_delay * 2, RECOVERY_MAX_DELAY)
-                            logger.warning(
-                                "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
-                                "❌ still congested, next recovery delay: %.1fs",
-                                i + 1, total_batches, elapsed, ratio_to_baseline,
-                                recovery_delay,
-                            )
-                    elif ratio_to_baseline > CONGESTION_THRESHOLD:
-                        in_recovery = True
+                            raise
+                        wait_time = min(2 ** retry_count * 10, 60)  # 20s, 40s, 60s
                         logger.warning(
-                            "Embed batch %d/%d — %.1fs (×%.1f baseline) — "
-                            "🚨 CONGESTION DETECTED, entering recovery mode (delay=%.1fs)",
-                            i + 1, total_batches, elapsed, ratio_to_baseline,
-                            recovery_delay,
+                            "Embed batch %d/%d — ERROR after %.1fs (retry %d/%d, waiting %.1fs): %s",
+                            i + 1, total_batches, elapsed_err, retry_count, MAX_RETRIES,
+                            wait_time, str(e)[:200],
                         )
-                    else:
-                        logger.debug(
-                            "Embed batch %d/%d — %.1fs (×%.1f baseline)",
-                            i + 1, total_batches, elapsed, ratio_to_baseline,
+                        time.sleep(wait_time)
+                        continue
+
+                    # ── Success ──
+                    elapsed = time.monotonic() - start
+                    embeddings = sorted(resp.data, key=lambda d: d.index)
+                    all_embeddings.extend([e.embedding for e in embeddings])
+                    completed += 1
+
+                    # Report progress to UI
+                    if source_file:
+                        pct = int(completed / total_batches * 100)
+                        self._set_progress(
+                            source_file,
+                            status="embedding",
+                            total_batches=total_batches,
+                            completed_batches=completed,
+                            message=f"Embedding: {completed}/{total_batches} batches ({pct}%)",
                         )
+
+                    logger.debug(
+                        "Embed batch %d/%d — %.1fs",
+                        i + 1, total_batches, elapsed,
+                    )
+                    break  # success — move to next batch
 
         return all_embeddings
 
