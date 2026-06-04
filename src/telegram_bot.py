@@ -549,6 +549,73 @@ class TelegramBot:
 
     # ── Tutor chat handler ─────────────────────────────────────────
 
+    async def _edit_tutor_reply(
+        self, bot, chat_id: int, message_id: int, reply: str
+    ):
+        """Replace a placeholder message with the actual tutor reply.
+
+        Edits the existing message in-place so the user sees the thinking
+        indicator replaced by the LLM response without an extra message.
+        Falls back to sending a new message if editing fails (e.g. too old).
+        For multi-chunk replies the first chunk is edited, remaining chunks
+        are sent as new messages.
+        """
+        # Truncate very long replies before conversion
+        if len(reply) > 4096:
+            reply = reply[:4093] + "..."
+
+        try:
+            text, entities = md_convert(reply)
+        except Exception as e:
+            logger.warning("telegramify-markdown convert failed: %s — sending plain", e)
+            await self._fallback_edit(bot, chat_id, message_id, reply)
+            return
+
+        entity_dicts = [e.to_dict() for e in entities]
+        chunks = list(split_entities(text, entity_dicts, max_utf16_len=4096))
+
+        for i, (chunk_text, chunk_entities) in enumerate(chunks):
+            if not chunk_text.strip():
+                continue
+
+            try:
+                if i == 0:
+                    # First chunk: edit the placeholder message in-place
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=chunk_text,
+                        entities=chunk_entities,
+                    )
+                else:
+                    # Additional chunks: send as new messages
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        entities=chunk_entities,
+                    )
+            except Exception as e:
+                logger.error("Failed to send/edit tutor reply chunk: %s", e)
+                # Fallback: try sending as plain text
+                await self._fallback_edit(bot, chat_id, message_id, chunk_text)
+                break  # stop processing further chunks after fallback
+
+    async def _fallback_edit(
+        self, bot, chat_id: int, message_id: int, text: str
+    ):
+        """Fallback when editing the placeholder message fails.
+
+        Tries to delete the stale placeholder and send a new message instead.
+        """
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.debug("Could not delete placeholder message: %s", e)
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception as fallback_err:
+            logger.error("Fallback send also failed: %s", fallback_err)
+
     async def _send_tutor_reply_with_entities(
         self, bot, chat_id: int, reply: str
     ):
@@ -594,6 +661,10 @@ class TelegramBot:
         """
         Route a user message to the LLM tutor and reply on Telegram.
 
+        Shows an immediate "thinking" message that is replaced with the
+        actual LLM reply once ready — so the user sees feedback even when
+        the model needs time to load or RAG takes a while.
+
         Parameters
         ----------
         chat_id : int
@@ -618,6 +689,14 @@ class TelegramBot:
         language_name = resolve_language_name(learning_language)
         native_lang = profile.get("native_language", DEFAULT_NATIVE_LANGUAGE)
 
+        # ── Send immediate "thinking" placeholder ────────────────
+        bot = await self._get_aiogram_bot()
+        thinking_msg = await bot.send_message(
+            chat_id=chat_id,
+            text="Thinking…",
+        )
+        thinking_message_id = thinking_msg.message_id
+
         # Get conversation history
         history = self.db.get_history(chat_id, profile_name, max_turns=10)
 
@@ -628,7 +707,7 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to fetch lesson for '%s': %s", profile_name, e)
 
-        # Call LLM tutor
+        # Call LLM tutor (may take time — model loading, RAG, etc.)
         client = self._get_llama_client(profile_name)
         reply = client.tutor_chat(
             message=text,
@@ -649,9 +728,8 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to write chat history for %s: %s", chat_id, e)
 
-        # Send reply with markdown→entities conversion (no parse_mode needed)
-        bot = await self._get_aiogram_bot()
-        await self._send_tutor_reply_with_entities(bot, chat_id, reply)
+        # ── Replace thinking message with actual reply ───────────
+        await self._edit_tutor_reply(bot, chat_id, thinking_message_id, reply)
 
     # ── Command handlers ───────────────────────────────────────────
 
