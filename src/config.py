@@ -139,10 +139,116 @@ TG_SAFE_TRUNCATE         = 3900
 TG_HISTORY_PURGE_DAYS    = 30
 TG_LESSON_COOLDOWN_SECS  = 600   # minutes between /another requests
 
+# ── RAG ───────────────────────────────────────────────────
+RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"
+RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
+RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
+RAG_DEFAULT_CHUNK_SIZE    = 500
+RAG_DEFAULT_CHUNK_OVERLAP   = 100
+RAG_DEFAULT_EMBED_BATCH_SZ   = 32   # texts per batch — small enough that llama.cpp finishes before we send the next one
+RAG_DEFAULT_EMBED_DELAY_SECS = 3.0  # seconds between batches — gives llama.cpp time to fully drain the response
+
 # ── Profile defaults (fallbacks when config is silent) ──────────
 DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE   = "en"
 DEFAULT_PROFILE_NAME      = "default"
+
+
+# ── Shared OpenAI client (singleton) ──────────────────────────────
+#
+# All modules that talk to llama.cpp share ONE OpenAI client instance.
+# This avoids multiple HTTP connection pools fighting over the same
+# server — especially important when llama-swap is loading/unloading
+# models and transient timeouts trigger independent retries from
+# separate clients ("zombie" duplicate requests).
+
+def get_openai_client(base_url: str = None, api_key: str = "none", timeout: float = 60):
+    """
+    Get or create the shared OpenAI-compatible client for llama.cpp.
+
+    Only ONE instance is ever created (module-level singleton) regardless
+    of how many times this function is called. The base_url, api_key, and
+    timeout are used on first creation only — subsequent calls return the
+    same instance.
+
+    Parameters
+    ----------
+    base_url : str or None
+        API base URL (default: from config or LLM_DEFAULT_BASE_URL).
+    api_key : str
+        API key (default: "none" for local llama.cpp).
+    timeout : float
+        Default request timeout in seconds (default: 60).
+
+    Returns
+    -------
+    OpenAI client instance, or None if the package is not installed.
+    """
+    import logging
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger_cfg = logging.getLogger("lingua")
+        logger_cfg.warning("'openai' package not installed — LLM calls will fail.")
+        return None
+
+    if not hasattr(get_openai_client, "_instance") or get_openai_client._instance is None:
+        resolved_url = base_url or get_llm_base_url()
+        get_openai_client._instance = OpenAI(
+            base_url=resolved_url,
+            api_key=api_key or "none",
+            timeout=timeout,
+        )
+    return get_openai_client._instance
+
+
+def reset_openai_client():
+    """Reset the shared OpenAI client (for tests / config reload)."""
+    if hasattr(get_openai_client, "_instance"):
+        get_openai_client._instance = None
+
+
+def get_embedding_client(base_url: str = None, timeout: float = 300):
+    """Get a dedicated OpenAI client for embedding requests.
+
+    This is separate from the main LLM client because embeddings need
+    different settings:
+      - NO auto-retries (retries during congestion double the load on
+        llama-swap's already-full send buffer)
+      - Longer timeout (larger batches take more time)
+
+    Parameters
+    ----------
+    base_url : str or None
+        API base URL. Falls back to LLM base URL.
+    timeout : float
+        Request timeout in seconds (default 300 = 5 minutes for large batches).
+
+    Returns
+    -------
+    OpenAI client instance with retries disabled, or None.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+
+    if not hasattr(get_embedding_client, "_instance") or get_embedding_client._instance is None:
+        resolved_url = base_url or get_llm_base_url()
+        get_embedding_client._instance = OpenAI(
+            base_url=resolved_url,
+            api_key="none",
+            timeout=timeout,
+            max_retries=0,   # CRITICAL: retries during congestion make llama-swap worse
+        )
+    return get_embedding_client._instance
+
+
+def reset_embedding_client():
+    """Reset the embedding client (for tests / config reload)."""
+    if hasattr(get_embedding_client, "_instance"):
+        get_embedding_client._instance = None
 
 
 # ── Config loader ────────────────────────────────────────────────────
@@ -170,3 +276,45 @@ def load_config(path=None, fallback=None):
         if fallback is not None:
             return fallback
         raise
+
+
+def get_llm_base_url(path=None) -> str:
+    """Return the LLM base_url from config.json, falling back to default."""
+    import os
+    cfg = load_config(path, fallback={})
+    return (
+        (cfg.get("llm", {}) or {}).get("base_url")
+        or os.environ.get("LLAMA_BASE_URL")
+        or LLM_DEFAULT_BASE_URL
+    )
+
+
+def get_rag_config(path=None) -> dict:
+    """Return resolved RAG config: config.json values merged with defaults.
+
+    Returns a dict with keys:
+        qdrant_url, collection_name, embedding_model,
+        chunk_size, chunk_overlap, embedding_base_url
+    """
+    import os
+    cfg = load_config(path, fallback={})
+    rag = cfg.get("rag", {}) or {}
+
+    return {
+        "qdrant_url": (
+            rag.get("qdrant_url")
+            or os.environ.get("QDRANT_URL")
+            or RAG_DEFAULT_QDRANT_URL
+        ),
+        "collection_name": rag.get("collection_name", RAG_DEFAULT_COLLECTION),
+        "embedding_model": (
+            rag.get("embedding_model")
+            or os.environ.get("EMBEDDING_MODEL")
+            or RAG_DEFAULT_EMBED_MODEL
+        ),
+        "chunk_size": rag.get("chunk_size", RAG_DEFAULT_CHUNK_SIZE),
+        "chunk_overlap": rag.get("chunk_overlap", RAG_DEFAULT_CHUNK_OVERLAP),
+        "embed_batch_size": int(rag.get("embed_batch_size", RAG_DEFAULT_EMBED_BATCH_SZ)),
+        "embed_delay_secs": float(rag.get("embed_delay_secs", RAG_DEFAULT_EMBED_DELAY_SECS)),
+        "embedding_base_url": rag.get("embedding_base_url") or get_llm_base_url(path),
+    }

@@ -1,0 +1,556 @@
+{% extends "base.html" %}
+
+{% block title %}LinguaDaily — Documents{% endblock %}
+
+{% block content %}
+<h1>RAG Documents</h1>
+<p class="subtitle">Upload, manage and index textbook / reference materials for the language tutor.</p>
+
+<!-- ── Settings panel ─────────────────────────────────────── -->
+<div class="model-panel" style="border-color: var(--blue);">
+  <h2>RAG Settings</h2>
+  <p class="subtitle">Configure Qdrant connection and chunking. Embedding model is selected on the Dashboard.</p>
+
+  <form id="settings-form">
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Qdrant URL</label>
+        <input type="text" name="qdrant_url" id="setting-qdrant-url"
+               value="{{ rag_config.get('qdrant_url', 'http://localhost:6333') }}"
+               placeholder="http://localhost:6333">
+      </div>
+      <div class="form-row">
+        <label>Chunk Size (chars)</label>
+        <input type="number" name="chunk_size" id="setting-chunk-size"
+               value="{{ rag_config.get('chunk_size', 500) }}" min="100" max="2000">
+      </div>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Chunk Overlap (chars)</label>
+        <input type="number" name="chunk_overlap" id="setting-chunk-overlap"
+               value="{{ rag_config.get('chunk_overlap', 100) }}" min="0" max="500">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+      <button type="submit" class="btn btn-primary">Save Settings</button>
+      <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+    </div>
+  </form>
+
+  <div id="settings-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
+</div>
+
+<!-- ── Stats row ──────────────────────────────────────── -->
+<div class="stats">
+  <div class="stat-card">
+    <div class="value">{{ stats.total_chunks | default(0) }}</div>
+    <div class="label">Total Chunks</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ stats.languages | default({}) | length }}</div>
+    <div class="label">Languages</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ sources | default([]) | length }}</div>
+    <div class="label">Source Files</div>
+  </div>
+</div>
+
+<!-- ── Upload form ────────────────────────────────────── -->
+<div class="model-panel" style="border-color: var(--green);">
+  <h2>Upload Document</h2>
+  <p class="subtitle">Supported formats: .txt, .pdf, .docx</p>
+  <p class="subtitle" style="color:var(--yellow);margin-top:-6px;">⚠ If using llama-swap, close llama-webui before indexing — otherwise the embedding API will get congested and freeze.</p>
+
+  <form id="upload-form" enctype="multipart/form-data">
+    <div class="form-grid">
+      <div class="form-row">
+        <label>File</label>
+        <input type="file" name="file" id="upload-file" required accept=".txt,.pdf,.docx">
+      </div>
+      <div class="form-row">
+        <label>Language (ISO code)</label>
+        <select name="language" id="upload-language" required>
+          <option value="">→ select language</option>
+          {% for lang in available_languages %}
+          <option value="{{ lang }}">{{ lang }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Tags (comma-separated, optional)</label>
+      <input type="text" name="tags" id="upload-tags" placeholder="grammar, vocabulary, subjunctive">
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button type="submit" class="btn btn-primary">Upload & Index</button>
+    </div>
+  </form>
+
+  <div id="upload-progress-container" style="margin-top:12px;display:none;">
+    <div id="upload-progress-bar-bg" style="width:100%;height:20px;background:var(--bg_panel);border-radius:6px;overflow:hidden;border:1px solid var(--border);">
+      <div id="upload-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg, var(--green), #27ae60);transition:width 0.3s ease;text-align:center;color:#fff;font-size:11px;line-height:20px;border-radius:6px;">0%</div>
+    </div>
+    <div id="upload-progress-text" style="margin-top:4px;font-size:12px;color:var(--fg_dim);"></div>
+  </div>
+  <div id="upload-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
+</div>
+
+<!-- ── RAG Query Test ───────────────────────────────────── -->
+<div class="model-panel" style="border-color: #e67e22;">
+  <h2>Test RAG Query</h2>
+  <p class="subtitle">Search the knowledge base the same way tutor messages do — check chunk relevance, scores, and filter by language.</p>
+
+  <form id="query-form">
+    <div class="form-row">
+      <label>Query text</label>
+      <input type="text" name="query" id="rag-query-text"
+             placeholder="e.g. How do you conjugar regular verbs in Spanish?" required>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Language filter (optional)</label>
+        <select name="language" id="rag-query-language">
+          <option value="">All languages</option>
+          {% for lang in available_languages %}
+          <option value="{{ lang }}">{{ lang }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Top K</label>
+        <input type="number" name="top_k" id="rag-query-topk"
+               value="5" min="1" max="20">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button type="submit" class="btn btn-primary">Search</button>
+    </div>
+  </form>
+
+  <div id="rag-query-status" style="margin-top:10px;font-size:12px;color:var(--fg_dim);"></div>
+  <div id="rag-query-results" style="margin-top:12px;"></div>
+</div>
+
+<!-- ── Indexed documents table ─────────────────────────── -->
+<h2 style="font-size:15px;margin-bottom:10px;">Indexed Documents</h2>
+
+<div class="toolbar">
+  <select id="filter-language" onchange="filterSources()">
+    <option value="">All Languages</option>
+    {% for lang in available_languages %}
+    <option value="{{ lang }}">{{ lang }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-secondary btn-sm" onclick="refreshTable()">↻ Refresh</button>
+</div>
+
+<table id="sources-table">
+  <thead>
+    <tr>
+      <th>Source File</th>
+      <th>Language</th>
+      <th>Chunks</th>
+      <th>Tags</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="sources-tbody">
+    {% for src in sources %}
+    <tr data-language="{{ src.language | default('') }}">
+      <td>{{ src.source_file }}</td>
+      <td><span class="badge badge-active">{{ src.language }}</span></td>
+      <td>{{ src.chunk_count }}</td>
+      <td>
+        {% for tag in (src.tags or []) %}
+        <span style="color:var(--fg_dim);font-size:11px;">{{ tag }}{% if not loop.last %}, {% endif %}</span>
+        {% else %}
+        <span style="color:var(--fg_dim);">—</span>
+        {% endfor %}
+      </td>
+      <td>
+        <button class="btn btn-secondary btn-sm"
+                onclick="openReindexModal('{{ src.source_file }}', '{{ src.language }}')"
+                title="Re-index with different settings">
+          ↻ Re-index
+        </button>
+        <button class="btn btn-danger btn-sm"
+                onclick="deleteDocument('{{ src.source_file }}')"
+                title="Delete from knowledge base">
+          ✕ Delete
+        </button>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="5" style="text-align:center;color:var(--fg_dim);padding:24px;">
+        No documents indexed yet. Upload a file above to get started.
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<!-- ── Re-index Modal ──────────────────────────────────── -->
+<div class="modal-overlay" id="reindex-modal">
+  <div class="modal">
+    <h2>Re-index Document</h2>
+    <form id="reindex-form" enctype="multipart/form-data">
+      <input type="hidden" name="source_file" id="reindex-source-file">
+
+      <div class="form-row">
+        <label>File</label>
+        <input type="text" id="reindex-file-name" readonly style="opacity:0.6;">
+      </div>
+
+      <div class="form-row">
+        <label>Language (ISO code)</label>
+        <select name="language" id="reindex-language" required>
+          {% for lang in available_languages %}
+          <option value="{{ lang }}">{{ lang }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label>Tags (comma-separated, optional)</label>
+        <input type="text" name="tags" id="reindex-tags" placeholder="grammar, vocabulary">
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeReindexModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Re-index</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── JavaScript ─────────────────────────────────────────── -->
+<script>
+// ── Settings save ─────────────────────────────────────────
+document.getElementById('settings-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const status = document.getElementById('settings-status');
+  status.textContent = 'Saving…';
+
+  const payload = {
+    qdrant_url: document.getElementById('setting-qdrant-url').value,
+    chunk_size: document.getElementById('setting-chunk-size').value,
+    chunk_overlap: document.getElementById('setting-chunk-overlap').value,
+  };
+
+  try {
+    const res = await fetch('/api/documents/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      status.textContent = `✓ ${data.message || 'Settings saved'}`;
+      showToast(data.message || 'Settings saved', false);
+    } else {
+      status.textContent = `⚠ ${data.message || 'Save failed'}`;
+      showToast(data.message || 'Save failed', true);
+    }
+  } catch (err) {
+    status.textContent = '⚠ Network error';
+    showToast('Network error saving settings', true);
+  }
+});
+
+// ── Test connection ───────────────────────────────────────
+async function testConnection() {
+  const status = document.getElementById('settings-status');
+  status.textContent = 'Testing Qdrant…';
+
+  try {
+    const res = await fetch('/api/documents/settings/test', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.qdrant) {
+      status.textContent = '✓ ' + (data.details || 'Qdrant connected');
+      showToast('Qdrant connected', false);
+    } else {
+      status.textContent = '✗ ' + (data.details || 'Qdrant unreachable');
+      showToast('Qdrant unreachable: ' + data.details, true);
+    }
+  } catch (err) {
+    status.textContent = '⚠ Network error';
+    showToast('Network error testing connection', true);
+  }
+}
+
+// ── Upload handler with progress tracking ─────────────────
+let _progressPollTimer = null;
+
+function startProgressPoll(fileName) {
+  const container = document.getElementById('upload-progress-container');
+  const bar = document.getElementById('upload-progress-bar');
+  const text = document.getElementById('upload-progress-text');
+  container.style.display = 'block';
+
+  _progressPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/documents/upload-progress');
+      if (!res.ok) return;
+      const allProgress = await res.json();
+
+      // Find progress for our file (keys are source filenames)
+      const progress = allProgress[fileName];
+      if (!progress) {
+        // No progress yet — still uploading
+        text.textContent = 'Uploading file…';
+        bar.style.width = '5%';
+        bar.textContent = '5%';
+        return;
+      }
+
+      const pct = progress.total_batches > 0
+        ? Math.round(progress.completed_batches / progress.total_batches * 100)
+        : 0;
+
+      bar.style.width = `${pct}%`;
+      bar.textContent = `${pct}%`;
+      text.textContent = progress.message || '';
+
+      // Check if done or error
+      if (progress.status === 'done') {
+        clearInterval(_progressPollTimer);
+        _progressPollTimer = null;
+        bar.style.background = 'linear-gradient(90deg, #27ae60, #2ecc71)';
+        text.textContent = progress.message;
+      } else if (progress.status === 'error') {
+        clearInterval(_progressPollTimer);
+        _progressPollTimer = null;
+        bar.style.background = 'linear-gradient(90deg, #e74c3c, #c0392b)';
+        text.textContent = progress.message;
+      }
+    } catch (err) {
+      // polling error — ignore silently
+    }
+  }, 1500);  // poll every 1.5s
+}
+
+function stopProgressPoll() {
+  if (_progressPollTimer) {
+    clearInterval(_progressPollTimer);
+    _progressPollTimer = null;
+  }
+}
+
+document.getElementById('upload-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const status = document.getElementById('upload-status');
+  status.textContent = 'Uploading & indexing…';
+
+  const fileInput = document.getElementById('upload-file');
+  const fileName = fileInput.files[0] ? fileInput.files[0].name : '';
+
+  // Start progress polling
+  startProgressPoll(fileName);
+
+  const formData = new FormData(this);
+
+  try {
+    const res = await fetch('/api/documents/upload', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      status.textContent = `✓ ${data.message}`;
+      showToast(data.message, false);
+      stopProgressPoll();
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      status.textContent = `⚠ ${data.message || 'Upload failed'}`;
+      showToast(data.message || 'Upload failed', true);
+      stopProgressPoll();
+    }
+  } catch (err) {
+    status.textContent = `⚠ Network error`;
+    showToast('Network error during upload', true);
+    stopProgressPoll();
+  }
+});
+
+// ── Delete handler ────────────────────────────────────────
+async function deleteDocument(sourceFile) {
+  if (!confirm(`Delete '${sourceFile}' from the knowledge base?`)) return;
+
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(sourceFile)}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(data.message, false);
+      setTimeout(() => location.reload(), 500);
+    } else {
+      showToast(data.message || 'Delete failed', true);
+    }
+  } catch (err) {
+    showToast('Network error during delete', true);
+  }
+}
+
+// ── Re-index modal ───────────────────────────────────────
+function openReindexModal(sourceFile, language) {
+  document.getElementById('reindex-modal').classList.add('visible');
+  document.getElementById('reindex-file-name').value = sourceFile;
+  document.getElementById('reindex-source-file').value = sourceFile;
+  document.getElementById('reindex-language').value = language || '';
+}
+
+function closeReindexModal() {
+  document.getElementById('reindex-modal').classList.remove('visible');
+}
+
+document.getElementById('reindex-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const sourceFile = document.getElementById('reindex-source-file').value;
+  const formData = new FormData(this);
+
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(sourceFile)}/reindex`, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(data.message, false);
+      closeReindexModal();
+      setTimeout(() => location.reload(), 800);
+    } else {
+      showToast(data.message || 'Re-index failed', true);
+    }
+  } catch (err) {
+    showToast('Network error during re-index', true);
+  }
+});
+
+document.getElementById('reindex-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeReindexModal();
+});
+
+// ── Filter sources by language ────────────────────────────────
+function filterSources() {
+  const lang = document.getElementById('filter-language').value;
+  const rows = document.querySelectorAll('#sources-tbody tr');
+  rows.forEach(row => {
+    if (!lang || row.dataset.language === lang) {
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
+// ── Refresh table from API ────────────────────────────────
+async function refreshTable() {
+  try {
+    const res = await fetch('/api/documents/sources');
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.message || 'Refresh failed', true);
+      return;
+    }
+
+    const tbody = document.getElementById('sources-tbody');
+    if (data.sources.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--fg_dim);padding:24px;">No documents indexed yet.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = data.sources.map(src => `
+      <tr data-language="${src.language || ''}">
+        <td>${escHtml(src.source_file)}</td>
+        <td><span class="badge badge-active">${escHtml(src.language)}</span></td>
+        <td>${src.chunk_count}</td>
+        <td>${(src.tags || []).map(t => escHtml(t)).join(', ') || '<span style="color:var(--fg_dim)">—</span>'}</td>
+        <td>
+          <button class="btn btn-secondary btn-sm" onclick="openReindexModal('${escAttr(src.source_file)}', '${escAttr(src.language)}')">↻ Re-index</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteDocument('${escAttr(src.source_file)}')">✕ Delete</button>
+        </td>
+      </tr>
+    `).join('');
+
+    showToast('Table refreshed', false);
+  } catch (err) {
+    showToast('Network error during refresh', true);
+  }
+}
+
+// ── RAG query test ─────────────────────────────────────
+document.getElementById('query-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const status = document.getElementById('rag-query-status');
+  const results = document.getElementById('rag-query-results');
+  status.textContent = 'Searching…';
+  results.innerHTML = '';
+
+  const payload = {
+    query: document.getElementById('rag-query-text').value,
+    language: document.getElementById('rag-query-language').value,
+    top_k: parseInt(document.getElementById('rag-query-topk').value) || 5,
+  };
+
+  try {
+    const res = await fetch('/api/documents/query', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      status.textContent = `⚠ ${data.message || 'Query failed'}`;
+      showToast(data.message || 'Query failed', true);
+      return;
+    }
+
+    status.textContent = `✓ Found ${data.hits.length} hits for "${escHtml(data.query)}"`;
+
+    if (data.hits.length === 0) {
+      results.innerHTML = '<p style="color:var(--fg_dim);font-size:13px;">No matching chunks found. Try adjusting the query or language filter.</p>';
+      return;
+    }
+
+    let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+    data.hits.forEach((hit, i) => {
+      const score = (hit.score * 100).toFixed(1);
+      const preview = hit.text.substring(0, 320) + (hit.text.length > 320 ? '…' : '');
+      html += `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;font-size:13px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span class="badge badge-active" style="font-size:10px;">#${i + 1} score: ${score}%</span>
+            <span style="color:var(--fg_dim);font-size:11px;">${escHtml(hit.source_file || 'unknown')} · chunk ${hit.chunk_index}</span>
+          </div>
+          <pre style="margin:0;white-space:pre-wrap;font-family:inherit;font-size:13px;color:var(--fg);line-height:1.5;" title="Click to expand">${escHtml(preview)}</pre>
+        </div>`;
+    });
+    html += '</div>';
+    results.innerHTML = html;
+
+  } catch (err) {
+    status.textContent = '⚠ Network error';
+    showToast('Network error during query', true);
+  }
+});
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '\\"'); }
+</script>
+{% endblock %}

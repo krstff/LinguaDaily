@@ -66,22 +66,17 @@ def sanitize_for_tts(text):
 
 
 def _get_client(config):
-    """Build an OpenAI-compatible client from config.
+    """Get the shared OpenAI-compatible client for TTS.
 
-    Returns None if the openai package is not installed (so callers can
-    gracefully skip TTS instead of crashing).
+    Uses the module-level singleton from config so all callers share
+    ONE connection pool to llama.cpp. Returns None if openai is not installed.
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        logger.warning("'openai' package not installed, skipping TTS.")
-        return None
+    from config import get_openai_client
 
     tts_cfg = config.get("tts", {})
-    base_url = tts_cfg.get("base_url", "http://llama-swap:8080/v1")
+    base_url = tts_cfg.get("base_url")
     api_key = tts_cfg.get("api_key", "")
-    # openai client requires a non-empty key; use placeholder if empty
-    return OpenAI(base_url=base_url, api_key=api_key or "none")
+    return get_openai_client(base_url=base_url, api_key=api_key or "none")
 
 
 def _cleanup_old_files(

@@ -96,20 +96,21 @@ class TestModelResolution:
         assert client.resolve_model("translate") == "gemma4-26b"
         assert client.resolve_model("tutor") == "mistral-7b"
 
-    def test_explicit_model_param(self, sample_config):
+    @patch("config.get_openai_client")
+    def test_explicit_model_param(self, mock_get_client, sample_config):
         """Explicit model arg in _chat overrides resolution."""
         from src.llama_client import LlamaClient
         config = sample_config[0]
         client = LlamaClient(config=config)
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = MagicMock(
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(message=MagicMock(content="test"))]
         )
-        client._client = mock_client
+        mock_get_client.return_value = mock_openai
 
         client._chat([{"role": "user", "content": "hi"}], model="explicit-model")
-        mock_client.chat.completions.create.assert_called_once()
-        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        mock_openai.chat.completions.create.assert_called_once()
+        call_kwargs = mock_openai.chat.completions.create.call_args[1]
         assert call_kwargs["model"] == "explicit-model"
 
 

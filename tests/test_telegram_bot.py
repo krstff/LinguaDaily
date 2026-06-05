@@ -353,9 +353,13 @@ class TestTutorChat:
 
             await bot.handle_tutor_message(111222333, "Tell me everything about German grammar.")
 
+            # With telegramify-markdown: truncated to 4096, sent with entities
             sent = mock_aiogram.send_message.call_args[1]["text"]
-            assert len(sent) <= 4000
+            assert len(sent) <= 4096
             assert sent.endswith("...")
+            # Should use entities parameter (not parse_mode)
+            call_kwargs = mock_aiogram.send_message.call_args[1]
+            assert "entities" in call_kwargs or not call_kwargs.get("parse_mode")
 
         bot.db.close()
 
