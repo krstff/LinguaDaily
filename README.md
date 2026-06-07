@@ -23,7 +23,7 @@ A lightweight language-learning daemon that delivers daily language lessons via 
   </tr>
   <tr>
     <td>Recieve articles, TTS, translation and vocabulary daily.</td>
-    <td>Ask questions about your lesson or grammar in general. Optionally ground answers in your own textbooks via RAG.</td>
+    <td>Ask questions about your lesson or grammar in general.</td>
     <td>Train your vocab knowledge with simple in-chat games.</td>
   </tr>
 </table>
