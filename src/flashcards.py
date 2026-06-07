@@ -32,12 +32,10 @@ from config import (
     DEFAULT_LEARNING_LANGUAGE,
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
-    FLASHCARD_REVIEW_COOLDOWN_DAYS,
     FLASHCARD_SESSION_TIMEOUT_SECS,
     FLASHCARD_QUIZ_AUTO_ADVANCE_SECS,
     FLASHCARD_QUIZ_DISTRACTORS,
     PROJECT_DIR,
-    resolve_language_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,18 +54,37 @@ class VocabLoader:
 
     # ── Parsing ───────────────────────────────────────────────────
 
+    # ── CSV schema ─────────────────────────────────────────────
+    FIELDNAMES = [
+        "word", "meaning", "frequency", "last_seen",
+        "total_correct", "total_wrong", "mastery_score",
+    ]
+
     def _parse_vocab(self) -> list[dict]:
-        """Parse CSV vocabulary file into list of entry dicts."""
+        """Parse CSV vocabulary file into list of entry dicts.
+
+        Missing SRS columns default to neutral values for backward
+        compatibility with legacy CSVs that lack them.
+        """
         if not self._csv_path.exists():
             return []
         with open(self._csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            return [{
-                "word": row.get("word", "").strip(),
-                "meaning": row.get("meaning", "").strip(),
-                "frequency": int(row.get("frequency", 1) or 1),
-                "last_seen": row.get("last_seen", "").strip() or None,
-            } for row in reader]
+            entries: list[dict] = []
+            for row in reader:
+                tc = row.get("total_correct") or ""
+                tw = row.get("total_wrong") or ""
+                ms = row.get("mastery_score") or ""
+                entries.append({
+                    "word": row.get("word", "").strip(),
+                    "meaning": row.get("meaning", "").strip(),
+                    "frequency": int(row.get("frequency", 1) or 1),
+                    "last_seen": row.get("last_seen", "").strip() or None,
+                    "total_correct": int(tc) if tc else 0,
+                    "total_wrong": int(tw) if tw else 0,
+                    "mastery_score": float(ms) if ms else 0.0,
+                })
+            return entries
 
     def all_entries(self) -> list[dict]:
         """Return all vocabulary entries (for distractor generation)."""
@@ -75,10 +92,49 @@ class VocabLoader:
 
     # ── Writing / exposure tracking ───────────────────────────────
 
-    def record_exposure(self, words: list[str]):
-        """Increment frequency and update last_seen for a set of words.
+    # ── Mastery model helpers (module-level for testability) ────
 
-        Called after a flashcard or quiz session to track which words the user saw.
+    # Daily decay rate — mastery drops by this much per day since last review.
+    _DECAY_PER_DAY = 0.02
+
+    # Target interval formula: mastery^2 × MAX_INTERVAL → days between reviews.
+    #   mastery 0.30 → ~4d,  0.60 → ~17d,  0.85 → ~40d,  0.95 → ~50d
+    _MAX_INTERVAL_DAYS = 55
+
+    @staticmethod
+    def _target_interval(mastery: float) -> int:
+        """How many days *should* pass between reviews at this mastery level."""
+        return max(1, int(mastery ** 2 * VocabLoader._MAX_INTERVAL_DAYS))
+
+    @staticmethod
+    def _update_mastery(correct: int, wrong: int, was_correct: bool) -> tuple[int, int, float]:
+        """Bayesian mastery update with Laplace smoothing.
+
+        Returns (updated_correct, updated_wrong, new_mastery_score).
+        """
+        if was_correct:
+            correct += 1
+        else:
+            wrong += 1
+        # Prior of (1, 1) prevents 0/1 extremes with few data points.
+        mastery = (correct + 1) / (correct + wrong + 2)
+        return correct, wrong, round(mastery, 4)
+
+    def record_exposure(
+        self,
+        words: list[str],
+        outcomes: list[tuple[str, bool]] | None = None,
+    ):
+        """Persist session data to the vocabulary CSV.
+
+        Parameters
+        ----------
+        words : list[str]
+            Words shown during the session (frequency + last_seen updated).
+        outcomes : list[tuple[str, bool]] | None
+            For quiz sessions: ``[(word, was_correct), …]``.  A word may appear
+            multiple times (e.g. forward + reverse direction).  Each attempt is
+            an independent mastery data point.
         """
         if not self._csv_path.exists():
             return
@@ -89,26 +145,46 @@ class VocabLoader:
 
         updated = False
         for w in words:
-            if w in word_map:
-                word_map[w]["frequency"] += 1
-                word_map[w]["last_seen"] = today
+            entry = word_map.get(w)
+            if not entry:
+                continue
+            entry["frequency"] += 1
+            entry["last_seen"] = today
+            updated = True
+
+        # Apply quiz outcomes (each attempt is independent).
+        if outcomes:
+            for w, was_correct in outcomes:
+                entry = word_map.get(w)
+                if not entry:
+                    continue
+                c, wrong, mastery = self._update_mastery(
+                    entry["total_correct"],
+                    entry["total_wrong"],
+                    was_correct,
+                )
+                entry["total_correct"] = c
+                entry["total_wrong"] = wrong
+                entry["mastery_score"] = mastery
                 updated = True
 
         if updated:
             with open(self._csv_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["word", "meaning", "frequency", "last_seen"])
+                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
                 writer.writeheader()
                 writer.writerows(entries)
 
-    # ── Spaced-repetition selection ───────────────────────────────
+    # ── Priority-based spaced-repetition selection ───────────────
 
     def pick_review_words(self, count: int = FLASHCARD_DEFAULT_CARD_COUNT) -> list[dict]:
-        """Select words for review using spaced-repetition heuristics.
+        """Select words for review using a priority score (no fixed schedule).
 
-        Priority order:
-          1. Words NOT seen in the last FLASHCARD_REVIEW_COOLDOWN_DAYS days (oldest first)
-          2. Words with lowest frequency (seen fewest times)
-          3. Random shuffle within each tier to avoid deterministic ordering
+        Each word gets a priority from 0 (don't show) to 1+ (very urgent):
+          overdue_ratio × (1 − effective_mastery)
+
+        Mastery decays over time so neglected words naturally become urgent
+        again.  Words with mastery > 0.95 are excluded unless the vocab is
+        small enough that we need to fill slots.
         """
         entries = self._parse_vocab()
         if not entries:
@@ -116,38 +192,42 @@ class VocabLoader:
 
         today = date.today()
 
-        # Split into "due" (overdue for review) and "not due yet"
-        due: list[dict] = []
-        not_due: list[dict] = []
-
+        scored: list[tuple[float, dict]] = []
         for entry in entries:
+            # ── effective mastery (apply decay) ───────────────────
+            base_mastery = entry.get("mastery_score", 0.0)
+            if base_mastery == 0.0 and entry.get("total_correct", 0) + entry.get("total_wrong", 0) == 0:
+                # Never been quizzed — neutral starting point
+                effective = 0.5
+            else:
+                effective = base_mastery
+
             if entry["last_seen"]:
                 try:
                     last = date.fromisoformat(entry["last_seen"])
                     days_since = (today - last).days
                 except ValueError:
-                    days_since = 999  # treat unparseable dates as very old
+                    days_since = 999
             else:
-                days_since = 999  # never seen in a review session
+                days_since = 999  # never reviewed in a session
 
-            if days_since >= FLASHCARD_REVIEW_COOLDOWN_DAYS:
-                due.append(entry)
-            else:
-                not_due.append(entry)
+            effective -= self._DECAY_PER_DAY * days_since
+            effective = max(0.0, min(1.0, effective))
 
-        # Sort "due" by last_seen ascending (oldest first), then by frequency asc
-        due.sort(key=lambda e: (e["last_seen"] or "", e["frequency"]))
-        # Shuffle "not due" for variety, weighted toward low frequency
-        random.shuffle(not_due)
-        not_due.sort(key=lambda e: e["frequency"])
+            # ── skip well-learned words (unless we need them) ─────
+            if effective > 0.95 and len(entries) > count + 5:
+                continue
 
-        # Pick from due first, fill remaining from not_due
-        selected = due[:count]
-        remaining = count - len(selected)
-        if remaining > 0:
-            selected.extend(not_due[:remaining])
+            # ── priority score ────────────────────────────────────
+            target = self._target_interval(effective)
+            overdue_ratio = days_since / target
+            priority = overdue_ratio * (1.0 - effective)
 
-        return selected
+            scored.append((priority, entry))
+
+        # Highest priority first; break ties with small random jitter
+        scored.sort(key=lambda x: (-x[0], random.random()))
+        return [entry for _, entry in scored[:count]]
 
 
 # ── Study Handler (Flashcards + Quiz) ───────────────────────────────
@@ -196,28 +276,33 @@ class StudyHandler:
             self._record_session_exposure(session)
 
     def _record_session_exposure(self, session: dict):
-        """Update vocabulary frequency/last_seen for words seen in a session."""
+        """Update vocabulary frequency/last_seen + quiz outcomes."""
         mode = session.get("mode")
         profile = session.get("profile")
         if not profile:
             return
 
         words: list[str] = []
+        outcomes: list[tuple[str, bool]] | None = None
+
         if mode == "flashcards":
             words = [w["word"] for w in session.get("words", [])]
         elif mode == "quiz":
             words = [q["entry"]["word"] for q in session.get("questions", [])]
+            outcomes = [
+                (log["entry"]["word"], log["correct"])
+                for log in session.get("answer_log", [])
+            ]
 
         if not words:
             return
 
-        # Get learning language from config
         profile_cfg = self.config.get("profiles", {}).get(profile, {})
         lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
 
         try:
             loader = VocabLoader(profile=profile, learning_language=lang)
-            loader.record_exposure(words)
+            loader.record_exposure(words, outcomes=outcomes)
         except Exception as e:
             logger.debug("Failed to record exposure for %s: %s", profile, e)
 
