@@ -31,6 +31,15 @@
     "model": "omnivoice"
   },
 
+  "rag": {
+    "qdrant_url": "http://localhost:6333",
+    "embedding_model": "granite-embedding",
+    "chunk_size": 500,
+    "chunk_overlap": 100,
+    "embed_batch_size": 32,
+    "embed_delay_secs": 3.0
+  },
+
   "sources": {
     "wikipedia": {},
     "news": {

@@ -23,7 +23,7 @@ A lightweight language-learning daemon that delivers daily language lessons via 
   </tr>
   <tr>
     <td>Recieve articles, TTS, translation and vocabulary daily.</td>
-    <td>Ask questions about your lesson or grammar in general.</td>
+    <td>Ask questions about your lesson or grammar in general. Optionally ground answers in your own textbooks via RAG.</td>
     <td>Train your vocab knowledge with simple in-chat games.</td>
   </tr>
 </table>
@@ -72,7 +72,7 @@ The startup banner shows all configured profiles, schedules, and service status:
 ```
 ## Connections
 
-This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.kiwix.org/wiki/Main_Page) for wiki articles, locally deployed LLM and TTS). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
+This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.kiwix.org/wiki/Main_Page) for wiki articles, locally deployed LLM and TTS, Qdrant for RAG). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
 
 ### Telegram
 
@@ -87,14 +87,15 @@ This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.ki
 
 My command setup:
 ```
-start - Get usage information
+start - Get usega information
+another - Requests another article.
+flashcards - Show flashcards.
+quiz - Play a quiz.
 history - Clears chat history on server.
 status - Get information about profile status.
 chatid - Get your chat id.
-profiles - List all available profiles.
+profiles - Lists all available profiles.
 switch - Switch between profile chats.
-flashcards - Show flashcards.
-quiz - Play quiz.
 ```
 
 ### Web UI
@@ -143,6 +144,9 @@ models:
     cmdStop: docker stop ${MODEL_ID}
     proxy: "http://omnivoice:8880"
     checkEndpoint: "/health"
+  
+  granite-embedding:
+    cmd: llama-server --port ${PORT} --model /models/granite-embedding-311m-multilingual-r2.gguf -ngl 99 --metrics --embeddings -c 32768 --batch-size 2048 --ubatch-size 512
 ```
 
 ## Environment Check
@@ -164,3 +168,4 @@ So i don't forget how this works :))
 - [LLM Client Guide](docs/llama-client.md) — Model resolution, translate, vocab extraction, tutor chat
 - [TTS Module Guide](docs/tts.md) — OmniVoice wrapper, text sanitization
 - [Wikipedia Fetcher Guide](docs/wikipedia-fetcher.md) — Kiwix/ZIM client, HTML extraction, smart truncation
+- [RAG Guide](docs/rag_guide.md) — Optional textbook grounding for the tutor chat via Qdrant

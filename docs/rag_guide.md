@@ -1,5 +1,7 @@
 # LinguaDaily RAG Guide
 
+> **RAG is fully optional.** The tutor chat works perfectly without it — RAG simply adds textbook grounding for grammar and vocabulary questions. If Qdrant is unavailable or no documents are indexed, the tutor falls back to its own knowledge with zero disruption.
+
 Retrieval-Augmented Generation (RAG) grounds the tutor chat in your own textbooks and learning materials. The tutor queries a vector store before answering grammar or vocabulary questions, so replies are accurate to the source material you've ingested.
 
 ---
@@ -22,7 +24,7 @@ Retrieval-Augmented Generation (RAG) grounds the tutor chat in your own textbook
               src/llama_client.py  (tutor_chat → intent router → RAG)
 ```
 
-**One server handles everything:** the same llama.cpp/Ollama instance that runs your LLM and TTS also serves embeddings via `/v1/embeddings`. No separate embedding model process needed.
+**One server handles everything:** the same llama.cpp instance that runs your LLM and TTS also serves embeddings via `/v1/embeddings`. No separate embedding model process needed.
 
 ---
 
@@ -46,7 +48,7 @@ The collection `linguadaily_docs` is auto-created on first document upload. Embe
 
 ## 2. Load an Embedding Model
 
-The embedding model must be loaded on the same llama.cpp/Ollama server that handles LLM requests. This is selected via the **Dashboard → Model Selection** panel.
+The embedding model must be loaded on the same llama.cpp server that handles LLM requests. This is selected via the **Dashboard → Model Selection** panel.
 
 ### llama.cpp (server mode)
 
@@ -59,14 +61,6 @@ llama-server -m models/nomic-embed-text-v1.5-Q4_K_M.gguf \
 ```
 
 If you run multiple models, use a model-swap proxy (e.g., `llama-gateway`) that routes `/v1/embeddings` to the embedding model and `/v1/chat/completions` to the LLM model.
-
-### Ollama
-
-```bash
-ollama pull nomic-embed-text
-```
-
-Ollama handles routing automatically — just point both LLM and embedding calls at the same endpoint.
 
 ---
 
@@ -100,7 +94,7 @@ Click **Test Connection** to verify Qdrant is reachable. This only tests Qdrant 
 
 ## 4. Upload Documents
 
-### Via Web UI (recommended)
+### Via Web UI
 
 1. Go to **Documents**
 2. In the upload form:
@@ -110,19 +104,6 @@ Click **Test Connection** to verify Qdrant is reachable. This only tests Qdrant 
 3. Click **Upload & Index**
 
 The file is stored in `data/documents/` and its text chunks are embedded and upserted into Qdrant immediately. The document table below shows all indexed sources with their language, chunk count, and tags.
-
-### Via CLI (bulk ingestion)
-
-```bash
-# Single file
-python3 scripts/ingest_textbooks.py --file textbook.pdf --lang de --tags grammar,B1
-
-# Directory of files (auto-detects extension)
-python3 scripts/ingest_textbooks.py --dir ~/textbooks/ --lang de
-
-# Dry run (preview chunks without indexing)
-python3 scripts/ingest_textbooks.py --file textbook.pdf --lang de --dry-run
-```
 
 ---
 
@@ -240,6 +221,5 @@ These work well with llama.cpp (GGUF) or Ollama:
 | `src/rag_service.py` | Core RAG: embedding, chunking, Qdrant upsert/query/delete |
 | `src/rag_ui.py` | Flask Blueprint for `/documents` page + API endpoints |
 | `src/templates/documents.html` | Documents management UI |
-| `scripts/ingest_textbooks.py` | CLI bulk ingestion (PDF/TXT/DOCX) |
 | `src/llama_client.py` | Tutor chat with intent router + RAG grounding |
 | `src/config.py` | Shared defaults (`get_rag_config()`, `get_llm_base_url()`) |
