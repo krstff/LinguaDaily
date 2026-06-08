@@ -226,6 +226,10 @@ def register_rag_ui(app, config_path=None):
         except ImportError as e:
             return jsonify({"message": f"Missing dependency: {e}"}), 500
         except Exception as e:
+            from src.rag_service import DimensionMismatchError
+            if isinstance(e, DimensionMismatchError):
+                logger.warning("Query blocked — dimension mismatch: %s", e)
+                return jsonify({"message": str(e), "dimension_mismatch": True}), 409
             logger.error("RAG test query failed: %s", e, exc_info=True)
             return jsonify({"message": f"Query failed: {e}"}), 500
 
@@ -296,6 +300,12 @@ def register_rag_ui(app, config_path=None):
         except ImportError as e:
             return jsonify({"message": f"Missing dependency: {e}"}), 500
         except Exception as e:
+            from src.rag_service import DimensionMismatchError
+            if isinstance(e, DimensionMismatchError):
+                # Clean up the saved file since indexing was blocked
+                os.remove(str(dest))
+                logger.warning("Upload blocked — dimension mismatch: %s", e)
+                return jsonify({"message": str(e), "dimension_mismatch": True}), 409
             logger.error("Upload failed for '%s': %s", safe_name, e, exc_info=True)
             return jsonify({"message": f"Processing failed: {e}"}), 500
 
@@ -396,6 +406,43 @@ def register_rag_ui(app, config_path=None):
             return jsonify({"sources": rag.list_sources(language=lang)})
         except Exception as e:
             return jsonify({"message": f"Failed to list sources: {e}"}), 500
+
+    # ── Dimension mismatch API ────────────────────────────────
+
+    @bp.route("/api/documents/dimension-check", methods=["GET"])
+    def dimension_check():
+        """Check if the embedding model dimension matches the collection."""
+        try:
+            rag = _get_rag()
+            mismatch = rag.check_dimension_mismatch()
+            return jsonify({"mismatch": mismatch})
+        except Exception as e:
+            return jsonify({"message": f"Check failed: {e}"}), 500
+
+    @bp.route("/api/documents/reindex-all", methods=["POST"])
+    def reindex_all_documents():
+        """Recreate the collection and re-process all saved documents from disk.
+
+        Used after changing the embedding model (dimension mismatch).
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        if data.get("confirm") != "REINDEX_ALL":
+            return jsonify({"message": "Confirmation required."}), 400
+
+        try:
+            rag = _get_rag()
+            result = rag.reindex_all_documents(
+                documents_dir=str(_documents_dir),
+                extract_text_fn=_extract_text,
+                clean_pdf_fn=rag.clean_pdf_text,
+            )
+            return jsonify({
+                "message": f"Re-indexed {result['indexed']}/{result['total']} documents",
+                **result,
+            })
+        except Exception as e:
+            logger.error("Re-index all failed: %s", e, exc_info=True)
+            return jsonify({"message": f"Failed: {e}"}), 500
 
     @bp.route("/api/documents/upload-progress")
     def upload_progress():

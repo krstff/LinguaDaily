@@ -37,6 +37,8 @@
     <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
       <button type="submit" class="btn btn-primary">Save Settings</button>
       <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+      <button type="button" class="btn btn-secondary" id="check-dim-btn" onclick="checkDimension()">Check Embedding Dimension</button>
+      <button type="button" class="btn btn-danger" id="reindex-all-btn" style="display:none;" onclick="confirmReindexAll()">Recreate Collection &amp; Re-index All</button>
     </div>
   </form>
 
@@ -165,7 +167,7 @@
   <tbody id="sources-tbody">
     {% for src in sources %}
     <tr data-language="{{ src.language | default('') }}">
-      <td>{{ src.source_file }}</td>
+      <td>{{ src.source_file }}<span class="dim-mismatch-warning" style="display:none;color:var(--red);font-size:12px;margin-left:6px;" title="Embedding dimension mismatch — re-index this document">⚠</span></td>
       <td><span class="badge badge-active">{{ src.language }}</span></td>
       <td>{{ src.chunk_count }}</td>
       <td>
@@ -476,7 +478,7 @@ async function refreshTable() {
 
     tbody.innerHTML = data.sources.map(src => `
       <tr data-language="${src.language || ''}">
-        <td>${escHtml(src.source_file)}</td>
+        <td>${escHtml(src.source_file)}<span class="dim-mismatch-warning" style="display:none;color:var(--red);font-size:12px;margin-left:6px;" title="Embedding dimension mismatch — re-index this document">⚠</span></td>
         <td><span class="badge badge-active">${escHtml(src.language)}</span></td>
         <td>${src.chunk_count}</td>
         <td>${(src.tags || []).map(t => escHtml(t)).join(', ') || '<span style="color:var(--fg_dim)">—</span>'}</td>
@@ -549,6 +551,70 @@ document.getElementById('query-form').addEventListener('submit', async function(
     showToast('Network error during query', true);
   }
 });
+
+// ── Dimension check + recreate ─────────────────────────────
+async function checkDimension() {
+  const btn = document.getElementById('check-dim-btn');
+  const reindexBtn = document.getElementById('reindex-all-btn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+
+  try {
+    const res = await fetch('/api/documents/dimension-check');
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.message || 'Check failed', true);
+      return;
+    }
+
+    const warnings = document.querySelectorAll('.dim-mismatch-warning');
+    const mismatch = data.mismatch;
+    if (mismatch && mismatch.mismatch) {
+      // Show warning icons on every document row + the re-index-all button
+      warnings.forEach(w => w.style.display = 'inline');
+      reindexBtn.style.display = 'inline-block';
+      showToast(`Dimension mismatch (${mismatch.existing_dim} → ${mismatch.new_dim}) — re-index documents to fix`, true);
+    } else {
+      // Hide everything
+      warnings.forEach(w => w.style.display = 'none');
+      reindexBtn.style.display = 'none';
+      showToast('Embedding dimension matches — all good', false);
+    }
+  } catch (err) {
+    showToast('Network error during check', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check Embedding Dimension';
+  }
+}
+
+async function confirmReindexAll() {
+  if (!confirm(
+    'This will delete the Qdrant collection and re-process all saved documents\n' +
+    'from disk using the current embedding model. Files without text will be skipped.\n\n' +
+    'Continue?'
+  )) return;
+
+  showToast('Re-indexing all documents…', false);
+  try {
+    const res = await fetch('/api/documents/reindex-all', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: 'REINDEX_ALL'}),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(data.message, false);
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      showToast(data.message || 'Re-index failed', true);
+    }
+  } catch (err) {
+    showToast('Network error during re-index', true);
+  }
+}
 
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '\\"'); }

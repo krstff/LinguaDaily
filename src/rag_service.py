@@ -14,6 +14,14 @@ Usage:
     chunks = rag.get_contextual_chunks(
         "What is the subjunctive in Spanish?", language="es", top_k=5
     )
+
+Note on changing embedding models:
+    After switching to a different embedding model (which may produce vectors of
+    a different dimension), run the "Check Embedding Dimension" button on the
+    Documents page.  If a mismatch is detected, re-index affected documents via
+    the ↻ Re-index button so their chunks are re-embedded with the new model.
+    Upsert and query operations are blocked when a mismatch is detected to
+    prevent silent data corruption.
 """
 
 import hashlib
@@ -24,6 +32,24 @@ import time
 from typing import Optional
 
 logger = logging.getLogger("lingua")
+
+
+class DimensionMismatchError(Exception):
+    """Raised when the embedding model dimension doesn't match the Qdrant collection.
+
+    The caller must decide whether to recreate the collection (losing all data)
+    or update the config to use a compatible model.
+    """
+
+    def __init__(self, existing_dim: int, new_dim: int, collection_name: str):
+        self.existing_dim = existing_dim
+        self.new_dim = new_dim
+        self.collection_name = collection_name
+        super().__init__(
+            f"Embedding dimension mismatch on collection '{collection_name}': "
+            f"existing={existing_dim}, model={new_dim}. "
+            f"Re-index documents or revert the embedding model to proceed."
+        )
 
 
 # ── Upload progress tracker (shared across all RAGService instances) ──
@@ -127,6 +153,9 @@ class RAGService:
         """Ensure the Qdrant collection exists, probing embeddings only when needed.
 
         Called by upsert/query methods — NOT during page loads or stats reads.
+
+        Raises DimensionMismatchError if the current model's dimension doesn't match
+        the existing collection (the caller must explicitly decide to recreate).
         """
         from qdrant_client.http import models
 
@@ -145,26 +174,14 @@ class RAGService:
                 ),
             )
         else:
-            # Collection exists — check dimension only if we can probe quickly
-            info = client.get_collection(self.collection_name)
-            existing_dim = info.config.params.vectors.size
-            try:
-                dim = self._probe_embedding_dimension()
-                if existing_dim != dim:
-                    logger.warning(
-                        "Dimension mismatch: collection=%d, model=%d — recreating '%s'",
-                        existing_dim, dim, self.collection_name,
-                    )
-                    client.delete_collection(self.collection_name)
-                    client.create_collection(
-                        collection_name=self.collection_name,
-                        vectors_config=models.VectorParams(
-                            size=dim, distance=models.Distance.COSINE
-                        ),
-                    )
-            except Exception as e:
-                logger.debug("Skipping dimension check (embedding API unavailable): %s", e)
-                # Keep existing collection — dim is fine if it was working before
+            # Collection exists — delegate dimension check to shared method
+            mismatch = self.check_dimension_mismatch()
+            if mismatch:
+                raise DimensionMismatchError(
+                    existing_dim=mismatch["existing_dim"],
+                    new_dim=mismatch["new_dim"],
+                    collection_name=self.collection_name,
+                )
 
     def _probe_embedding_dimension(self) -> int:
         """Probe the embedding dimension by sending a test vector."""
@@ -691,7 +708,7 @@ class RAGService:
                 collection_name=self.collection_name,
                 limit=batch_size,
                 offset=offset,
-                with_payload=["language", "source_file", "tags", "chunk_index"],
+                with_payload=["language", "source_file", "source_id", "tags", "chunk_index"],
                 with_vectors=False,
                 scroll_filter=search_filter,
             )
@@ -754,6 +771,7 @@ class RAGService:
                 if source_file not in sources:
                     sources[source_file] = {
                         "source_file": source_file,
+                        "source_id": payload.get("source_id", ""),
                         "language": lang,
                         "chunk_count": 0,
                         "tags": list(set(tags)) if tags else [],
@@ -763,6 +781,174 @@ class RAGService:
             logger.warning("Failed to list sources: %s", e)
 
         return list(sources.values())
+
+    def check_dimension_mismatch(self) -> Optional[dict]:
+        """Check whether the current embedding model's dimension matches the collection.
+
+        Returns None if everything is fine (or collection doesn't exist yet).
+        Returns a dict with mismatch details if there is a problem:
+            {"mismatch": True, "existing_dim": 768, "new_dim": 1024}
+        """
+        client = self._get_qdrant_client()
+        collections = client.get_collections()
+        names = [c.name for c in collections.collections]
+
+        if self.collection_name not in names:
+            return None  # no collection yet — nothing to mismatch against
+
+        info = client.get_collection(self.collection_name)
+        existing_dim = info.config.params.vectors.size
+
+        try:
+            dim = self._probe_embedding_dimension()
+        except Exception as e:
+            logger.debug("Could not probe dimension for check: %s", e)
+            return None  # can't determine — assume OK
+
+        if existing_dim != dim:
+            return {"mismatch": True, "existing_dim": existing_dim, "new_dim": dim}
+        return None
+
+    # ── Collection recreation + full re-index ───────────────────
+
+    def collect_source_metadata(self) -> dict[str, dict]:
+        """Scroll all chunks and build a per-source_file metadata map.
+
+        Returns:
+            {source_file: {"language": str, "tags": list[str], "source_id": str}}
+        """
+        client = self._get_qdrant_client()
+
+        source_map: dict[str, dict] = {}
+        offset = None
+        batch_size = 256
+
+        while True:
+            scroll_result = client.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["language", "source_file", "source_id", "tags"],
+                with_vectors=False,
+            )
+            points = getattr(scroll_result, "points", scroll_result[0]) if isinstance(scroll_result, tuple) else getattr(scroll_result, "points", [])
+            if not points:
+                break
+
+            for pt in points:
+                payload = getattr(pt, "payload", {}) or {}
+                sf = payload.get("source_file")
+                if sf and sf not in source_map:
+                    source_map[sf] = {
+                        "language": payload.get("language", ""),
+                        "tags": payload.get("tags", []),
+                        "source_id": payload.get("source_id", ""),
+                    }
+
+            last = points[-1]
+            offset = getattr(last, "id", None)
+            if len(points) < batch_size:
+                break
+
+        return source_map
+
+    def recreate_collection(self) -> bool:
+        """Delete and recreate the Qdrant collection with the current model's dimension.
+
+        WARNING: Destroys ALL indexed documents. Call only after user confirmation.
+        """
+        client = self._get_qdrant_client()
+        dim = self._probe_embedding_dimension()
+
+        collections = client.get_collections()
+        names = [c.name for c in collections.collections]
+
+        if self.collection_name in names:
+            logger.warning("Recreating collection '%s' — all documents will be lost", self.collection_name)
+            client.delete_collection(self.collection_name)
+
+        from qdrant_client.http import models
+        client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(
+                size=dim, distance=models.Distance.COSINE
+            ),
+        )
+        logger.info("Collection '%s' recreated with dim=%d", self.collection_name, dim)
+        return True
+
+    def reindex_all_documents(
+        self,
+        documents_dir: str,
+        extract_text_fn,
+        clean_pdf_fn = None,
+    ) -> dict:
+        """Re-index all saved documents from disk after a model/dimension change.
+
+        Steps:
+          1. Save per-file metadata (language, tags) from existing Qdrant chunks
+          2. Recreate the collection with current model's dimension
+          3. Re-process every file in documents_dir using saved metadata
+
+        Parameters
+        ----------
+        documents_dir : str
+            Path to the directory containing saved source files.
+        extract_text_fn : callable(path) -> str
+            Function to extract text from a file (e.g. rag_ui._extract_text).
+        clean_pdf_fn : callable(text) -> str, optional
+            Function to clean PDF extraction artifacts. Defaults to self.clean_pdf_text.
+
+        Returns
+        -------
+        dict with keys: indexed, total, errors
+        """
+        if clean_pdf_fn is None:
+            clean_pdf_fn = self.clean_pdf_text
+
+        # Step 1 — save metadata before destroying the collection
+        source_metadata = self.collect_source_metadata()
+
+        # Step 2 — recreate the collection
+        self.recreate_collection()
+
+        # Step 3 — re-process every file on disk
+        from pathlib import Path
+        doc_dir = Path(documents_dir)
+        files_to_process = sorted(doc_dir.iterdir())
+        total = len(files_to_process)
+        success_count = 0
+        errors = []
+
+        for filepath in files_to_process:
+            if not filepath.is_file():
+                continue
+            filename = filepath.name
+            meta = source_metadata.get(filename, {"language": "", "tags": [], "source_id": ""})
+
+            try:
+                text = extract_text_fn(filepath)
+                if filename.lower().endswith(".pdf"):
+                    text = clean_pdf_fn(text)
+                if not text.strip():
+                    errors.append((filename, "No text extracted"))
+                    continue
+
+                source_id = meta.get("source_id", "") or hashlib.sha256(filename.encode()).hexdigest()[:16]
+                chunks = self.chunk_text(text, source_id=source_id)
+                upserted = self.upsert_chunks(
+                    chunks=chunks,
+                    language=meta.get("language", ""),
+                    source_file=filename,
+                    tags=meta.get("tags", []),
+                )
+                success_count += 1
+                logger.info("Re-indexed '%s' — %d chunks (lang=%s)", filename, upserted, meta.get("language"))
+            except Exception as e:
+                logger.error("Failed to re-index '%s': %s", filename, e, exc_info=True)
+                errors.append((filename, str(e)))
+
+        return {"indexed": success_count, "total": total, "errors": errors}
 
     def get_config(self) -> dict:
         """Return current RAG configuration for the UI."""
@@ -796,7 +982,6 @@ class RAGService:
 # ── Convenience singleton ───────────────────────────────────────────
 
 _default_service: Optional[RAGService] = None
-
 
 def get_rag_service() -> RAGService:
     """Get or create the default RAG service instance."""
