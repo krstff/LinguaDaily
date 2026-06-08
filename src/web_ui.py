@@ -35,7 +35,7 @@ from src.config import (
 )
 
 try:
-    from flask import Flask, jsonify, render_template, request
+    from flask import Flask, jsonify, render_template, request, send_from_directory
 except ImportError:
     print("Error: flask is required. Install with: pip install flask", file=sys.stderr)
     sys.exit(1)
@@ -105,6 +105,11 @@ def create_app(config_path=None, log_file=None, password=None,
 
     app = Flask(__name__, template_folder=_TEMPLATE_DIR)
     app.secret_key = "lingua-webui"  # minimal, no sessions used
+
+    # ── Favicon (icon.png from templates directory) ──
+    @app.route("/favicon.png")
+    def favicon():
+        return send_from_directory(_TEMPLATE_DIR, "icon.png", mimetype="image/png")
 
     # ── Global context: Kiwix languages for profile dropdowns ──
     @app.context_processor
