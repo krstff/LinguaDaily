@@ -264,32 +264,14 @@ def register_rag_ui(app, config_path=None):
                 status="extracting",
                 message=f"Extracting text from '{safe_name}'…",
             )
-            text = _extract_text(dest)
 
-            # Clean up PDF extraction artifacts before chunking
-            if dest.suffix.lower() == ".pdf":
-                text = rag.clean_pdf_text(text)
-
-            if not text.strip():
-                os.remove(str(dest))
-                return jsonify({"message": "No text extracted from file"}), 400
-
-            # Update progress: chunking
-            rag._set_progress(
-                safe_name,
-                status="chunking",
-                message=f"Chunking text ({len(text):,} chars)…",
-            )
-
-            source_id = hashlib.sha256(safe_name.encode()).hexdigest()[:16]
-            chunks = rag.chunk_text(text, source_id=source_id)
-            upserted = rag.upsert_chunks(
-                chunks=chunks,
+            upserted = rag.ingest_file(
+                filepath=dest,
                 language=language,
-                source_file=safe_name,
                 tags=tags,
             )
 
+            source_id = hashlib.sha256(safe_name.encode()).hexdigest()[:16]
             return jsonify({
                 "message": f"Uploaded '{safe_name}' — {upserted} chunks indexed",
                 "source_id": source_id,
@@ -297,6 +279,10 @@ def register_rag_ui(app, config_path=None):
                 "language": language,
             })
 
+        except ValueError as e:
+            # No text extracted — clean up the saved file
+            os.remove(str(dest))
+            return jsonify({"message": str(e)}), 400
         except ImportError as e:
             return jsonify({"message": f"Missing dependency: {e}"}), 500
         except Exception as e:
@@ -366,16 +352,9 @@ def register_rag_ui(app, config_path=None):
                     rag.delete_by_source(s["source_id"])
                     break
 
-            text = _extract_text(raw_path)
-            # Clean up PDF extraction artifacts before chunking
-            if raw_path.suffix.lower() == ".pdf":
-                text = rag.clean_pdf_text(text)
-            source_id = hashlib.sha256(source_file.encode()).hexdigest()[:16]
-            chunks = rag.chunk_text(text, source_id=source_id)
-            upserted = rag.upsert_chunks(
-                chunks=chunks,
+            upserted = rag.ingest_file(
+                filepath=raw_path,
                 language=language,
-                source_file=source_file,
                 tags=tags,
             )
 
@@ -431,11 +410,7 @@ def register_rag_ui(app, config_path=None):
 
         try:
             rag = _get_rag()
-            result = rag.reindex_all_documents(
-                documents_dir=str(_documents_dir),
-                extract_text_fn=_extract_text,
-                clean_pdf_fn=rag.clean_pdf_text,
-            )
+            result = rag.reindex_all_documents(documents_dir=str(_documents_dir))
             return jsonify({
                 "message": f"Re-indexed {result['indexed']}/{result['total']} documents",
                 **result,
@@ -479,35 +454,4 @@ def _sanitize_filename(filename: str) -> str:
     return Path(safe).name
 
 
-def _extract_text(filepath: Path) -> str:
-    """Extract text from a file based on extension."""
-    ext = filepath.suffix.lower()
 
-    if ext == ".txt":
-        return filepath.read_text(encoding="utf-8", errors="replace")
-
-    elif ext == ".pdf":
-        try:
-            import pdfplumber
-        except ImportError:
-            raise ImportError("pdfplumber required for PDF files. Install with: pip install pdfplumber")
-
-        text_parts = []
-        with pdfplumber.open(str(filepath)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-        return "\n\n".join(text_parts)
-
-    elif ext == ".docx":
-        try:
-            from docx import Document
-        except ImportError:
-            raise ImportError("python-docx required for DOCX files. Install with: pip install python-docx")
-
-        doc = Document(str(filepath))
-        return "\n\n".join(para.text for para in doc.paragraphs if para.text.strip())
-
-    else:
-        raise ValueError(f"Unsupported file type: {ext}")

@@ -29,6 +29,7 @@ import logging
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("lingua")
@@ -314,6 +315,81 @@ class RAGService:
 
     # ── PDF text cleanup ──────────────────────────────────────────
 
+    # ── Text extraction ───────────────────────────────────────────
+
+    @staticmethod
+    def extract_text(filepath: Path) -> str:
+        """Extract text from a file based on extension."""
+        ext = filepath.suffix.lower()
+
+        if ext == ".txt":
+            return filepath.read_text(encoding="utf-8", errors="replace")
+
+        elif ext == ".pdf":
+            try:
+                import pdfplumber
+            except ImportError:
+                raise ImportError(
+                    "pdfplumber required for PDF files. Install with: pip install pdfplumber"
+                )
+
+            text_parts = []
+            with pdfplumber.open(str(filepath)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
+            return "\n\n".join(text_parts)
+
+        elif ext == ".docx":
+            try:
+                from docx import Document
+            except ImportError:
+                raise ImportError(
+                    "python-docx required for DOCX files. Install with: pip install python-docx"
+                )
+
+            doc = Document(str(filepath))
+            return "\n\n".join(
+                para.text for para in doc.paragraphs if para.text.strip()
+            )
+
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+
+    # ── Ingest (full pipeline from file) ───────────────────────────
+
+    def ingest_file(
+        self,
+        filepath: str | Path,
+        language: str = "",
+        tags: list[str] = None,
+    ) -> int:
+        """Full pipeline: extract text → clean PDF → chunk → upsert.
+
+        Replaces the duplicated extract/clean/validate/chunk/upsert sequence
+        that was scattered across rag_ui and reindex_all_documents.
+
+        Raises ValueError if no text could be extracted from the file.
+
+        Returns the number of chunks upserted.
+        """
+        filepath = Path(filepath)
+        text = self.extract_text(filepath)
+
+        if filepath.suffix.lower() == ".pdf":
+            text = self.clean_pdf_text(text)
+
+        if not text.strip():
+            raise ValueError(f"No text extracted from '{filepath.name}'")
+
+        return self.ingest_document(
+            text=text,
+            source_file=filepath.name,
+            language=language,
+            tags=tags,
+        )
+
     @staticmethod
     def clean_pdf_text(text: str) -> str:
         """Remove common PDF extraction artifacts from raw text.
@@ -435,6 +511,46 @@ class RAGService:
             idx += 1
 
         return chunks
+
+    # ── Ingest (chunk + upsert combined) ──────────────────────────
+
+    def ingest_document(
+        self,
+        text: str,
+        source_file: str,
+        language: str = "",
+        tags: list[str] = None,
+    ) -> int:
+        """Chunk and upsert a document's text into Qdrant in one call.
+
+        This is the unified entry point that replaces the duplicated
+        source_id → chunk_text → upsert_chunks sequence scattered across
+        rag_ui, reindex_all_documents, and ocr_pdf scripts.
+
+        Parameters
+        ----------
+        text : str
+            The full extracted (and optionally cleaned) text.
+        source_file : str
+            Filename used to derive a deterministic source_id.
+        language : str
+            Language tag stored in the payload.
+        tags : list[str] or None
+            Optional tags stored in the payload.
+
+        Returns
+        -------
+        int
+            Number of chunks upserted.
+        """
+        source_id = hashlib.sha256(source_file.encode()).hexdigest()[:16]
+        chunks = self.chunk_text(text, source_id=source_id)
+        return self.upsert_chunks(
+            chunks=chunks,
+            language=language,
+            source_file=source_file,
+            tags=tags,
+        )
 
     # ── Upsert / Indexing ─────────────────────────────────────────
 
@@ -877,12 +993,7 @@ class RAGService:
         logger.info("Collection '%s' recreated with dim=%d", self.collection_name, dim)
         return True
 
-    def reindex_all_documents(
-        self,
-        documents_dir: str,
-        extract_text_fn,
-        clean_pdf_fn = None,
-    ) -> dict:
+    def reindex_all_documents(self, documents_dir: str) -> dict:
         """Re-index all saved documents from disk after a model/dimension change.
 
         Steps:
@@ -890,22 +1001,10 @@ class RAGService:
           2. Recreate the collection with current model's dimension
           3. Re-process every file in documents_dir using saved metadata
 
-        Parameters
-        ----------
-        documents_dir : str
-            Path to the directory containing saved source files.
-        extract_text_fn : callable(path) -> str
-            Function to extract text from a file (e.g. rag_ui._extract_text).
-        clean_pdf_fn : callable(text) -> str, optional
-            Function to clean PDF extraction artifacts. Defaults to self.clean_pdf_text.
-
         Returns
         -------
         dict with keys: indexed, total, errors
         """
-        if clean_pdf_fn is None:
-            clean_pdf_fn = self.clean_pdf_text
-
         # Step 1 — save metadata before destroying the collection
         source_metadata = self.collect_source_metadata()
 
@@ -927,23 +1026,15 @@ class RAGService:
             meta = source_metadata.get(filename, {"language": "", "tags": [], "source_id": ""})
 
             try:
-                text = extract_text_fn(filepath)
-                if filename.lower().endswith(".pdf"):
-                    text = clean_pdf_fn(text)
-                if not text.strip():
-                    errors.append((filename, "No text extracted"))
-                    continue
-
-                source_id = meta.get("source_id", "") or hashlib.sha256(filename.encode()).hexdigest()[:16]
-                chunks = self.chunk_text(text, source_id=source_id)
-                upserted = self.upsert_chunks(
-                    chunks=chunks,
+                upserted = self.ingest_file(
+                    filepath=filepath,
                     language=meta.get("language", ""),
-                    source_file=filename,
                     tags=meta.get("tags", []),
                 )
                 success_count += 1
                 logger.info("Re-indexed '%s' — %d chunks (lang=%s)", filename, upserted, meta.get("language"))
+            except ValueError:
+                errors.append((filename, "No text extracted"))
             except Exception as e:
                 logger.error("Failed to re-index '%s': %s", filename, e, exc_info=True)
                 errors.append((filename, str(e)))
