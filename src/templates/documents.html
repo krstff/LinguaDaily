@@ -294,6 +294,11 @@ async function testConnection() {
 // ── Upload handler with progress tracking ─────────────────
 let _progressPollTimer = null;
 
+function sanitizeFilename(name) {
+  // Mirror server-side _sanitize_filename: keep word chars, dots, hyphens
+  return name.replace(/[^\w.\-]/g, '_');
+}
+
 function startProgressPoll(fileName) {
   const container = document.getElementById('upload-progress-container');
   const bar = document.getElementById('upload-progress-bar');
@@ -355,7 +360,7 @@ document.getElementById('upload-form').addEventListener('submit', async function
   status.textContent = 'Uploading & indexing…';
 
   const fileInput = document.getElementById('upload-file');
-  const fileName = fileInput.files[0] ? fileInput.files[0].name : '';
+  const fileName = fileInput.files[0] ? sanitizeFilename(fileInput.files[0].name) : '';
 
   // Start progress polling
   startProgressPoll(fileName);
@@ -422,6 +427,11 @@ function closeReindexModal() {
 document.getElementById('reindex-form').addEventListener('submit', async function(e) {
   e.preventDefault();
   const sourceFile = document.getElementById('reindex-source-file').value;
+  closeReindexModal();
+
+  // Start progress polling (source_file from Qdrant is already sanitized)
+  startProgressPoll(sourceFile);
+
   const formData = new FormData(this);
 
   try {
@@ -433,13 +443,15 @@ document.getElementById('reindex-form').addEventListener('submit', async functio
 
     if (res.ok) {
       showToast(data.message, false);
-      closeReindexModal();
-      setTimeout(() => location.reload(), 800);
+      stopProgressPoll();
+      setTimeout(() => location.reload(), 1200);
     } else {
       showToast(data.message || 'Re-index failed', true);
+      stopProgressPoll();
     }
   } catch (err) {
     showToast('Network error during re-index', true);
+    stopProgressPoll();
   }
 });
 

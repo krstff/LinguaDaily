@@ -267,6 +267,7 @@ def register_rag_ui(app, config_path=None):
 
             upserted = rag.ingest_file(
                 filepath=dest,
+                source_file=safe_name,
                 language=language,
                 tags=tags,
             )
@@ -352,8 +353,16 @@ def register_rag_ui(app, config_path=None):
                     rag.delete_by_source(s["source_id"])
                     break
 
+            # Start progress tracking (mirrors upload flow)
+            rag._set_progress(
+                source_file,
+                status="extracting",
+                message=f"Re-indexing '{source_file}'…",
+            )
+
             upserted = rag.ingest_file(
                 filepath=raw_path,
+                source_file=source_file,
                 language=language,
                 tags=tags,
             )

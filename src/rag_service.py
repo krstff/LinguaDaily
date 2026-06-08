@@ -364,11 +364,21 @@ class RAGService:
         filepath: str | Path,
         language: str = "",
         tags: list[str] = None,
+        source_file: str = "",
     ) -> int:
         """Full pipeline: extract text → clean PDF → chunk → upsert.
 
         Replaces the duplicated extract/clean/validate/chunk/upsert sequence
         that was scattered across rag_ui and reindex_all_documents.
+
+        Parameters
+        ----------
+        filepath : str or Path
+            Path to the file on disk.
+        source_file : str, optional
+            Name used for progress tracking and Qdrant payload.
+            Defaults to filepath.name.  Pass the sanitized filename from
+            the UI layer so progress keys match what the browser polls for.
 
         Raises ValueError if no text could be extracted from the file.
 
@@ -385,7 +395,7 @@ class RAGService:
 
         return self.ingest_document(
             text=text,
-            source_file=filepath.name,
+            source_file=source_file or filepath.name,
             language=language,
             tags=tags,
         )
