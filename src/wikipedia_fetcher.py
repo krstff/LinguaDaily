@@ -177,7 +177,7 @@ class KiwixClient:
 
     # ── Random article (via /random endpoint) ────────────────────
 
-    def get_random_article(self, max_attempts=10, min_words=250, max_words=600):
+    def get_random_article(self, max_attempts=20, min_words=250, max_words=600):
         """
         Fetch a random readable article suitable for language learning.
 
@@ -394,6 +394,15 @@ def extract_wiki_text(html, skip_infoboxes=True):
                             table.decompose()
             except Exception:
                 pass
+
+    # Ensure heading elements (h2, h3, etc.) get their own paragraph boundary
+    # by inserting blank lines before and after them. This way get_text(separator="\n")
+    # will produce \n\n around headings, creating proper paragraph breaks.
+    for tag in content.find_all(["h2", "h3", "h4", "h5", "h6"]):
+        if tag.previous_sibling is None or not isinstance(tag.previous_sibling, str) or not tag.previous_sibling.strip():
+            tag.insert_before(soup.new_string("\n"))
+        if tag.next_sibling is None or not isinstance(tag.next_sibling, str) or not tag.next_sibling.strip():
+            tag.insert_after(soup.new_string("\n"))
 
     # Get clean text
     text = content.get_text(separator="\n", strip=True)

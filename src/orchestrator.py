@@ -93,6 +93,9 @@ def clean_content(text):
             text = text[:idx]
             break
 
+    # ── Remove parenthetical content (birth dates, disambiguation notes, etc.) ──
+    text = re.sub(r'\([^)]*\)', '', text)
+
     # ── Fix missing spaces from adjacent wiki links ──
     # lower+Upper ("vergebenund" → "vergeben und")
     text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
@@ -113,15 +116,38 @@ def clean_content(text):
             cleaned_paragraphs.append(para.strip())
             continue
 
-        joined_lines = [lines[0]]
-        for line in lines[1:]:
-            prev = joined_lines[-1]
-            # Join if previous line does NOT end with sentence-ending punctuation
-            if not re.search(r'[.!?\"\)\»]$' , prev):
-                joined_lines[-1] = prev + " " + line
+        # Build paragraph: join wiki-link-broken lines with spaces,
+        # keep sentence boundaries and section headers on separate lines.
+        parts = []  # list of (text, break_after) tuples
+        for i, line in enumerate(lines):
+            if i == 0:
+                parts.append((line, False))
             else:
-                joined_lines.append(line)
-        cleaned_paragraphs.append(" ".join(joined_lines))
+                prev_text = parts[-1][0]
+                prev_ends_sentence = bool(re.search(r'[.!?"\)\»]$' , prev_text))
+                # Section header heuristic: first line of block, short (≤6 words),
+                # doesn't look like a wiki link fragment (not "The", "A", etc.)
+                is_header = (i == 1 and len(prev_text.split()) <= 6 and
+                             not prev_text.lower().startswith(("the ", "a ", "an ", "(")) and
+                             not prev_text.lower().endswith((" in", " on", " at", " of", " by")) and
+                             (len(lines) > 1 and lines[1][0].isupper()))
+                if prev_ends_sentence or is_header:
+                    # Mark previous line to break after it, then start new content
+                    parts[-1] = (prev_text, True)
+                    parts.append((line, False))
+                else:
+                    # Join with space (wiki link fragment continuation)
+                    parts[-1] = (prev_text + " " + line, False)
+        # Now build the paragraph text from parts
+        para_lines = []
+        for idx, (txt, break_after) in enumerate(parts):
+            if idx == 0:
+                para_lines.append(txt)
+            elif parts[idx - 1][1]:  # previous had break_after=True
+                para_lines.append(txt)
+            else:
+                para_lines[-1] += " " + txt
+        cleaned_paragraphs.append("\n".join(para_lines))
 
     text = '\n\n'.join(cleaned_paragraphs)
 
