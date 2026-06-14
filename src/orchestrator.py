@@ -240,6 +240,13 @@ class Orchestrator:
         content = clean_content(content)
         word_count = len(content.split())
 
+        # Check min_words after cleaning (parentheses removal, ref stripping, etc.
+        # can reduce word count significantly)
+        min_words = article_filter.get("min_words", 50) if article_filter else 50
+        if word_count < min_words:
+            logger.warning("[%s] Post-clean word count %d below minimum %d — content may be too short",
+                           profile_name, word_count, min_words)
+
         # Re-enforce max_words after cleaning (cleaning can inflate word count
         # by splitting merged tokens from wiki links / adjacent capitalized words)
         max_words = article_filter.get("max_words") if article_filter else None

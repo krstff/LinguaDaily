@@ -23,6 +23,7 @@ from config import (
     KIWIX_DEFAULT_BASE_URL,
     KIWIX_DEFAULT_ZIM_NAME,
     ARTICLE_FILTER_DEFAULTS,
+    CLEAN_WORD_BUFFER,
 )
 
 
@@ -243,8 +244,13 @@ class KiwixClient:
 
             word_count = len(text.split())
 
+            # Add buffer: cleaning (parentheses removal, reference stripping, etc.)
+            # removes words on average. Raise the minimum so that after cleaning
+            # we still deliver at least min_words.
+            effective_min = int(min_words / (1 - CLEAN_WORD_BUFFER))
+
             # Too short — skip
-            if word_count < min_words:
+            if word_count < effective_min:
                 continue
 
             html_title = _get_title_from_html(article_resp.text) or title

@@ -74,6 +74,7 @@ LOG_FILE    = PROJECT_DIR / "lingua.log"
 KIWIX_DEFAULT_BASE_URL = "http://192.168.100.52:8080"
 KIWIX_DEFAULT_ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
 ARTICLE_FILTER_DEFAULTS = {"min_words": 250, "max_words": 600}
+CLEAN_WORD_BUFFER = 0.25   # fraction of words lost during cleaning (parens, refs, etc.)
 
 # ── News feeds (fallback catalogue) ────────────────────────────
 NEWS_FEED_CATALOGUE: dict[str, dict[str, list[str]]] = {
