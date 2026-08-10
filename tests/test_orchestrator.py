@@ -301,3 +301,124 @@ class TestOrchestratorCLI:
 
         output = capsys.readouterr().out
         assert "Task Execution Complete" in output
+
+
+class TestOrchestratorSimplification:
+    """Test CEFR-level text simplification (step 2.5)."""
+
+    @pytest.mark.asyncio
+    async def test_simplification_applied_when_level_set(self, sample_config):
+        from src.orchestrator import Orchestrator
+
+        config = dict(sample_config[0])
+        config["profiles"] = dict(config["profiles"])
+        config["profiles"]["test_user"] = dict(config["profiles"]["test_user"])
+        config["profiles"]["test_user"]["target_level"] = "B1"
+
+        mock_client = MagicMock()
+        mock_client.simplify_language.return_value = "Vereinfachter Text hier."
+        mock_client.translate.return_value = "Simplified text here."
+        mock_client.extract_vocab.return_value = []
+        mock_client.profile_name = "test_user"
+
+        with patch("fetch_router.fetch_article", return_value=("Test", "Originaler langer Text.")), \
+             patch("llama_client.LlamaClient", return_value=mock_client):
+
+            orch = Orchestrator(config=config)
+            lesson = await orch.run_lesson("test_user")
+
+        assert lesson is not None
+        # simplify_language should have been called
+        mock_client.simplify_language.assert_called_once()
+        call_kwargs = mock_client.simplify_language.call_args[1]
+        assert call_kwargs["level"] == "B1"
+        # TTS and translation should receive simplified text, not original
+        assert lesson["target_level"] == "B1"
+
+    @pytest.mark.asyncio
+    async def test_simplification_skipped_when_original(self, sample_config):
+        from src.orchestrator import Orchestrator
+
+        config = dict(sample_config[0])
+        config["profiles"] = dict(config["profiles"])
+        config["profiles"]["test_user"] = dict(config["profiles"]["test_user"])
+        # target_level not set → defaults to "original"
+
+        mock_client = MagicMock()
+        mock_client.translate.return_value = "Translated."
+        mock_client.extract_vocab.return_value = []
+        mock_client.profile_name = "test_user"
+
+        with patch("fetch_router.fetch_article", return_value=("Test", "Original text.")), \
+             patch("llama_client.LlamaClient", return_value=mock_client):
+
+            orch = Orchestrator(config=config)
+            await orch.run_lesson("test_user")
+
+        # simplify_language should NOT have been called
+        mock_client.simplify_language.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_simplification_fallback_on_failure(self, sample_config):
+        from src.orchestrator import Orchestrator
+
+        config = dict(sample_config[0])
+        config["profiles"] = dict(config["profiles"])
+        config["profiles"]["test_user"] = dict(config["profiles"]["test_user"])
+        config["profiles"]["test_user"]["target_level"] = "A2"
+
+        mock_client = MagicMock()
+        mock_client.simplify_language.return_value = None  # failure
+        mock_client.translate.return_value = "Translated."
+        mock_client.extract_vocab.return_value = []
+        mock_client.profile_name = "test_user"
+
+        with patch("fetch_router.fetch_article", return_value=("Test", "Original text.")), \
+             patch("llama_client.LlamaClient", return_value=mock_client):
+
+            orch = Orchestrator(config=config)
+            lesson = await orch.run_lesson("test_user")
+
+        assert lesson is not None
+        # Should fall back to original content — translation still called
+        mock_client.translate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_simplification_skipped_without_llm(self, sample_config):
+        from src.orchestrator import Orchestrator
+
+        config = dict(sample_config[0])
+        del config["llm"]  # no LLM configured
+        config["profiles"] = dict(config["profiles"])
+        config["profiles"]["test_user"] = dict(config["profiles"]["test_user"])
+        config["profiles"]["test_user"]["target_level"] = "B1"
+
+        with patch("fetch_router.fetch_article", return_value=("Test", "Text.")):
+            orch = Orchestrator(config=config)
+            lesson = await orch.run_lesson("test_user")
+
+        assert lesson is not None
+        assert lesson["target_level"] == "B1"
+
+    @pytest.mark.asyncio
+    async def test_target_level_in_lesson_dict(self, sample_config):
+        from src.orchestrator import Orchestrator
+
+        config = dict(sample_config[0])
+        config["profiles"] = dict(config["profiles"])
+        config["profiles"]["test_user"] = dict(config["profiles"]["test_user"])
+        config["profiles"]["test_user"]["target_level"] = "C1"
+
+        mock_client = MagicMock()
+        mock_client.simplify_language.return_value = "Text."
+        mock_client.translate.return_value = "Text."
+        mock_client.extract_vocab.return_value = []
+        mock_client.profile_name = "test_user"
+
+        with patch("fetch_router.fetch_article", return_value=("Test", "Original.")), \
+             patch("llama_client.LlamaClient", return_value=mock_client):
+
+            orch = Orchestrator(config=config)
+            lesson = await orch.run_lesson("test_user")
+
+        assert lesson["target_level"] == "C1"

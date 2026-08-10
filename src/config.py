@@ -154,6 +154,9 @@ DEFAULT_LEARNING_LANGUAGE = "de"
 DEFAULT_NATIVE_LANGUAGE   = "en"
 DEFAULT_PROFILE_NAME      = "default"
 
+# ── CEFR reading levels ────────────────────────────────────────
+VALID_CEFR_LEVELS = frozenset({"A1", "A2", "B1", "B2", "C1", "C2", "original"})
+
 
 # ── Shared OpenAI client (singleton) ──────────────────────────────
 #

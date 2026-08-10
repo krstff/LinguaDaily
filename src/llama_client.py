@@ -122,6 +122,18 @@ Preserve the original structure (headings, paragraphs).
 Keep technical terms accurate and natural-sounding.
 Do NOT add commentary, summaries, or notes — only output the translation."""
 
+# ── Text simplification prompt ─────────────────────────────────
+
+SIMPLIFY_SYSTEM_PROMPT = """You are a text simplifier for language learners.
+
+Rewrite the following article in {language_name} at CEFR level {level}.
+Rules:
+- Keep ALL key information, facts, and names from the original.
+- Use vocabulary and grammar appropriate for {level} level learners.
+- Shorten sentences where possible.
+- Keep the same paragraph structure and headings.
+- Do NOT add commentary, summaries, or notes — only output the simplified text."""
+
 VOCAB_SYSTEM_PROMPT = """You are a language-learning tutor extracting vocabulary from a translated article.
 
 The user is learning {source_lang} ({source_lang_name}). Extract useful vocabulary words (nouns, verbs, adjectives,
@@ -362,6 +374,45 @@ class LlamaClient:
         system = TRANSLATE_SYSTEM_PROMPT.format(
             source_lang=source_lang,
             target_lang=target_lang,
+        )
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
+        ]
+
+        return self._chat(messages, model=model, temperature=0.1)
+
+    def simplify_language(
+        self,
+        text: str,
+        language: str = DEFAULT_LEARNING_LANGUAGE,
+        level: str = "B1",
+    ) -> Optional[str]:
+        """
+        Simplify a text to a target CEFR reading level.
+
+        Parameters
+        ----------
+        text : str
+            Text to simplify (in `language`).
+        language : str
+            Language code or name (e.g. "de", "German").
+        level : str
+            Target CEFR level: A1, A2, B1, B2, C1, C2.
+
+        Returns
+        -------
+        str or None
+            Simplified text, or None on failure.
+        """
+        from config import resolve_language_name
+
+        model = self.resolve_model("simplify")
+        language_name = resolve_language_name(language)
+        system = SIMPLIFY_SYSTEM_PROMPT.format(
+            language_name=language_name,
+            level=level.upper(),
         )
 
         messages = [

@@ -326,6 +326,76 @@ class TestHealthCheck:
         assert client.health_check() is False
 
 
+class TestSimplifyLanguage:
+    """Test text simplification to CEFR levels."""
+
+    @patch("openai.OpenAI")
+    def test_simplify_sends_correct_prompt(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Vereinfachter Text."))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        result = client.simplify_language("Komplexer Text.", language="de", level="B1")
+
+        assert result == "Vereinfachter Text."
+        call_args = mock_instance.chat.completions.create.call_args[1]
+        messages = call_args["messages"]
+        assert messages[0]["role"] == "system"
+        assert "B1" in messages[0]["content"]
+        assert "German" in messages[0]["content"]
+        assert messages[1]["content"] == "Komplexer Text."
+        # Should use low temperature for deterministic simplification
+        assert call_args["temperature"] == 0.1
+
+    @patch("openai.OpenAI")
+    def test_simplify_uses_simplify_model(self, MockOpenAI, sample_config):
+        """Should resolve the 'simplify' model task."""
+        from src.llama_client import LlamaClient
+        config = dict(sample_config[0])
+        config["llm"]["simplify_model"] = "simplifier-model"
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Simple."))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        client.simplify_language("text", level="A1")
+
+        call_args = mock_instance.chat.completions.create.call_args[1]
+        assert call_args["model"] == "simplifier-model"
+
+    def test_simplify_returns_none_on_error(self, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        client = LlamaClient(config=config)
+        result = client.simplify_language("test", level="A2")
+        assert result is None
+
+    @patch("openai.OpenAI")
+    def test_simplify_various_levels(self, MockOpenAI, sample_config):
+        """Should handle all CEFR levels."""
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="OK"))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        for level in ["A1", "A2", "B1", "B2", "C1", "C2"]:
+            result = client.simplify_language("text", level=level)
+            assert result == "OK"
+            call_args = mock_instance.chat.completions.create.call_args[1]
+            assert level in call_args["messages"][0]["content"]
+
+
 class TestCLI:
     """Test CLI entry point."""
 

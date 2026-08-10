@@ -7,7 +7,8 @@
     "api_key": "",
     "timeout": 600,
     "translate_model": "gemma-4-26B-language",
-    "tutor_model": "gemma-4-26B-language"
+    "tutor_model": "gemma-4-26B-language",
+    "simplify_model": "gemma-4-26B-language"
   },
 
   "telegram": {
@@ -60,6 +61,7 @@
     "alice": {
       "native_language": "en",
       "learning_language": "de",
+      "target_level": "B1",
       "source": "wikipedia",
       "article_filter": {
         "min_words": 50,

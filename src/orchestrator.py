@@ -263,6 +263,56 @@ class Orchestrator:
 
         return title, content, source, learning_language
 
+    def _simplify(self, profile_name, content, learning_language):
+        """Step 2.5: Simplify content to target CEFR level via LLM.
+
+        Rewrites the article at the learner's target level so that TTS,
+        translation, and vocab extraction all work on the simplified text.
+        Returns the original content unchanged when simplification is not
+        requested or fails.
+        """
+        profile = self.config.get("profiles", {}).get(profile_name, {})
+        target_level = profile.get("target_level", "original")
+
+        if target_level == "original" or not self.config.get("llm"):
+            logger.info("[%s] Simplification disabled (level: %s) — skipping",
+                       profile_name, target_level)
+            return content
+
+        from config import VALID_CEFR_LEVELS
+        level = target_level.upper()
+        if level not in VALID_CEFR_LEVELS or level == "ORIGINAL":
+            logger.warning("[%s] Unknown target_level '%s' — using original text",
+                          profile_name, target_level)
+            return content
+
+        word_count = len(content.split())
+        model = self._get_llama_client(profile_name).resolve_model("simplify")
+        logger.info("[%s] Simplifying to %s (%d words, model: %s)...",
+                    profile_name, level, word_count, model)
+        try:
+            client = self._get_llama_client(profile_name)
+            simplified = client.simplify_language(
+                text=content,
+                language=learning_language,
+                level=level,
+            )
+            if simplified:
+                logger.info("[%s] Simplification complete (%d words output)",
+                           profile_name, len(simplified.split()))
+                return simplified
+        except Exception as e:
+            error_msg = str(e)
+            if any(kw in error_msg.lower() for kw in ("connection", "refused", "timeout",
+                                                      "unreachable", "network")):
+                logger.warning("[%s] Simplification failed: LLM unreachable", profile_name)
+            else:
+                logger.warning("[%s] Simplification failed: %s",
+                              profile_name, error_msg[:100])
+
+        logger.warning("[%s] Falling back to original text", profile_name)
+        return content
+
     def _generate_tts(self, profile_name, content, learning_language):
         """Step 3: Generate TTS audio for the original content."""
         profile = self.config.get("profiles", {}).get(profile_name, {})
@@ -386,7 +436,7 @@ class Orchestrator:
     def _build_lesson(self, profile_name, title, original_content,
                       translated_content,
                       learning_language, native_language,
-                      wav_path, vocab):
+                      wav_path, vocab, target_level=None):
         """Build the final lesson dict."""
         from datetime import datetime
         return {
@@ -397,6 +447,7 @@ class Orchestrator:
             "learning_language": learning_language,
             "learning_language_name": resolve_language_name(learning_language),
             "native_language": native_language,
+            "target_level": target_level,
             "wav_path": wav_path,
             "vocab": vocab,
             "word_count": len(original_content.split()),
@@ -429,6 +480,7 @@ class Orchestrator:
         Steps:
           1. Fetch a random article
           2. Clean content
+          2.5 Simplify to target CEFR level (if configured)
           3+4. Generate TTS audio AND Translate via LLM (in parallel)
           5. Extract vocabulary via LLM and save to markdown
           6. Deliver via callback (if provided)
@@ -468,6 +520,9 @@ class Orchestrator:
                 return None
             title, content, source, fetch_lang = result
 
+            # Step 2.5: Simplify to target CEFR level (if configured)
+            content = self._simplify(profile_name, content, learning_language)
+
             # Step 3+4: TTS and Translate in parallel (both need only original content)
             logger.info("[%s] Running TTS + Translation in parallel...", profile_name)
             wav_path, translated = await asyncio.gather(
@@ -485,9 +540,11 @@ class Orchestrator:
                 native_language=native_language)
 
             # Build lesson dict
+            target_level = profile.get("target_level", "original")
             lesson = self._build_lesson(
                 profile_name, title, content, translated,
-                learning_language, native_language, wav_path, vocab)
+                learning_language, native_language, wav_path, vocab,
+                target_level)
 
             # Step 6: Deliver via callback
             if delivery_callback and lesson:
