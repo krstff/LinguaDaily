@@ -157,6 +157,26 @@ DEFAULT_PROFILE_NAME      = "default"
 # ── CEFR reading levels ────────────────────────────────────────
 VALID_CEFR_LEVELS = frozenset({"A1", "A2", "B1", "B2", "C1", "C2", "original"})
 
+# ── TTS speed by language level ─────────────────────────────────
+# Slower speech for beginners, normal speed for advanced learners.
+TTS_SPEED_BY_LEVEL: dict[str, float] = {
+    "A1": 0.7,
+    "A2": 0.7,
+    "B1": 0.8,
+    "B2": 0.8,
+    "C1": 0.9,
+    "C2": 1.0,
+    "original": 1.0,
+}
+
+
+def tts_speed_for_level(level: str) -> float:
+    """Return TTS speech rate for a CEFR level.
+
+    Falls back to 1.0 (normal speed) for unknown levels.
+    """
+    return TTS_SPEED_BY_LEVEL.get(level.upper(), 1.0)
+
 
 # ── Shared OpenAI client (singleton) ──────────────────────────────
 #

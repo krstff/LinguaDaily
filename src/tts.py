@@ -151,6 +151,7 @@ def synthesize(
     config=None,
     output_dir=None,
     voice=None,
+    speed: float = 1.0,
 ):
     """
     Generate speech from text using the local OmniVoice server.
@@ -167,6 +168,8 @@ def synthesize(
         Directory to write the WAV file. Defaults to project/output/.
     voice : str or None
         Voice name (e.g. "male", "female"). Falls back to config tts.default_voice.
+    speed : float
+        Speech rate (0.25–4.0, default 1.0). Lower = slower.
 
     Returns
     -------
@@ -215,6 +218,7 @@ def synthesize(
             model=model,
             voice=voice,
             input=text,
+            speed=speed,
             extra_body={"language_id": language_id, "num_step": TTS_DEFAULT_NUM_STEP},
         ) as response:
             response.stream_to_file(filepath)

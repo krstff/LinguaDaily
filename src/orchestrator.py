@@ -30,6 +30,7 @@ from config import (
     PROJECT_DIR,
     TTS_DEFAULT_VOICE,
     resolve_language_name,
+    tts_speed_for_level,
     load_config,
 )
 
@@ -322,8 +323,11 @@ class Orchestrator:
             logger.info("[%s] TTS disabled — skipping", profile_name)
             return None
 
-        logger.info("[%s] Generating TTS (lang: %s)...",
-                    profile_name, learning_language)
+        target_level = profile.get("target_level", "original")
+        speed = tts_speed_for_level(target_level)
+
+        logger.info("[%s] Generating TTS (lang: %s, level: %s, speed: %.1f)...",
+                    profile_name, learning_language, target_level, speed)
         try:
             from tts import synthesize
             output_dir = os.path.join(PROJECT_DIR, "output", profile_name)
@@ -335,6 +339,7 @@ class Orchestrator:
                 config=self.config,
                 output_dir=output_dir,
                 voice=profile.get("tts_voice", TTS_DEFAULT_VOICE),
+                speed=speed,
             )
             if wav_path:
                 logger.info("[%s] TTS audio: %s", profile_name, wav_path)
