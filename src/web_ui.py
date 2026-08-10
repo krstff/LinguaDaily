@@ -501,6 +501,7 @@ def create_app(config_path=None, log_file=None, password=None,
                 "telegram_chat_id", "").strip() or None,
             "native_language": request.form.get("native_language", DEFAULT_LEARNING_LANGUAGE),
             "learning_language": request.form.get("learning_language", ""),
+            "target_level": request.form.get("target_level", "original"),
             "source": request.form.get("source", "wikipedia"),
             "article_filter": {
                 "min_words": int(request.form.get("min_words", 30)),
@@ -522,8 +523,8 @@ def create_app(config_path=None, log_file=None, password=None,
             profiles[name] = profile_data
 
         elif action == "edit":
-            old_name = request.form.get("edit_name", "").strip()
-            if old_name and old_name in profiles:
+            old_name = request.form.get("edit_name", "").strip() or name
+            if old_name in profiles:
                 del profiles[old_name]
             # After deleting the old entry, name is free unless another profile
             # already uses it (rename collision)

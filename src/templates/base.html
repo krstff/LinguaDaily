@@ -419,12 +419,24 @@ textarea { resize: vertical; }
           </select>
         </div>
         <div class="form-row">
-          <label>Schedule Time</label>
-          <input type="text" name="schedule_time" placeholder="08:00">
+          <label>Target CEFR Level</label>
+          <select name="target_level">
+            <option value="original">Original (no simplification)</option>
+            <option value="A1">A1 — Beginner</option>
+            <option value="A2">A2 — Elementary</option>
+            <option value="B1">B1 — Intermediate</option>
+            <option value="B2">B2 — Upper Intermediate</option>
+            <option value="C1">C1 — Advanced</option>
+            <option value="C2">C2 — Proficient</option>
+          </select>
         </div>
       </div>
 
       <div class="form-grid">
+        <div class="form-row">
+          <label>Schedule Time</label>
+          <input type="text" name="schedule_time" placeholder="08:00">
+        </div>
         <div class="form-row">
           <label>Timezone</label>
           <input type="text" name="schedule_tz" placeholder="Europe/Berlin" value="Europe/Berlin">
@@ -500,6 +512,7 @@ function openModal(edit) {
     form.querySelector('[name="schedule_time"]').value = row.dataset.schedTime || '';
     form.querySelector('[name="schedule_tz"]').value = row.dataset.schedTz || 'Europe/Berlin';
     form.querySelector('[name="tts_voice"]').value = row.dataset.ttsVoice || 'male';
+    form.querySelector('[name="target_level"]').value = row.dataset.targetLevel || 'original';
     form.querySelector('[name="min_words"]').value = row.dataset.minWords || 30;
     form.querySelector('[name="max_words"]').value = row.dataset.maxWords || 150;
     form.querySelector('[name="use_tts"]').checked = row.dataset.useTts !== 'false';

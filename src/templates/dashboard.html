@@ -89,7 +89,8 @@
         data-min-words="{{ (p.article_filter or {}).get('min_words',30) }}"
         data-max-words="{{ (p.article_filter or {}).get('max_words',150) }}"
         data-use-tts="{{ p.get('use_tts', true) }}"
-        data-enabled="{{ p.get('enabled', true) }}">
+        data-enabled="{{ p.get('enabled', true) }}"
+        data-target-level="{{ p.get('target_level', 'original') }}">
       <td><strong>{{ name }}</strong></td>
       <td>
         {% if p.get('enabled', true) %}
