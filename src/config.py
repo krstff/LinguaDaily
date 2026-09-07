@@ -122,7 +122,7 @@ LLM_DEFAULT_TIMEOUT    = 600
 # ── TTS ────────────────────────────────────────────────────────
 TTS_DEFAULT_MODEL       = "omnivoice"
 TTS_DEFAULT_VOICE       = "male"
-TTS_DEFAULT_NUM_STEP    = 16
+TTS_DEFAULT_NUM_STEP    = 20
 TTS_DEFAULT_MAX_AGE_DAYS = 7
 TTS_DEFAULT_MAX_FILES   = 10
 

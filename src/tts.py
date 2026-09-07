@@ -17,6 +17,11 @@ import re
 import sys
 import uuid
 
+try:
+    from num2words import num2words as _num2words
+except ImportError:
+    _num2words = None
+
 from config import (
     DEFAULT_LEARNING_LANGUAGE,
     OUTPUT_DIR,
@@ -31,7 +36,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
-def sanitize_for_tts(text):
+def sanitize_for_tts(text, language_id="en"):
     """
     Clean text extracted from Wikipedia/Kiwix for TTS consumption.
 
@@ -39,6 +44,16 @@ def sanitize_for_tts(text):
     and encoding artifacts that make TTS output sound garbled.
     This function strips or normalises those artifacts while preserving
     the article's prose content.
+
+    Numbers (integers, decimals) are converted to words in the target
+    language so the TTS engine reads them naturally.
+
+    Parameters
+    ----------
+    text : str
+        Raw text to clean.
+    language_id : str
+        ISO 639-1 language code for num2words (e.g. "de", "en", "es").
 
     Returns cleaned text suitable for speech synthesis.
     """
@@ -61,6 +76,80 @@ def sanitize_for_tts(text):
 
     # 5. Strip leading/trailing whitespace
     text = text.strip()
+
+    # 6. Remove bold markers for TTS
+    text = re.sub(r'\*\*', '', text)
+
+    # 6.5 Squeeze grouped numbers together (e.g., "1 500" -> "1500", "3 141 592" -> "3141592")
+    # Matches a digit sequence followed by a space and another 3 digits
+    text = re.sub(r'(\d+)\s+(?=\d{3}\b)', r'\1', text)
+
+    # 7. Convert numbers to words so TTS reads them naturally
+    if _num2words is not None:
+        text = _convert_numbers_to_words(text, language_id)
+    print(text)
+
+    # 8. Add period to lines that don't end with punctuation so TTS doesn't run sentences together
+    text = re.sub(r'(?<=[^.!?\s])\s*$', '.', text, flags=re.MULTILINE)
+    
+    return text
+
+
+def _convert_numbers_to_words(text, language_id):
+    """
+    Replace standalone numbers (integers and decimals) with their
+    word equivalents in the target language.
+
+    Handles:
+      - Integers: 42 → "vierundvierzig" (de)
+      - Decimals: 3.14 → "drei Komma vierzehn" (de)
+      - Negative numbers: -7 → "minus sieben"
+      - Years: 1492 → "one thousand four hundred and ninety-two"
+
+    Falls back silently if num2words is unavailable or the language
+    is not supported.
+    """
+    if _num2words is None:
+        return text
+    
+    # Languages that standardly use a comma as the decimal separator
+    COMMA_DECIMAL_LANGS = {
+        "de", "fr", "es", "it", "nl", "pt", "ru", "pl", "cs", "sk", "da", "fi", "se", "no", "hu"
+    }
+
+    uses_comma_decimal = language_id in COMMA_DECIMAL_LANGS
+
+    # Helper function to convert matched string into words
+    def process_match(match, is_decimal=False):
+        raw_str = match.group(0)
+        try:
+            if is_decimal:
+                # Python float() requires '.' as the decimal point
+                clean_str = raw_str.replace(",", ".")
+                num_val = float(clean_str)
+            else:
+                num_val = int(raw_str)
+
+            return _num2words(num_val, lang=language_id)
+        except (ValueError, OverflowError):
+            return raw_str
+        except Exception:
+            return raw_str
+
+    # 1. First Pass: Handle Decimals
+    # Requires digits on BOTH sides of separator (e.g., 3.14 or 3,14)
+    # This prevents catching a sentence period like "In 1999."
+    if uses_comma_decimal:
+        decimal_pattern = r'\b-?\d+,\d+\b'
+    else:
+        decimal_pattern = r'\b-?\d+\.\d+\b'
+
+    text = re.sub(decimal_pattern, lambda m: process_match(m, is_decimal=True), text)
+
+    # 2. Second Pass: Handle Integers & Years
+    # Matches remaining integers cleanly without touching trailing sentence periods
+    int_pattern = r'\b-?\d+\b'
+    text = re.sub(int_pattern, lambda m: process_match(m, is_decimal=False), text)
 
     return text
 
@@ -180,7 +269,7 @@ def synthesize(
         return None
 
     # Clean Wikipedia artifacts before sending to TTS
-    text = sanitize_for_tts(text)
+    text = sanitize_for_tts(text, language_id=language_id)
     if not text.strip():
         return None
 

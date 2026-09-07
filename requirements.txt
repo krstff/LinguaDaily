@@ -4,6 +4,7 @@
 aiogram>=3.28.0          # Telegram bot framework (async)
 telegramify-markdown>=1.1  # Markdown → Telegram entities converter
 apscheduler>=3.11.0      # Cron-style scheduling with async support
+num2words>=0.5.14        # Number-to-words conversion for TTS sanitization
 
 # Content fetching & parsing
 beautifulsoup4>=4.14.0   # HTML cleaning (Wikipedia, news)

@@ -349,6 +349,17 @@ class TelegramBot:
             return text
         return text[:TG_SAFE_TRUNCATE] + suffix
 
+    def _strip_markdown(self, text: str) -> str:
+        """Strip common markdown formatting that LLMs may add to output.
+
+        Telegram lesson messages use HTML parse_mode, so literal ** and __
+        from markdown would render as visible characters. Strip them here.
+        """
+        # Bold: **text** or __text__
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'__(.+?)__', r'\1', text)
+        return text
+
     def _escape_html(self, text: str) -> str:
         """Escape text for Telegram HTML parse mode.
 
@@ -413,9 +424,9 @@ class TelegramBot:
             logger.error("Telegram bot not initialized — cannot deliver lesson")
             return
 
-        title = lesson.get("title", "Language Lesson")
-        original_content = lesson.get("original_content", "")
-        translated_content = lesson.get("content", "")
+        title = self._strip_markdown(lesson.get("title", "Language Lesson"))
+        original_content = self._strip_markdown(lesson.get("original_content", ""))
+        translated_content = self._strip_markdown(lesson.get("content", ""))
         vocab = lesson.get("vocab", [])
         wav_path = lesson.get("wav_path")
         learning_language_name = lesson.get(

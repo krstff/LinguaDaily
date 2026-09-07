@@ -68,9 +68,19 @@ wav_path = synthesize(
 
 ## Text Sanitization
 
-### `sanitize_for_tts(text)`
+### `sanitize_for_tts(text, language_id)`
 
 Cleans Wikipedia-extracted text for TTS consumption. Wikipedia articles contain artifacts that make TTS output sound garbled — this function strips or normalizes them:
+
+| Operation | Example |
+|-----------|---------|
+| Convert numbers to words | `42` → `vierundvierzig` (de), `3.14` → `drei Komma vierzehn` |
+| Remove reference markers | `[1]`, `[ 2 ]`, `[a]` → removed |
+| Replace non-breaking spaces | `\xa0` → regular space |
+| Remove Unicode arrows/symbols | `↑`, `↓`, `↔` → removed |
+| Collapse multiple blank lines | 3+ newlines → 2 (paragraph boundary) |
+
+Number conversion uses the [`num2words`](https://github.com/infinidata/num2words) library and supports the languages configured in profiles.
 
 | Operation | Example |
 |-----------|---------|
@@ -82,8 +92,8 @@ Cleans Wikipedia-extracted text for TTS consumption. Wikipedia articles contain 
 ```python
 from src.tts import sanitize_for_tts
 
-clean = sanitize_for_tts("This is text[1] with ↑ arrows\n\n\nand extra newlines.")
-# → "This is text with and extra newlines."
+clean = sanitize_for_tts("Dies ist 42[1] mit ↑ Pfeilen\n\n\nund Zahlen.", language_id="de")
+# → "Dies ist vierundvierzig mit und Zahlen."
 ```
 
 ## Error Handling
