@@ -365,6 +365,9 @@ class RAGService:
         language: str = "",
         tags: list[str] = None,
         source_file: str = "",
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+        replace: bool = False,
     ) -> int:
         """Full pipeline: extract text → clean PDF → chunk → upsert.
 
@@ -379,6 +382,14 @@ class RAGService:
             Name used for progress tracking and Qdrant payload.
             Defaults to filepath.name.  Pass the sanitized filename from
             the UI layer so progress keys match what the browser polls for.
+        chunk_size : int, optional
+            Per-document chunk size in chars (overrides the global setting).
+        chunk_overlap : int, optional
+            Per-document overlap in chars (overrides the global setting).
+        replace : bool
+            If True, delete any existing chunks for this source_file first
+            (prevents stale chunks when a re-uploaded file produces fewer
+            chunks than the previous version).
 
         Raises ValueError if no text could be extracted from the file.
 
@@ -398,6 +409,9 @@ class RAGService:
             source_file=source_file or filepath.name,
             language=language,
             tags=tags,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            replace=replace,
         )
 
     @staticmethod
@@ -485,41 +499,245 @@ class RAGService:
         return result.strip()
 
     # ── Chunking ───────────────────────────────────────────────────
+    #
+    # The chunker is structure-aware: text is first decomposed into
+    # meaningful segments (headings, paragraphs, sentences, or line
+    # groups for list/dictionary-style text), then segments are packed
+    # up to the target chunk size.  Overlap is applied to the segments
+    # of the *actual* previous chunk, so no content is ever skipped
+    # between chunks and chunks start/end at clean boundaries.
 
-    def chunk_text(self, text: str, source_id: str = "") -> list[dict]:
-        """Split text into overlapping chunks with metadata."""
-        chunks = []
+    # Common abbreviations that end in a period but do NOT end a sentence
+    _ABBREV_GUARD = re.compile(
+        r"(?<!\w)(e\.g|i\.e|etc|vs|dr|mr|mrs|st|no|z\.B|bzw|ca|usw|tj|cca|"
+        r"approx|u\.s|u\.k|a\.m|p\.m|sec|cf)\.?\s*$",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences (heuristic, Latin-script languages).
+
+        Splits after terminal punctuation (. ! ? …), optionally followed
+        by closing quotes/brackets, when a plausible sentence starter
+        (uppercase, digit, opening quote/paren) follows.  Guards against
+        common abbreviations.  Wrapped lines are joined first.
+        """
+        text = " ".join(text.split())  # normalize whitespace incl. line wraps
+        if not text:
+            return []
+
+        parts: list[str] = []
+        n = len(text)
         start = 0
-        idx = 0
+        i = 0
+        while i < n:
+            ch = text[i]
+            if ch in ".!?…":
+                j = i
+                while j < n and text[j] in ".!?…":
+                    j += 1
+                # consume trailing closing quotes / brackets
+                k = j
+                closing = "\"'”’)]:}"
+                while k < n and text[k] in closing:
+                    k += 1
 
-        while start < len(text):
-            end = start + self.chunk_size
-            chunk_text = text[start:end].strip()
+                if k == n:
+                    parts.append(text[start:k].strip())
+                    start = n
+                    i = n
+                    continue
 
-            if not chunk_text:
-                start = end
+                if text[k] in " \t":
+                    m = k
+                    while m < n and text[m] in " \t":
+                        m += 1
+                    nxt = text[m] if m < n else ""
+                    if nxt and (nxt.isupper() or nxt.isdigit() or nxt in r"\"'“‘([{"):
+                        prev = text[start:i]
+                        if not RAGService._ABBREV_GUARD.search(prev):
+                            parts.append(text[start:k].strip())
+                            i = k
+                            start = k
+                            continue
+            i += 1
+
+        tail = text[start:].strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _build_segments(self, text: str, chunk_size: int) -> list[str]:
+        """Decompose text into packable segments.
+
+        Blocks (runs of non-empty lines separated by blank lines) that fit
+        into one chunk stay whole.  Longer blocks are split into sentences;
+        if no sentence boundaries exist (dictionaries, lists, glossaries)
+        they are grouped line-by-line up to the target size instead.
+        """
+        segments: list[str] = []
+        blocks: list[list[str]] = []
+        cur: list[str] = []
+        for line in text.split("\n"):
+            if line.strip():
+                cur.append(line.rstrip())
+            elif cur:
+                blocks.append(cur)
+                cur = []
+        if cur:
+            blocks.append(cur)
+
+        for block in blocks:
+            block_text = "\n".join(block)
+            if len(block_text) <= chunk_size:
+                segments.append(block_text)
                 continue
 
-            # Try to break at a sentence boundary
-            if end < len(text):
-                next_newline = chunk_text.rfind("\n\n")
-                next_period = chunk_text.rfind(". ")
-                break_point = max(next_newline, next_period)
-                if break_point > self.chunk_size // 2:
-                    chunk_text = chunk_text[:break_point].strip()
+            flat = re.sub(r"\s*\n\s*", " ", block_text).strip()
+            sentences = self._split_sentences(flat)
 
+            if len(sentences) == 1 and len(block) > 1:
+                # No sentence boundaries (e.g. dictionary entries) — group lines
+                group: list[str] = []
+                group_len = 0
+                for line in block:
+                    if group and group_len + 1 + len(line) > chunk_size:
+                        segments.append("\n".join(group))
+                        group = []
+                        group_len = 0
+                    group.append(line)
+                    group_len += len(line) + 1
+                if group:
+                    segments.append("\n".join(group))
+            else:
+                segments.extend(s for s in sentences if s)
+
+        return segments
+
+    @staticmethod
+    def _hard_split(segment: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+        """Sliding-window split for a single segment longer than the target.
+
+        Guarantees full coverage with an exact character-level overlap.
+        """
+        step = max(chunk_size - chunk_overlap, 1)
+        parts: list[str] = []
+        start = 0
+        n = len(segment)
+        while start < n:
+            piece = segment[start:start + chunk_size].strip()
+            if piece:
+                parts.append(piece)
+            start += step
+        return parts
+
+    @staticmethod
+    def _pack_segments(
+        segments: list[str], chunk_size: int, chunk_overlap: int
+    ) -> list[str]:
+        """Pack segments into chunks of ~chunk_size chars.
+
+        When a chunk is emitted, the trailing segments of that chunk (total
+        ≤ chunk_overlap chars) seed the next chunk — so the overlap is
+        always sentence/line-aligned and every part of the source is
+        covered by at least one chunk.  A tiny final chunk is merged into
+        the previous one when that does not bloat it unreasonably.
+        """
+        def join(segs: list[str]) -> str:
+            return "\n".join(segs)
+
+        def length(segs: list[str]) -> int:
+            return sum(len(s) for s in segs) + max(len(segs) - 1, 0)
+
+        def overlap_tail(segs: list[str]) -> list[str]:
+            if chunk_overlap <= 0:
+                return []
+            tail: list[str] = []
+            tail_len = 0
+            for s in reversed(segs):
+                extra = len(s) + (1 if tail else 0)
+                if tail and tail_len + extra > chunk_overlap:
+                    break
+                if not tail and extra > chunk_overlap:
+                    break  # even one segment exceeds the budget
+                tail.insert(0, s)
+                tail_len += extra
+            return tail
+
+        chunks: list[str] = []
+        current: list[str] = []
+
+        for seg in segments:
+            if len(seg) > chunk_size:
+                if current:
+                    chunks.append(join(current))
+                    current = []
+                chunks.extend(RAGService._hard_split(seg, chunk_size, chunk_overlap))
+                continue
+
+            if current and length(current) + len(seg) + 1 > chunk_size:
+                chunks.append(join(current))
+                current = overlap_tail(current)
+
+            current.append(seg)
+
+        if current:
+            chunks.append(join(current))
+
+        # Merge a tiny trailing chunk into its predecessor when reasonable
+        if len(chunks) > 1:
+            min_size = min(60, max(chunk_size // 5, 1))
+            if len(chunks[-1]) < min_size and \
+               len(chunks[-2]) + len(chunks[-1]) + 1 <= int(chunk_size * 1.6):
+                chunks[-2] = chunks[-2] + "\n" + chunks[-1]
+                chunks.pop()
+
+        return [c.strip() for c in chunks if c.strip()]
+
+    def chunk_text(
+        self,
+        text: str,
+        source_id: str = "",
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+    ) -> list[dict]:
+        """Split text into structure-aware overlapping chunks with metadata.
+
+        Parameters
+        ----------
+        text : str
+            Full document text.
+        source_id : str
+            Identifier stamped onto every chunk.
+        chunk_size : int, optional
+            Target chunk size in chars.  Defaults to the global setting.
+        chunk_overlap : int, optional
+            Overlap in chars.  Defaults to the global setting.
+        """
+        cs = int(chunk_size if chunk_size is not None else self.chunk_size)
+        ov = int(chunk_overlap if chunk_overlap is not None else self.chunk_overlap)
+        if ov < 0:
+            ov = 0
+        if ov >= cs:
+            ov = max(cs // 5, 0)  # sanity: overlap must stay below size
+
+        text = (text or "").strip()
+        if not text:
+            return []
+
+        segments = self._build_segments(text, cs)
+        packed = self._pack_segments(segments, cs, ov)
+
+        chunks = []
+        for idx, ctext in enumerate(packed):
             chunk_id = hashlib.sha256(f"{source_id}:{idx}".encode()).hexdigest()[:16]
-
             chunks.append({
-                "text": chunk_text,
+                "text": ctext,
                 "chunk_index": idx,
                 "source_id": source_id,
                 "id": chunk_id,
             })
-
-            start = end - self.chunk_overlap
-            idx += 1
-
         return chunks
 
     # ── Ingest (chunk + upsert combined) ──────────────────────────
@@ -530,6 +748,9 @@ class RAGService:
         source_file: str,
         language: str = "",
         tags: list[str] = None,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+        replace: bool = False,
     ) -> int:
         """Chunk and upsert a document's text into Qdrant in one call.
 
@@ -547,6 +768,12 @@ class RAGService:
             Language tag stored in the payload.
         tags : list[str] or None
             Optional tags stored in the payload.
+        chunk_size : int, optional
+            Per-document chunk size (stored in the chunk payload).
+        chunk_overlap : int, optional
+            Per-document overlap (stored in the chunk payload).
+        replace : bool
+            Delete existing chunks for this source_file before upserting.
 
         Returns
         -------
@@ -554,12 +781,24 @@ class RAGService:
             Number of chunks upserted.
         """
         source_id = hashlib.sha256(source_file.encode()).hexdigest()[:16]
-        chunks = self.chunk_text(text, source_id=source_id)
+
+        if replace:
+            try:
+                self.delete_by_source_file(source_file)
+            except Exception as e:
+                logger.debug("replace: nothing to delete for '%s' (%s)", source_file, e)
+
+        chunks = self.chunk_text(
+            text, source_id=source_id,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+        )
         return self.upsert_chunks(
             chunks=chunks,
             language=language,
             source_file=source_file,
             tags=tags,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
     # ── Upsert / Indexing ─────────────────────────────────────────
@@ -570,8 +809,15 @@ class RAGService:
         language: str = "",
         source_file: str = "",
         tags: list[str] = None,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
     ) -> int:
-        """Embed and upsert chunks into Qdrant."""
+        """Embed and upsert chunks into Qdrant.
+
+        chunk_size / chunk_overlap are recorded in the payload so that
+        per-document chunking settings survive re-indexing and are visible
+        in the UI.
+        """
         if not chunks:
             return 0
 
@@ -609,6 +855,8 @@ class RAGService:
                 "language": language,
                 "source_file": source_file,
                 "tags": tags or [],
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
             }
             points.append(
                 models.PointStruct(
@@ -834,7 +1082,7 @@ class RAGService:
                 collection_name=self.collection_name,
                 limit=batch_size,
                 offset=offset,
-                with_payload=["language", "source_file", "source_id", "tags", "chunk_index"],
+                with_payload=["language", "source_file", "source_id", "tags", "chunk_index", "chunk_size", "chunk_overlap"],
                 with_vectors=False,
                 scroll_filter=search_filter,
             )
@@ -901,8 +1149,15 @@ class RAGService:
                         "language": lang,
                         "chunk_count": 0,
                         "tags": list(set(tags)) if tags else [],
+                        "chunk_size": payload.get("chunk_size"),
+                        "chunk_overlap": payload.get("chunk_overlap"),
                     }
                 sources[source_file]["chunk_count"] += 1
+                # keep per-doc settings from the first chunk that has them
+                if sources[source_file]["chunk_size"] is None and payload.get("chunk_size") is not None:
+                    sources[source_file]["chunk_size"] = payload.get("chunk_size")
+                if sources[source_file]["chunk_overlap"] is None and payload.get("chunk_overlap") is not None:
+                    sources[source_file]["chunk_overlap"] = payload.get("chunk_overlap")
         except Exception as e:
             logger.warning("Failed to list sources: %s", e)
 
@@ -954,7 +1209,7 @@ class RAGService:
                 collection_name=self.collection_name,
                 limit=batch_size,
                 offset=offset,
-                with_payload=["language", "source_file", "source_id", "tags"],
+                with_payload=["language", "source_file", "source_id", "tags", "chunk_size", "chunk_overlap"],
                 with_vectors=False,
             )
             points = getattr(scroll_result, "points", scroll_result[0]) if isinstance(scroll_result, tuple) else getattr(scroll_result, "points", [])
@@ -969,6 +1224,8 @@ class RAGService:
                         "language": payload.get("language", ""),
                         "tags": payload.get("tags", []),
                         "source_id": payload.get("source_id", ""),
+                        "chunk_size": payload.get("chunk_size"),
+                        "chunk_overlap": payload.get("chunk_overlap"),
                     }
 
             last = points[-1]
@@ -1040,6 +1297,8 @@ class RAGService:
                     filepath=filepath,
                     language=meta.get("language", ""),
                     tags=meta.get("tags", []),
+                    chunk_size=meta.get("chunk_size"),
+                    chunk_overlap=meta.get("chunk_overlap"),
                 )
                 success_count += 1
                 logger.info("Re-indexed '%s' — %d chunks (lang=%s)", filename, upserted, meta.get("language"))

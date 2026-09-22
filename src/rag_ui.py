@@ -38,6 +38,18 @@ except ImportError:
 _documents_dir = DATA_DIR / "documents"
 
 
+def _parse_chunk_param(value, name):
+    """Parse an optional per-document chunking parameter from form data.
+
+    Returns int or None (empty = use global default).  Raises ValueError
+    for non-numeric input.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None
+    return int(v)
+
+
 def register_rag_ui(app, config_path=None):
     """Register the RAG document management routes on a Flask app."""
     _documents_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +264,14 @@ def register_rag_ui(app, config_path=None):
         tags_raw = request.form.get("tags", "").strip()
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
+        try:
+            chunk_size = _parse_chunk_param(request.form.get("chunk_size"), "chunk_size")
+            chunk_overlap = _parse_chunk_param(request.form.get("chunk_overlap"), "chunk_overlap")
+        except ValueError:
+            return jsonify({
+                "message": "Invalid chunk_size / chunk_overlap — must be integers"
+            }), 400
+
         safe_name = _sanitize_filename(uploaded.filename)
         dest = _documents_dir / safe_name
         uploaded.save(str(dest))
@@ -270,6 +290,9 @@ def register_rag_ui(app, config_path=None):
                 source_file=safe_name,
                 language=language,
                 tags=tags,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                replace=True,
             )
 
             source_id = hashlib.sha256(safe_name.encode()).hexdigest()[:16]
@@ -345,13 +368,15 @@ def register_rag_ui(app, config_path=None):
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
         try:
-            rag = _get_rag()
+            chunk_size = _parse_chunk_param(request.form.get("chunk_size"), "chunk_size")
+            chunk_overlap = _parse_chunk_param(request.form.get("chunk_overlap"), "chunk_overlap")
+        except ValueError:
+            return jsonify({
+                "message": "Invalid chunk_size / chunk_overlap — must be integers"
+            }), 400
 
-            all_sources = rag.list_sources()
-            for s in all_sources:
-                if s["source_file"] == source_file:
-                    rag.delete_by_source(s["source_id"])
-                    break
+        try:
+            rag = _get_rag()
 
             # Start progress tracking (mirrors upload flow)
             rag._set_progress(
@@ -365,6 +390,9 @@ def register_rag_ui(app, config_path=None):
                 source_file=source_file,
                 language=language,
                 tags=tags,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                replace=True,
             )
 
             return jsonify({

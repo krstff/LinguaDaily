@@ -89,6 +89,18 @@
       <input type="text" name="tags" id="upload-tags" placeholder="grammar, vocabulary, subjunctive">
     </div>
 
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Chunk size (chars, optional)</label>
+        <input type="number" name="chunk_size" id="upload-chunk-size" min="40" max="4000" placeholder="{{ rag_config.get('chunk_size', 500) }}">
+      </div>
+      <div class="form-row">
+        <label>Chunk overlap (chars, optional)</label>
+        <input type="number" name="chunk_overlap" id="upload-chunk-overlap" min="0" max="2000" placeholder="{{ rag_config.get('chunk_overlap', 100) }}">
+      </div>
+    </div>
+    <p class="subtitle" style="margin-top:4px;">Leave empty to use the global default ({{ rag_config.get('chunk_size', 500) }} / {{ rag_config.get('chunk_overlap', 100) }} chars). For dictionaries use a small size, e.g. 120 / 20.</p>
+
     <div style="display:flex;gap:8px;margin-top:12px;">
       <button type="submit" class="btn btn-primary">Upload & Index</button>
     </div>
@@ -169,7 +181,7 @@
     <tr data-language="{{ src.language | default('') }}">
       <td>{{ src.source_file }}<span class="dim-mismatch-warning" style="display:none;color:var(--red);font-size:12px;margin-left:6px;" title="Embedding dimension mismatch — re-index this document">⚠</span></td>
       <td><span class="badge badge-active">{{ src.language }}</span></td>
-      <td>{{ src.chunk_count }}</td>
+      <td>{{ src.chunk_count }}{% if src.chunk_size is not none %}<br><span style="color:var(--fg_dim);font-size:11px;" title="Per-document chunking settings">{{ src.chunk_size }}/{{ src.chunk_overlap if src.chunk_overlap is not none else '?' }}</span>{% endif %}</td>
       <td>
         {% for tag in (src.tags or []) %}
         <span style="color:var(--fg_dim);font-size:11px;">{{ tag }}{% if not loop.last %}, {% endif %}</span>
@@ -179,7 +191,7 @@
       </td>
       <td>
         <button class="btn btn-secondary btn-sm"
-                onclick="openReindexModal('{{ src.source_file }}', '{{ src.language }}')"
+                onclick="openReindexModal('{{ src.source_file }}', '{{ src.language }}', '{{ src.chunk_size if src.chunk_size is not none else '' }}', '{{ src.chunk_overlap if src.chunk_overlap is not none else '' }}')"
                 title="Re-index with different settings">
           ↻ Re-index
         </button>
@@ -224,6 +236,17 @@
       <div class="form-row">
         <label>Tags (comma-separated, optional)</label>
         <input type="text" name="tags" id="reindex-tags" placeholder="grammar, vocabulary">
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Chunk size (optional)</label>
+          <input type="number" name="chunk_size" id="reindex-chunk-size" min="40" max="4000" placeholder="{{ rag_config.get('chunk_size', 500) }}">
+        </div>
+        <div class="form-row">
+          <label>Chunk overlap (optional)</label>
+          <input type="number" name="chunk_overlap" id="reindex-chunk-overlap" min="0" max="2000" placeholder="{{ rag_config.get('chunk_overlap', 100) }}">
+        </div>
       </div>
 
       <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
@@ -413,11 +436,13 @@ async function deleteDocument(sourceFile) {
 }
 
 // ── Re-index modal ───────────────────────────────────────
-function openReindexModal(sourceFile, language) {
+function openReindexModal(sourceFile, language, chunkSize, chunkOverlap) {
   document.getElementById('reindex-modal').classList.add('visible');
   document.getElementById('reindex-file-name').value = sourceFile;
   document.getElementById('reindex-source-file').value = sourceFile;
   document.getElementById('reindex-language').value = language || '';
+  document.getElementById('reindex-chunk-size').value = chunkSize || '';
+  document.getElementById('reindex-chunk-overlap').value = chunkOverlap || '';
 }
 
 function closeReindexModal() {

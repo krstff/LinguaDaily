@@ -167,10 +167,28 @@ inflected form (plural, past tense, etc.) that appears in the respective texts."
 # Lightweight LLM call to decide whether RAG grounding is needed.
 # Returns JSON: {"intent": "chitchat" | "grammar_query" | "vocab_query"}
 
-INTENT_SYSTEM_PROMPT = """You classify a language learner's message into one category. Reply with ONLY a JSON object:
-{{"intent": "chitchat"}}  — casual conversation, greetings, opinions, non-educational
-{{"intent": "grammar_query"}}  — grammar rules, conjugation, syntax, sentence structure, cases, tenses
-{{"intent": "vocab_query"}}  — word meaning, translation, vocabulary, phrases, idioms, usage
+INTENT_SYSTEM_PROMPT = """You are the front-end filter for a language tutor's knowledge base.
+Classify the learner's latest message, then rewrite it as a retrieval query.
+
+Reply with ONLY a JSON object:
+{{"intent": "...", "query": "..."}}
+
+"intent" — exactly one of:
+  "chitchat"      — casual conversation, greetings, opinions, non-educational
+  "grammar_query" — grammar rules, conjugation, syntax, sentence structure, cases, tenses
+  "vocab_query"   — word meaning, translation, vocabulary, phrases, idioms, usage
+
+"query" — rules:
+  - For grammar_query / vocab_query: write a short SELF-CONTAINED retrieval
+    query (max 25 words) that states what the learner is asking about, using
+    the key language-specific terms (case names, verb forms, the exact word
+    in question).  Resolve pronouns and ellipsis using the conversation
+    context below.  Prefer the terms as they appear in textbooks of the
+    language being learned.
+  - For chitchat: null
+
+Conversation context (may be empty):
+{context}
 
 The user is learning {language_name}. Respond in JSON only."""
 
@@ -499,16 +517,36 @@ class LlamaClient:
         self,
         message: str,
         language_name: str = "German",
-    ) -> str:
+        history: Optional[list] = None,
+    ) -> tuple[str, str]:
         """
-        Lightweight intent classifier.  Returns one of:
-          "chitchat", "grammar_query", "vocab_query"
+        Lightweight intent classifier + retrieval-query rewriter.
 
-        Uses a dedicated system prompt so the LLM returns clean JSON.
-        Falls back to "chitchat" on any error (safe default — no RAG).
+        Returns a tuple (intent, search_query):
+          intent       — "chitchat" | "grammar_query" | "vocab_query"
+          search_query — standalone, self-contained query for the knowledge
+                         base (pronouns resolved, key terms included).  Empty
+                         string if no rewrite is available (the caller then
+                         falls back to the raw message).
+
+        Recent conversation history is included so the rewrite can resolve
+        anaphora ("what does it mean?" after a word was discussed).
+        Falls back to ("chitchat", "") on any error (safe default — no RAG).
         """
         model = self.resolve_model("tutor")
-        system = INTENT_SYSTEM_PROMPT.format(language_name=language_name)
+
+        # Build short context from the most recent turns
+        context_lines = []
+        if history:
+            for m in history[-4:]:
+                role = str(m.get("role", "?"))
+                content = str(m.get("content", ""))[:300]
+                context_lines.append(f"{role}: {content}")
+        context = "\n".join(context_lines) if context_lines else "(no prior conversation)"
+
+        system = INTENT_SYSTEM_PROMPT.format(
+            language_name=language_name, context=context,
+        )
 
         result = self._chat(
             [
@@ -519,7 +557,7 @@ class LlamaClient:
             temperature=0.0,
         )
         if not result:
-            return "chitchat"
+            return "chitchat", ""
 
         # Parse JSON from response (strip fences if present)
         text = result.strip()
@@ -531,37 +569,46 @@ class LlamaClient:
             data = json.loads(text)
             intent = data.get("intent", "chitchat")
             if intent in _INTENT_LABELS:
-                return intent
+                query = data.get("query")
+                query = query.strip() if isinstance(query, str) else ""
+                return intent, query
         except (json.JSONDecodeError, AttributeError):
             pass
 
-        # Fuzzy fallback — check for keywords in raw output
+        # Fuzzy fallback — check for keywords in raw output (no rewrite available)
         lower = text.lower()
         if "grammar" in lower:
-            return "grammar_query"
+            return "grammar_query", ""
         if "vocab" in lower:
-            return "vocab_query"
-        return "chitchat"
+            return "vocab_query", ""
+        return "chitchat", ""
 
     def _fetch_rag_context(
         self,
         message: str,
         language_code: str = "",
+        search_query: str = None,
     ) -> list[str]:
         """
         Query the RAG knowledge base and return relevant text chunks.
 
-        Returns empty list on any failure (graceful degradation).
+        ``search_query`` (from the intent rewriter) is embedded when
+        provided; otherwise the raw ``message`` is used.  Returns an empty
+        list on any failure (graceful degradation).
         """
         try:
             from src.rag_service import get_rag_service
             rag = get_rag_service()
+            query = (search_query or "").strip() or message
             hits = rag.query_knowledge_base(
-                query_vector=rag.embed_text(message),
+                query_vector=rag.embed_text(query),
                 language=language_code,
                 top_k=5,
             )
-            logger.info("RAG search: %d hits (lang=%s)", len(hits), language_code or "(any)")
+            logger.info(
+                "RAG search: %d hits (lang=%s) query=%r",
+                len(hits), language_code or "(any)", query[:80],
+            )
             return [h["text"] for h in hits]
         except Exception as e:
             logger.warning("RAG query failed (continuing without grounding): %s", e)
@@ -609,9 +656,10 @@ class LlamaClient:
         """
         model = self.resolve_model("tutor")
 
-        # ── Step 1: Classify intent ───────────────────────────────
-        intent = self._classify_intent(message, language_name)
-        logger.info("Tutor intent=%s | msg=%s", _INTENT_LABELS.get(intent, intent), message[:60])
+        # ── Step 1: Classify intent + rewrite retrieval query ─────
+        intent, search_query = self._classify_intent(message, language_name, history=history)
+        logger.info("Tutor intent=%s | msg=%s | query=%r",
+                    _INTENT_LABELS.get(intent, intent), message[:60], search_query[:80])
 
         # ── Step 2: Fetch RAG context for educational queries ─────
         references = []
@@ -623,7 +671,7 @@ class LlamaClient:
                 if name.lower() == language_name.lower():
                     lang_code = code
                     break
-            references = self._fetch_rag_context(message, lang_code)
+            references = self._fetch_rag_context(message, lang_code, search_query=search_query)
             logger.info("RAG returned %d chunks", len(references))
 
         # ── Step 3: Build system prompt ───────────────────────────

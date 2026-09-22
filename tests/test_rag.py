@@ -95,6 +95,109 @@ class TestChunking(unittest.TestCase):
                 chunks[i + 1]["text"][: rag.chunk_overlap],
             )
 
+    def test_chunk_no_content_gap(self):
+        """Every sentence of the source must appear in at least one chunk.
+
+        Regression test: the old fixed-window chunker dropped the region
+        between a sentence-boundary shrink and the next window's overlap
+        start, so content was silently never indexed.
+        """
+        from src.rag_service import RAGService
+
+        rag = object.__new__(RAGService)
+        rag.chunk_size = 500
+        rag.chunk_overlap = 100
+
+        sentences = [
+            f"Sentence number {i} talks about topic {i} with some detail."
+            for i in range(20)
+        ]
+        text = " ".join(sentences)
+        chunks = rag.chunk_text(text, source_id="gap")
+        joined = " ".join(c["text"] for c in chunks)
+        for s in sentences:
+            self.assertIn(s, joined, f"lost content: {s[:50]!r}")
+
+    def test_chunk_ends_at_sentence_boundary(self):
+        """Chunks of prose should end at sentence boundaries, not mid-word."""
+        from src.rag_service import RAGService
+
+        rag = object.__new__(RAGService)
+        rag.chunk_size = 300
+        rag.chunk_overlap = 60
+
+        text = " ".join(
+            f"The {w} case is used in German grammar and is important."
+            for w in ("nominative", "accusative", "dative", "genitive",
+                     "reflexive", "relative", "indefinite", "definite",
+                     "vocative", "ablative", "instrumental", "locative",
+                     "allative", "essive", "translative", "terminative")
+        )
+        chunks = rag.chunk_text(text, source_id="bounds")
+        self.assertGreater(len(chunks), 2)
+        for c in chunks[:-1]:  # last chunk may end at text end
+            tail = c["text"].rstrip()
+            self.assertTrue(
+                tail[-1] in ".!?…\"'”’)]" ,
+                f"chunk does not end at a boundary: ...{tail[-40:]!r}",
+            )
+
+    def test_chunk_per_document_settings(self):
+        """Per-document chunk_size/overlap override the global settings."""
+        from src.rag_service import RAGService
+
+        rag = object.__new__(RAGService)
+        rag.chunk_size = 500
+        rag.chunk_overlap = 100
+
+        text = " ".join(f"Word {i} is defined as something in the glossary."
+                        for i in range(30))
+        small = rag.chunk_text(text, source_id="d", chunk_size=120, chunk_overlap=20)
+        default = rag.chunk_text(text, source_id="d", chunk_size=500, chunk_overlap=100)
+
+        self.assertGreater(len(small), len(default))
+        self.assertTrue(all(len(c["text"]) <= 160 for c in small))
+
+    def test_chunk_dictionary_lines(self):
+        """Dictionary-style text (one entry per line, no sentence ends)
+        should chunk per entry group, keeping every entry retrievable."""
+        from src.rag_service import RAGService
+
+        rag = object.__new__(RAGService)
+        rag.chunk_size = 500
+        rag.chunk_overlap = 100
+
+        entries = [f"word-{i} — gloss of entry {i} with a bit of length"
+                   for i in range(30)]
+        text = "\n".join(entries)
+        chunks = rag.chunk_text(text, source_id="dict", chunk_size=120, chunk_overlap=20)
+
+        self.assertGreater(len(chunks), 3)
+        for c in chunks:
+            self.assertLessEqual(len(c["text"]), 160)
+        joined = "\n".join(c["text"] for c in chunks)
+        for e in entries:
+            self.assertIn(e.split(" — ")[0], joined)
+
+    def test_chunk_zero_overlap_covers_all(self):
+        """With overlap=0 nothing is duplicated and nothing is lost."""
+        from src.rag_service import RAGService
+
+        rag = object.__new__(RAGService)
+        rag.chunk_size = 200
+        rag.chunk_overlap = 50
+
+        sentences = [f"Fact {i} about German verbs and their conjugation rules."
+                     for i in range(15)]
+        text = " ".join(sentences)
+        chunks = rag.chunk_text(text, source_id="z", chunk_size=200, chunk_overlap=0)
+        joined = " ".join(c["text"] for c in chunks)
+        for s in sentences:
+            self.assertIn(s, joined)
+        # no duplicated content: total length ≈ original + join separators
+        total = sum(len(c["text"]) for c in chunks)
+        self.assertLess(total, len(text) + 2 * len(chunks))
+
 
 class TestQdrantUpsertQuery(unittest.TestCase):
     """End-to-end Qdrant tests through RAGService production methods."""

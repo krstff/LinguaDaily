@@ -309,6 +309,94 @@ class TestTutorChat:
         assert call_args["temperature"] == 0.7
 
 
+class TestIntentRewrite:
+    """Intent classification + retrieval-query rewriting."""
+
+    @patch("openai.OpenAI")
+    def test_classify_intent_returns_query(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=json.dumps({
+                "intent": "vocab_query",
+                "query": "meaning of the German word 'Hallo' in English",
+            })))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        intent, query = client._classify_intent(
+            "what does Hallo mean?", "German",
+            history=[{"role": "user", "content": "teach me greetings"}],
+        )
+        assert intent == "vocab_query"
+        assert query == "meaning of the German word 'Hallo' in English"
+
+    @patch("openai.OpenAI")
+    def test_classify_intent_chitchat_null_query(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=json.dumps({
+                "intent": "chitchat", "query": None,
+            })))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        intent, query = client._classify_intent("hi there!", "German")
+        assert intent == "chitchat"
+        assert query == ""
+
+    @patch("openai.OpenAI")
+    def test_classify_intent_bad_json_falls_back(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="sorry, cannot parse"))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        intent, query = client._classify_intent("what is the subjunctive?", "German")
+        assert intent == "chitchat"
+        assert query == ""
+
+    @patch("src.rag_service.get_rag_service")
+    def test_fetch_rag_context_uses_rewritten_query(self, mock_get_rag, sample_config):
+        from src.llama_client import LlamaClient
+        client = LlamaClient(config=sample_config[0])
+
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = [{"text": "chunk1"}]
+        mock_get_rag.return_value = mock_rag
+
+        refs = client._fetch_rag_context(
+            "what is it?",
+            search_query="usage of the German dative case",
+        )
+
+        mock_rag.embed_text.assert_called_once_with("usage of the German dative case")
+        assert refs == ["chunk1"]
+
+    @patch("src.rag_service.get_rag_service")
+    def test_fetch_rag_context_falls_back_to_message(self, mock_get_rag, sample_config):
+        from src.llama_client import LlamaClient
+        client = LlamaClient(config=sample_config[0])
+
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = []
+        mock_get_rag.return_value = mock_rag
+
+        client._fetch_rag_context("What is Konjunktiv II?", search_query="")
+        mock_rag.embed_text.assert_called_once_with("What is Konjunktiv II?")
+
+
 class TestHealthCheck:
     """Test health check."""
 
