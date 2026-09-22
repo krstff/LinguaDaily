@@ -232,9 +232,10 @@ class Orchestrator:
             article_filter=article_filter,
         )
 
-        if not content:
-            logger.error("[%s] No article fetched from %s — aborting pipeline",
-                         profile_name, source)
+        if not content or title == "Error":
+            logger.error("[%s] No article fetched from %s — aborting pipeline%s",
+                         profile_name, source,
+                         f" (fetcher error: {content})" if title == "Error" else "")
             return None
 
         # Clean content

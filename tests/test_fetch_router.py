@@ -67,14 +67,12 @@ class TestFetchWikipedia:
         with patch("wikipedia_fetcher.KiwixClient") as MockClient, \
              patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
             mock_load.return_value = {
+                "backend": "kiwix",
                 "base_url": "http://localhost:8080",
                 "zim_name": "wikipedia_de",
                 "article_filter": {"min_words": 250, "max_words": 600},
             }
-            instance = MagicMock()
-            instance.get_random_article.return_value = mock_article
-            MockClient.return_value.__enter__ = MagicMock(return_value=instance)
-            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+            MockClient.return_value.get_random_article.return_value = mock_article
 
             title, text = _fetch_wikipedia(config, learning_language="de")
         assert title == "Test Title"
@@ -87,20 +85,20 @@ class TestFetchWikipedia:
 
         with patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
             mock_load.return_value = {
+                "backend": "kiwix",
                 "base_url": "http://localhost:8080",
                 "zim_name": "wikipedia_en",
                 "article_filter": {"min_words": 250, "max_words": 600},
             }
-            instance = MagicMock()
-            instance.get_random_article.return_value = ("Title", "Content")
             with patch("wikipedia_fetcher.KiwixClient") as MockClient:
-                MockClient.return_value.__enter__ = MagicMock(return_value=instance)
-                MockClient.return_value.__exit__ = MagicMock(return_value=False)
+                MockClient.return_value.get_random_article.return_value = (
+                    "Title", "Content")
 
                 _fetch_wikipedia(config, article_filter=article_filter)
         # Verify the filter overrides were merged into settings before calling
-        assert instance.get_random_article.call_args[1]["min_words"] == 300
-        assert instance.get_random_article.call_args[1]["max_words"] == 500
+        grr = MockClient.return_value.get_random_article
+        assert grr.call_args[1]["min_words"] == 300
+        assert grr.call_args[1]["max_words"] == 500
 
     def test_error_returns_none(self):
         from src.fetch_router import _fetch_wikipedia
@@ -108,16 +106,37 @@ class TestFetchWikipedia:
 
         with patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
             mock_load.return_value = {
+                "backend": "kiwix",
                 "base_url": "http://localhost:8080",
                 "zim_name": "wikipedia_en",
                 "article_filter": {"min_words": 250, "max_words": 600},
             }
             with patch("wikipedia_fetcher.KiwixClient") as MockClient:
-                MockClient.return_value.__enter__.side_effect = Exception("Connection refused")
+                MockClient.side_effect = Exception("Connection refused")
 
                 title, text = _fetch_wikipedia(config)
             assert title is None
             assert text is None
+
+    def test_error_title_converts_to_none(self):
+        """The fetcher's ("Error", msg) result must not reach callers as content."""
+        from src.fetch_router import _fetch_wikipedia
+        config = {}
+
+        with patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
+            mock_load.return_value = {
+                "backend": "online",
+                "language": "cs",
+                "article_filter": {"min_words": 250, "max_words": 600},
+            }
+            with patch("wikipedia_fetcher.WikipediaClient") as MockClient:
+                MockClient.return_value.get_random_article.return_value = (
+                    "Error",
+                    "Could not fetch a suitable random article after 20 attempts")
+
+                title, text = _fetch_wikipedia(config, learning_language="cs")
+        assert title is None
+        assert text is None
 
     def test_resolves_learning_language(self):
         """load_fetcher_config should be called with the learning_language."""
@@ -126,15 +145,14 @@ class TestFetchWikipedia:
 
         with patch("wikipedia_fetcher.load_fetcher_config") as mock_load:
             mock_load.return_value = {
+                "backend": "kiwix",
                 "base_url": "http://localhost:8080",
                 "zim_name": "wikipedia_de",
                 "article_filter": {"min_words": 250, "max_words": 600},
             }
-            instance = MagicMock()
-            instance.get_random_article.return_value = ("Title", "Content")
             with patch("wikipedia_fetcher.KiwixClient") as MockClient:
-                MockClient.return_value.__enter__ = MagicMock(return_value=instance)
-                MockClient.return_value.__exit__ = MagicMock(return_value=False)
+                MockClient.return_value.get_random_article.return_value = (
+                    "Title", "Content")
 
                 _fetch_wikipedia(config, learning_language="de")
         mock_load.assert_called_once_with(learning_language="de")

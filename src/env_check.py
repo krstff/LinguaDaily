@@ -30,7 +30,7 @@ import importlib
 import json
 import re
 import sys
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 from config import (
@@ -115,27 +115,31 @@ def validate_config(config):
         if p.get("source") == "wikipedia"
     ]
     if wiki_profiles:
-        kiwix = config.get("kiwix_servers", {})
-        if not kiwix:
-            errors.append(
-                "Profiles use 'wikipedia' source but 'kiwix_servers' is empty/missing"
-            )
+        from wikipedia_fetcher import resolve_wikipedia_backend
+        wiki_backend = ((config.get("wikipedia") or {}).get("backend") or "auto").lower()
         for name, profile in wiki_profiles:
             learning_lang = profile.get("learning_language")
-            if learning_lang and learning_lang not in kiwix:
-                errors.append(
-                    f"Profile '{name}' uses learning_language='{learning_lang}' "
-                    f"but no kiwix_servers entry for '{learning_lang}'"
+            if not learning_lang:
+                continue
+            backend, params = resolve_wikipedia_backend(config, learning_lang)
+            if backend == "online" and wiki_backend == "kiwix":
+                warnings.append(
+                    f"Profile '{name}': wikipedia.backend is 'kiwix' but no "
+                    f"kiwix_servers entry for '{learning_lang}' — "
+                    f"falling back to wikipedia.org (online)"
                 )
-            elif learning_lang and learning_lang in kiwix:
-                srv = kiwix[learning_lang]
+            elif backend == "kiwix":
+                kiwix_servers = config.get("kiwix_servers", {})
+                srv = kiwix_servers.get(learning_lang, config.get("kiwix", {}))
                 if not srv.get("base_url"):
-                    errors.append(
-                        f"kiwix_servers['{learning_lang}'].base_url is empty"
+                    warnings.append(
+                        f"kiwix_servers['{learning_lang}'].base_url is empty — "
+                        f"using default {params['base_url']}"
                     )
                 if not srv.get("zim_name"):
-                    errors.append(
-                        f"kiwix_servers['{learning_lang}'].zim_name is empty"
+                    warnings.append(
+                        f"kiwix_servers['{learning_lang}'].zim_name is empty — "
+                        f"using default {params['zim_name']}"
                     )
 
     # ── TTS section ───────────────────────────────────────────────
@@ -264,10 +268,14 @@ def _check_duplicate_chat_ids(config, errors, warnings):
 
 # ── Connectivity checks ─────────────────────────────────────────────
 
-def _http_get_json(url, label, timeout=5):
+def _http_get_json(url, label, timeout=5, headers=None):
     """HTTP GET returning (ok: bool, message: str, json_data: dict|None)."""
     try:
-        resp = urlopen(url, timeout=timeout)
+        if headers:
+            req = Request(url, headers=headers)
+        else:
+            req = url
+        resp = urlopen(req, timeout=timeout)
         status = resp.status
         if 200 <= status < 300:
             body = resp.read()
@@ -330,8 +338,14 @@ def check_llm(config):
     return results
 
 
-def check_kiwix(config):
-    """Check all configured Kiwix servers."""
+def check_wikipedia(config):
+    """Check Wikipedia backends: configured Kiwix servers + online endpoints.
+
+    For every profile language that resolves to the online backend, pings
+    wikipedia.org's REST API to verify connectivity.
+    """
+    from wikipedia_fetcher import resolve_wikipedia_backend
+
     results = []
     kiwix = config.get("kiwix_servers", {})
     for lang, srv in kiwix.items():
@@ -353,6 +367,27 @@ def check_kiwix(config):
                     f"⚠️  Kiwix ({lang}): root OK but /random failed — "
                     f"ZIM file may not be loaded or server misconfigured"
                 )
+
+    # Online endpoints for profile languages that resolve to wikipedia.org
+    online_langs = set()
+    for name, profile in config.get("profiles", {}).items():
+        if profile.get("source") != "wikipedia":
+            continue
+        lang = profile.get("learning_language")
+        if not lang:
+            continue
+        backend, _ = resolve_wikipedia_backend(config, lang)
+        if backend == "online":
+            online_langs.add(lang)
+
+    for lang in sorted(online_langs):
+        url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/Main_Page"
+        # Wikipedia requires a descriptive User-Agent (403 otherwise)
+        ok, msg, _ = _http_get_json(
+            url, f"Wikipedia online ({lang})",
+            headers={"User-Agent": "LinguaDaily env-check (personal language learning bot)"},
+        )
+        results.append(msg)
 
     return results
 
@@ -571,7 +606,7 @@ def run(config_path=None, skip_network=False):
             if "❌" in msg:
                 all_errors.append(msg)
 
-        for msg in check_kiwix(config):
+        for msg in check_wikipedia(config):
             print(f"  {msg}")
             if "❌" in msg:
                 all_errors.append(msg)

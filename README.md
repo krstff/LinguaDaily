@@ -123,6 +123,8 @@ I recommend doing your own research on model selection. [https://euroeval.com/le
 
 I went with **Kiwix** because I did not want to rely on an online Wiki API. Setting it up in its own LXC takes less time than downloading the .zim file itself :)
 
+Languages **without** a configured Kiwix server automatically fall back to **wikipedia.org** (online, via the MediaWiki API) — switchable per-deployment on the Sources page (`wikipedia.backend`: `auto` / `kiwix` / `online`).
+
 Personally, I use [llama-swap](https://github.com/mostlygeek/llama-swap) for model deployment with the following config for this project:
 ```yml
 models:

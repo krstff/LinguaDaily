@@ -301,10 +301,37 @@ def create_app(config_path=None, log_file=None, password=None,
         all_langs.update(news_feeds.keys())
         feed_languages = sorted(all_langs)
 
+        wikipedia_backend = ((config.get("wikipedia") or {}).get("backend") or "auto")
+
         return render_template("sources.html", active="sources",
                                kiwix_servers=kiwix_servers,
                                news_feeds=news_feeds,
-                               feed_languages=feed_languages)
+                               feed_languages=feed_languages,
+                               wikipedia_backend=wikipedia_backend)
+
+    # ── Wikipedia backend (Kiwix offline / wikipedia.org online) ──
+    @app.route("/api/sources/wikipedia-backend", methods=["POST"])
+    @require_auth
+    def api_wikipedia_backend():
+        """Set the Wikipedia backend mode: auto | kiwix | online."""
+        backend = request.form.get("backend", "auto").strip().lower()
+        if backend not in ("auto", "kiwix", "online"):
+            return jsonify({"message": "backend must be auto, kiwix or online"}), 400
+
+        config = load_config(_config_path)
+        wiki = config.setdefault("wikipedia", {})
+        wiki["backend"] = backend
+
+        try:
+            backup = _config_path.with_suffix(".json.bak")
+            if _config_path.exists():
+                shutil.copy2(_config_path, backup)
+            with open(_config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return jsonify({"message": f"Wikipedia backend set to '{backend}'"})
+        except Exception as e:
+            return jsonify({"message": f"Write error: {e}"}), 500
 
     # ── Kiwix server CRUD ───────────────────────────────
     @app.route("/api/sources/kiwix", methods=["POST"])

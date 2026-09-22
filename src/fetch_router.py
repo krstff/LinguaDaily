@@ -11,6 +11,9 @@ Usage (CLI):
 """
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_article(source, topic, config,
@@ -24,7 +27,7 @@ def fetch_article(source, topic, config,
         Content source identifier (e.g. "wikipedia", "news").
     topic : str or None
         Topic string — used only for news RSS feeds; ignored for wikipedia
-        which uses the /random endpoint.
+        which uses random article selection.
     config : dict
         Full config.json contents.
     learning_language : str or None
@@ -57,7 +60,11 @@ def fetch_article(source, topic, config,
 
 def _fetch_wikipedia(config, learning_language=None,
                      article_filter=None):
-    """Fetch a random Wikipedia article via Kiwix (direct import).
+    """Fetch a random Wikipedia article (direct import).
+
+    The backend is resolved per language — see
+    wikipedia_fetcher.resolve_wikipedia_backend: Kiwix (offline) when a
+    server is configured for the language, otherwise wikipedia.org.
 
     Parameters
     ----------
@@ -65,16 +72,15 @@ def _fetch_wikipedia(config, learning_language=None,
         Full config.json contents.
     learning_language : str or None
         Language code of the desired content (e.g. "de", "en").
-        If given, resolves Kiwix server from kiwix_servers[learning_language].
     article_filter : dict or None
         Per-profile article filter overrides ({min_words, max_words}).
     """
-    from wikipedia_fetcher import KiwixClient, load_fetcher_config
+    from wikipedia_fetcher import (
+        KiwixClient, WikipediaClient, load_fetcher_config,
+    )
 
     settings = load_fetcher_config(learning_language=learning_language)
 
-    base_url = settings["base_url"]
-    zim_name = settings["zim_name"]
     af = settings["article_filter"]
 
     # Profile-level overrides take precedence over config defaults
@@ -85,14 +91,36 @@ def _fetch_wikipedia(config, learning_language=None,
     max_words = af.get("max_words", 600)
 
     try:
-        with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
-            return client.get_random_article(
+        if settings["backend"] == "online":
+            client = WikipediaClient(language=settings["language"])
+            backend_label = f"wikipedia.org ({settings['language']})"
+        else:
+            client = KiwixClient(base_url=settings["base_url"],
+                                 zim_name=settings["zim_name"])
+            backend_label = f"Kiwix ({settings['zim_name']})"
+        with client:
+            title, text = client.get_random_article(
                 min_words=min_words,
                 max_words=max_words,
             )
     except Exception as e:
-        print(f"Wikipedia fetcher error: {e}")
+        logger.warning(
+            "Wikipedia fetcher error (learning_language=%s): %s",
+            learning_language, e,
+        )
         return None, None
+
+    # The fetcher signals total failure with title == "Error" — surface it
+    # as (None, None) so callers (orchestrator) abort the lesson cleanly
+    # instead of treating the error message as article content.
+    if title == "Error":
+        logger.error(
+            "Wikipedia fetch failed (backend=%s, learning_language=%s): %s",
+            backend_label, learning_language, text,
+        )
+        return None, None
+
+    return title, text
 
 
 # ── News (RSS) ──────────────────────────────────────────────────────

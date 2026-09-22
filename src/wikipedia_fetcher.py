@@ -1,20 +1,36 @@
 #!/usr/bin/env python3
 """
-Fetch a random Wikipedia article from a local Kiwix/ZIM server.
+Fetch a random Wikipedia article — offline (Kiwix/ZIM) or online (wikipedia.org).
+
+Two backends share one extraction pipeline (see WikiClientBase):
+  * KiwixClient     — local Kiwix Server (ZIM files), fully offline
+  * WikipediaClient — wikipedia.org via the classic MediaWiki API
+                      (/w/api.php?action=query&list=random + action=parse)
+
+Backend resolution (see resolve_wikipedia_backend):
+  * wikipedia.backend = "auto"   (default) — Kiwix if configured for the
+    language, otherwise online
+  * wikipedia.backend = "kiwix"  — offline only (falls back to online per
+    language if no Kiwix server is configured)
+  * wikipedia.backend = "online" — wikipedia.org only
 
 Uses requests + BeautifulSoup for clean HTTP and HTML handling.
 
 Usage:
     python3 src/wikipedia_fetcher.py                  # random article
-    python3 src/wikipedia_fetcher.py "quantum"        # search-based fetch
-    python3 src/wikipedia_fetcher.py --config config.json  # read Kiwix settings from config
+    python3 src/wikipedia_fetcher.py --learning-language de
+    python3 src/wikipedia_fetcher.py --config config.json
 """
 
 import json
+import logging
 import os
 import re
 import sys
+import time
 from urllib.parse import unquote
+
+logger = logging.getLogger(__name__)
 
 import requests
 from bs4 import BeautifulSoup
@@ -45,10 +61,35 @@ _PARAGRAPH_BREAK_RE = re.compile(
     r'])',
 )
 
-# ── Kiwix client ────────────────────────────────────────────────────
+# ── Shared Wikipedia client base ────────────────────────────────────
 
-class KiwixClient:
-    """Thin client for a Kiwix Server (ZIM reader)."""
+# Wikipedia's robot policy asks bots to identify themselves with contact
+# info. Override via the WIKI_USER_AGENT env var.
+WIKI_USER_AGENT = os.environ.get(
+    "WIKI_USER_AGENT",
+    "LinguaDaily/1.0 (personal daily-lesson bot; contact: administrator@localhost)",
+)
+
+
+class WikiFetchError(Exception):
+    """Fatal fetch error (endpoint missing/unavailable) — abort the retry loop."""
+
+
+class WikiClientBase:
+    """Shared behavior for Wikipedia content clients (Kiwix / online).
+
+    Subclasses implement two hooks:
+      _fetch_random_title() -> (title, meta) | None
+          Fetch one random candidate title. Return None to retry with a
+          different article. Raise WikiFetchError for fatal errors
+          (e.g. a Kiwix server without the /random endpoint).
+      get_article(title) -> str
+          Fetch the full article HTML for a title.
+
+    Everything else (title filtering, prose checks, text extraction,
+    disambiguation detection, word-count limits, smart truncation) is
+    shared, so both backends produce identical output.
+    """
 
     # Patterns to skip — English + common translations (DE, ES, IT, HU, FR, PL)
     SKIP_PATTERNS = [
@@ -83,12 +124,14 @@ class KiwixClient:
         "Seznam", "Seznamy", "Přehled", "Tabulka",
         "Glosář", "Rejstřík",
     ]
-    # Footer noise — English + translations (DE, ES, IT, HU, FR, PL)
+    # Footer noise — English + translations (DE, ES, IT, HU, FR, PL) + live Wikipedia
     FOOTER_MARKERS = [
-        # English
+        # English (Kiwix footer)
         "This article is issued from Wikipedia",
         "Creative Commons",
         "Additional terms may apply",
+        # English (live Wikipedia page footer)
+        "This page was last edited",
         # German
         "Dieser Artikel wurde aus Wikipedia extrahiert",
         # Spanish
@@ -104,13 +147,177 @@ class KiwixClient:
         # Czech
         "Tento článek byl extrahován z Wikipedie",
     ]
-    CONTENT_SELECTOR = "#mw-content-text, #bodyContent, .mw-parser-output"
+    # Disambiguation page detection — English + common translations
+    DISAMBIG_PATTERNS = [
+        "may refer to",              # EN
+        "kann sich beziehen auf",     # DE
+        "puede referirse a",          # ES
+        "può riferirsi a",            # IT
+        "lehet több jelentése is",    # HU
+        "peut faire référence à",     # FR
+        "může znamenat",              # CS
+        "viz rozcestník",             # CS (disambiguation page)
+    ]
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": WIKI_USER_AGENT})
+
+    # ── Random article (shared pipeline) ────────────────────────
+
+    def get_random_article(self, max_attempts=20, min_words=250, max_words=600):
+        """
+        Fetch a random readable article suitable for language learning.
+
+        Filters out lists, glossaries, disambiguation pages, and stubs.
+        Truncates longer articles to max_words using coherent
+        section/paragraph boundaries.
+
+        Returns (title, text) — title is "Error" when no suitable
+        article could be fetched.
+
+        Raises nothing — all failures are reported as an "Error" title so
+        callers can distinguish them from real content and abort the lesson.
+        """
+        # Abort early when the backend is persistently unreachable/rate-limited
+        # (e.g. 429 storms) instead of burning all max_attempts on dead ends.
+        max_consecutive_net_errors = 5
+        consecutive_net_errors = 0
+        last_skip = "no candidate drawn"
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = self._fetch_random_title()
+            except WikiFetchError as e:
+                # Fatal backend error (e.g. ZIM not loaded)
+                logger.warning("Random article fetch aborted (attempt %d/%d): %s",
+                               attempt, max_attempts, e)
+                return "Error", str(e)
+            except requests.RequestException as e:
+                # Transient network/HTTP error (429, timeout, ...) — respect
+                # Retry-After when present (capped), then retry
+                consecutive_net_errors += 1
+                delay = 1
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = min(int(float(retry_after)), 10)
+                        except (TypeError, ValueError):
+                            pass
+                logger.debug("Random article fetch: network error on attempt %d/%d "
+                             "(consecutive: %d): %s — retrying in %ds",
+                             attempt, max_attempts, consecutive_net_errors, e, delay)
+                if consecutive_net_errors >= max_consecutive_net_errors:
+                    logger.warning("Random article fetch aborted: %d consecutive "
+                                   "network errors (last: %s)",
+                                   consecutive_net_errors, e)
+                    return "Error", (f"Backend unreachable after {consecutive_net_errors} "
+                                     f"consecutive network errors (last: {e})")
+                time.sleep(delay)
+                continue
+            consecutive_net_errors = 0
+
+            if result is None:
+                last_skip = "no candidate title returned"
+                continue
+            title, meta = result
+
+            # Skip disambiguation pages flagged by the backend
+            # (e.g. REST API 'type': 'disambiguation')
+            if meta.get("disambiguation"):
+                last_skip = f"{title!r} is a disambiguation page"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            # Quick title filter
+            if any(skip in title for skip in self.SKIP_PATTERNS):
+                last_skip = f"{title!r} matches a skip pattern"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            # Fetch the full article HTML via the backend
+            try:
+                html = self.get_article(title)
+            except Exception as e:
+                last_skip = f"{title!r}: article fetch failed ({e})"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            # Skip articles that are mostly tables/infoboxes with no prose
+            if not _has_enough_prose(html):
+                last_skip = f"{title!r} has not enough prose"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            text = extract_wiki_text(html)
+
+            # Disambiguation page filter (multi-language patterns)
+            if any(pat in text[:500] for pat in self.DISAMBIG_PATTERNS):
+                last_skip = f"{title!r} looks like a disambiguation page"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            # Skip articles that are mostly table/infobox data (short lines)
+            if _is_table_heavy(text):
+                last_skip = f"{title!r} is mostly tables"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            word_count = len(text.split())
+
+            # Add buffer: cleaning (parentheses removal, reference stripping, etc.)
+            # removes words on average. Raise the minimum so that after cleaning
+            # we still deliver at least min_words.
+            effective_min = int(min_words / (1 - CLEAN_WORD_BUFFER))
+
+            # Too short — skip
+            if word_count < effective_min:
+                last_skip = f"{title!r} too short ({word_count} < {effective_min} words)"
+                logger.debug("Attempt %d/%d: %s", attempt, max_attempts, last_skip)
+                continue
+
+            html_title = _get_title_from_html(html) or title
+
+            # Within max_words — return as-is (no truncation needed)
+            if word_count <= max_words:
+                return html_title, text.strip()
+
+            # Too long — truncate at a coherent boundary
+            truncated = smart_truncate(text, max_words=max_words, min_words=min_words)
+            if truncated:
+                return html_title, truncated
+            # hard-truncate as last resort
+            return html_title, hard_truncate(text, max_words=max_words)
+
+        logger.warning("Random article fetch failed after %d attempts (last skip: %s)",
+                       max_attempts, last_skip)
+        return "Error", (f"Could not fetch a suitable random article after "
+                         f"{max_attempts} attempts (last skip: {last_skip})")
+
+    # ── Lifecycle ─────────────────────────────────────────────────
+
+    def close(self):
+        """Close the underlying session."""
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+# ── Kiwix client (offline) ──────────────────────────────────────────
+
+class KiwixClient(WikiClientBase):
+    """Thin client for a Kiwix Server (ZIM reader)."""
 
     def __init__(self, base_url="http://192.168.100.52:8080", zim_name="wikipedia_en_all_maxi_2026-02"):
+        super().__init__()
         self.base_url = base_url.rstrip("/")
         self.zim_name = zim_name
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "LinguaDaily/1.0"})
 
     # ── HTTP helpers ──────────────────────────────────────────────
 
@@ -164,7 +371,7 @@ class KiwixClient:
         return titles
 
     def get_article(self, title):
-        """Fetch full article HTML for a given title. Returns a Response."""
+        """Fetch full article HTML for a given title. Returns HTML string."""
         # URL-encode the title (handles spaces, underscores, special chars).
         # Titles from Kiwix search results are already URL-encoded, so first
         # decode to get the raw title, then re-encode to avoid double-encoding
@@ -174,111 +381,103 @@ class KiwixClient:
         encoded = quote(raw, safe="_")
         resp = self._get(f"/content/{self.zim_name}/{encoded}")
         resp.raise_for_status()
-        return resp
+        return resp.text
 
-    # ── Random article (via /random endpoint) ────────────────────
+    def _fetch_random_title(self):
+        """Random title via the Kiwix /random endpoint (302 redirect).
 
-    def get_random_article(self, max_attempts=20, min_words=250, max_words=600):
+        Returns (title, {}) — or None to retry. Raises WikiFetchError if
+        the server has no /random endpoint.
         """
-        Fetch a random readable article suitable for language learning.
+        resp = self._get("/random", params={"content": self.zim_name},
+                         timeout=15, allow_redirects=False)
+        if resp.status_code == 404:
+            raise WikiFetchError("/random endpoint not available on this Kiwix server.")
 
-        Uses the Kiwix /random endpoint (follows 302 redirect to get the
-        actual article path). Filters out lists, glossaries, disambiguation
-        pages, and stubs. Truncates longer articles to max_words using
-        coherent section/paragraph boundaries.
-        """
-        for _ in range(max_attempts):
-            # Kiwix /random?content=ZIMNAME returns a 302 redirect to the article
-            resp = self._get("/random", params={"content": self.zim_name}, timeout=15, allow_redirects=False)
-            if resp.status_code == 404:
-                return "Error", "/random endpoint not available on this Kiwix server."
+        # Follow the redirect — Location header contains the article path
+        location = resp.headers.get("Location", "")
+        if not location:
+            return None
 
-            # Follow the redirect — Location header contains the article path
-            location = resp.headers.get("Location", "")
-            if not location:
-                continue
+        # Extract title from the redirect URL: /content/ZIMNAME/Title
+        prefix = f"/content/{self.zim_name}/"
+        if location.startswith(prefix):
+            title_raw = location[len(prefix):]
+        elif location.startswith("/"):
+            # Some versions return just /Title
+            title_raw = location.lstrip("/")
+        else:
+            title_raw = location
 
-            # Extract title from the redirect URL: /content/ZIMNAME/Title
-            prefix = f"/content/{self.zim_name}/"
-            if location.startswith(prefix):
-                title_raw = location[len(prefix):]
-            elif location.startswith("/"):
-                # Some versions return just /Title
-                title_raw = location.lstrip("/")
-            else:
-                title_raw = location
+        # URL-decode the title
+        return unquote(title_raw), {}
 
-            # URL-decode the title
-            title = unquote(title_raw)
 
-            # Quick title filter
-            if any(skip in title for skip in self.SKIP_PATTERNS):
-                continue
+# ── Online Wikipedia client (classic MediaWiki API) ────────────────
 
-            # Fetch the full article HTML via content endpoint
-            article_resp = self.get_article(title)
+class WikipediaClient(WikiClientBase):
+    """Client for online Wikipedia (wikipedia.org).
 
-            # Skip articles that are mostly tables/infoboxes with no prose
-            if not _has_enough_prose(article_resp.text):
-                continue
+    Uses the classic MediaWiki API, which is available on every language
+    wiki (the newer REST endpoints like /api/rest_v1/page/random only
+    exist on a handful of wikis):
 
-            text = extract_wiki_text(article_resp.text)
+      GET /w/api.php?action=query&list=random&rnnamespace=0
+          Random main-namespace article title.
+      GET /w/api.php?action=parse&page={title}&prop=text
+          Content-only HTML (the same mw-parser-output structure Kiwix
+          serves), so the shared extraction pipeline works unchanged.
 
-            # Disambiguation page filter (multi-language patterns)
-            disambig_patterns = [
-                "may refer to",              # EN
-                "kann sich beziehen auf",     # DE
-                "puede referirse a",          # ES
-                "può riferirsi a",            # IT
-                "lehet több jelentése is",    # HU
-                "peut faire référence à",     # FR
-                "může znamenat",              # CS
-                "viz rozcestník",             # CS (disambiguation page)
-            ]
-            if any(pat in text[:500] for pat in disambig_patterns):
-                continue
+    Disambiguation pages are filtered by the shared pipeline's text
+    heuristics (same as the Kiwix backend).
 
-            # Skip articles that are mostly table/infobox data (short lines)
-            if _is_table_heavy(text):
-                continue
+    No per-language configuration needed — the domain is derived from
+    the language code (e.g. "de" → https://de.wikipedia.org).
+    """
 
-            word_count = len(text.split())
+    def __init__(self, language="en", timeout=15):
+        super().__init__()
+        self.language = language.lower()
+        self.timeout = timeout
+        self.base_url = f"https://{self.language}.wikipedia.org"
 
-            # Add buffer: cleaning (parentheses removal, reference stripping, etc.)
-            # removes words on average. Raise the minimum so that after cleaning
-            # we still deliver at least min_words.
-            effective_min = int(min_words / (1 - CLEAN_WORD_BUFFER))
+    def _api(self, **params):
+        """Call the classic MediaWiki API (available on every language wiki)."""
+        resp = self.session.get(
+            f"{self.base_url}/w/api.php", params=params, timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
-            # Too short — skip
-            if word_count < effective_min:
-                continue
+    def _fetch_random_title(self):
+        """Random main-namespace article title via the classic API."""
+        data = self._api(
+            action="query", list="random", rnnamespace="0",
+            rnlimit="1", format="json",
+        )
+        random = (data.get("query") or {}).get("random") or []
+        if not random:
+            raise WikiFetchError(
+                f"Wikipedia API returned no random page for '{self.language}'"
+            )
+        return random[0]["title"], {}
 
-            html_title = _get_title_from_html(article_resp.text) or title
-
-            # Within max_words — return as-is (no truncation needed)
-            if word_count <= max_words:
-                return html_title, text.strip()
-
-            # Too long — truncate at a coherent boundary
-            truncated = smart_truncate(text, max_words=max_words, min_words=min_words)
-            if truncated:
-                return html_title, truncated
-            # hard-truncate as last resort
-            return html_title, hard_truncate(text, max_words=max_words)
-
-        return "Error", "Could not fetch a suitable random article after multiple attempts."
-
-    # ── Lifecycle ─────────────────────────────────────────────────
-
-    def close(self):
-        """Close the underlying session."""
-        self.session.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
+    def get_article(self, title):
+        """Fetch content-only article HTML (mw-parser-output) for a title."""
+        data = self._api(
+            action="parse", page=title, prop="text", format="json",
+        )
+        if data.get("error"):
+            code = data["error"].get("code", "unknown")
+            raise WikiFetchError(
+                f"Wikipedia API error for '{title}': {code}"
+            )
+        text = (data.get("parse") or {}).get("text", {}).get("*")
+        if not text:
+            raise WikiFetchError(
+                f"Wikipedia API returned no content for '{title}'"
+            )
+        return text
 
 
 # ── HTML extraction helpers ─────────────────────────────────────────
@@ -614,6 +813,40 @@ def parse_cli_args(args):
     return config_path, learning_language, overrides
 
 
+def resolve_wikipedia_backend(config, language=None):
+    """
+    Resolve which Wikipedia backend to use for a language.
+
+    Returns (backend, params):
+      ("kiwix",  {"base_url": str, "zim_name": str})
+      ("online", {"language": str})
+
+    Selection policy:
+      * config["wikipedia"]["backend"] == "online" → always wikipedia.org
+      * == "kiwix" → Kiwix if a server is configured for the language,
+        otherwise online (fallback so the pipeline never breaks)
+      * default "auto" → Kiwix if a server is configured for the language,
+        otherwise online
+
+    Server resolution: kiwix_servers[language], falling back to the legacy
+    top-level 'kiwix' block.
+    """
+    lang = (language or "en").lower()
+    backend = ((config.get("wikipedia") or {}).get("backend") or "auto").lower()
+
+    kiwix_servers = config.get("kiwix_servers") or {}
+    kiwix_cfg = kiwix_servers.get(lang) or config.get("kiwix") or {}
+    has_kiwix = bool(kiwix_cfg)
+
+    if backend == "online" or not (has_kiwix and backend in ("auto", "kiwix")):
+        return "online", {"language": lang}
+
+    return "kiwix", {
+        "base_url": kiwix_cfg.get("base_url", KIWIX_DEFAULT_BASE_URL),
+        "zim_name": kiwix_cfg.get("zim_name", KIWIX_DEFAULT_ZIM_NAME),
+    }
+
+
 def load_fetcher_config(config_path=None, learning_language=None):
     """
     Load fetcher configuration from config.json.
@@ -623,14 +856,20 @@ def load_fetcher_config(config_path=None, learning_language=None):
     config_path : str or None
         Path to config.json. Defaults to project root.
     learning_language : str or None
-        Language code (e.g. "de", "en"). If given, resolves Kiwix server
-        from kiwix_servers[learning_language]. Falls back to legacy top-level
-        'kiwix' block if not found.
+        Language code (e.g. "de", "en"). Resolves the Wikipedia backend
+        (Kiwix / online) for this language — see resolve_wikipedia_backend.
+
+    Returns
+    -------
+    dict with keys: backend ("kiwix"|"online"), language, base_url,
+    zim_name (Kiwix only), article_filter.
     """
     if config_path is None:
         from config import CONFIG_PATH as config_path
 
     settings = {
+        "backend": "kiwix",
+        "language": (learning_language or "en").lower(),
         "base_url": KIWIX_DEFAULT_BASE_URL,
         "zim_name": KIWIX_DEFAULT_ZIM_NAME,
         "article_filter": ARTICLE_FILTER_DEFAULTS.copy(),
@@ -640,17 +879,11 @@ def load_fetcher_config(config_path=None, learning_language=None):
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
-        # Resolve Kiwix server: prefer kiwix_servers[learning_language], fall back to legacy 'kiwix'
-        wiki_cfg = {}
-        if learning_language and "kiwix_servers" in config:
-            wiki_cfg = config["kiwix_servers"].get(learning_language, {})
-
-        # Fall back to legacy top-level kiwix block
-        if not wiki_cfg:
-            wiki_cfg = config.get("kiwix", {})
-
-        settings["base_url"] = wiki_cfg.get("base_url", settings["base_url"])
-        settings["zim_name"] = wiki_cfg.get("zim_name", settings["zim_name"])
+        backend, params = resolve_wikipedia_backend(config, learning_language)
+        settings["backend"] = backend
+        if backend == "kiwix":
+            settings["base_url"] = params["base_url"]
+            settings["zim_name"] = params["zim_name"]
 
         af = config.get("article_filter", {})
         for key in settings["article_filter"]:
@@ -666,8 +899,6 @@ def main():
     settings = load_fetcher_config(config_path,
                                    learning_language=learning_language)
 
-    base_url = settings["base_url"]
-    zim_name = settings["zim_name"]
     af = settings["article_filter"]
     # CLI overrides take precedence
     if overrides:
@@ -675,20 +906,28 @@ def main():
     min_words = af["min_words"]
     max_words = af["max_words"]
 
-    with KiwixClient(base_url=base_url, zim_name=zim_name) as client:
+    if settings["backend"] == "online":
+        client = WikipediaClient(language=settings["language"])
+        source_label = f"wikipedia.org ({settings['language']})"
+    else:
+        client = KiwixClient(base_url=settings["base_url"],
+                             zim_name=settings["zim_name"])
+        source_label = f"Kiwix ({settings['zim_name']})"
+
+    with client:
         title, text = client.get_random_article(
             min_words=min_words,
             max_words=max_words,
         )
 
-        # Output as structured payload
-        result = {
-            "title": title,
-            "text": text,
-            "source": f"Kiwix ({zim_name})",
-            "word_count": len(text.split()),
-        }
-        print(json.dumps(result, ensure_ascii=False))
+    # Output as structured payload
+    result = {
+        "title": title,
+        "text": text,
+        "source": source_label,
+        "word_count": len(text.split()),
+    }
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

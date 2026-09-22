@@ -1,19 +1,52 @@
 # Wikipedia Fetcher Guide
 
-`src/wikipedia_fetcher.py` fetches articles from a local **Kiwix/ZIM server** (offline Wikipedia). It handles HTML extraction, quality filtering, smart truncation, and multi-language support.
+`src/wikipedia_fetcher.py` fetches random articles for lessons, from either a local **Kiwix/ZIM server** (offline) or **wikipedia.org** (online). Both backends share the same extraction, quality filtering, smart truncation, and multi-language pipeline.
 
-This is the most complex source module (~300+ lines) because it deals with raw Kiwix HTTP responses, multi-language skip patterns, disambiguation page detection, and coherent text truncation.
+This is the most complex source module (~500+ lines) because it deals with raw HTTP responses, multi-language skip patterns, disambiguation page detection, and coherent text truncation.
+
+## Backends
+
+Both clients subclass `WikiClientBase`, which owns the entire random-article
+loop (title filtering, prose checks, disambiguation detection, word-buffer
+truncation). Only two hooks differ per backend:
+
+| Hook | `KiwixClient` (offline) | `WikipediaClient` (online) |
+|------|------------------------|---------------------------|
+| `_fetch_random_title()` | `GET /random?content=ZIM` → 302 Location | `GET /w/api.php?action=query&list=random&rnnamespace=0` |
+| `get_article(title)` | `GET /content/ZIM/Title` (full HTML) | `GET /w/api.php?action=parse&page=…&prop=text` (mw-parser-output HTML) |
+
+The online backend uses the classic MediaWiki API because the newer REST
+endpoints (`/api/rest_v1/page/random`, `/api/rest_v1/page/html`) are only
+deployed on a handful of wikis (mainly English). `action=parse` returns the
+same `mw-parser-output` structure Kiwix serves, so the extraction pipeline
+is unchanged. No per-language config is needed online — the domain is
+derived from the language code (`de` → `https://de.wikipedia.org`).
+
+### Backend selection
+
+`resolve_wikipedia_backend(config, language)` returns
+`("kiwix" | "online", params)`. Policy, driven by `wikipedia.backend`
+(`auto` default):
+
+- `auto` — Kiwix when a `kiwix_servers[lang]` entry exists, otherwise online
+- `kiwix` — always Kiwix; falls back to online when no entry exists
+- `online` — always wikipedia.org
+
+Set via the **Sources** web page ("Wikipedia Backend" panel) or by editing
+`config.json`. In `auto` mode a language with no Kiwix server simply works
+online — nothing else to configure.
 
 ## Architecture
 
 ```
-Kiwix Server (ZIM reader)
-    │
-    ├── /random?content=ZIMNAME  → 302 redirect to article path
-    ├── /search?pattern=...      → HTML list of matching titles
-    └── /content/ZIMNAME/Title   → Full article HTML
-          │
-          ▼
+Kiwix Server (ZIM reader)                     wikipedia.org
+    │                                               │
+    ├── /random?content=ZIMNAME  → 302 redirect    ├── /w/api.php?action=query&list=random
+    ├── /search?pattern=...      → HTML title list ├── /w/api.php?action=parse&page=…
+    └── /content/ZIMNAME/Title   → Full article HTML└── (mw-parser-output HTML)
+          │                                               │
+          └────────────────┬──────────────────────────────┘
+                           ▼
     extract_wiki_text()          ← BeautifulSoup: strip chrome, infoboxes, footers
           │
           ▼
@@ -25,7 +58,7 @@ Kiwix Server (ZIM reader)
 
 ## KiwixClient Class
 
-Thin HTTP client for the Kiwix Server REST API. Handles UTF-8 encoding quirks, session management, and article quality filtering.
+Thin HTTP client for the Kiwix Server REST API. Handles UTF-8 encoding quirks, session management, and article quality filtering. See `WikipediaClient` above for the online equivalent.
 
 ### Initialization
 
@@ -76,7 +109,7 @@ client = KiwixClient(base_url=settings["base_url"], zim_name=settings["zim_name"
 }
 ```
 
-The `load_fetcher_config()` function resolves the correct Kiwix server for a given `content_lang`. Falls back to legacy top-level `"kiwix"` block if `"kiwix_servers"` is not present.
+The `load_fetcher_config()` function resolves the backend and server for a given `content_lang` (returned keys: `backend`, `base_url`/`zim_name` or `language`, `article_filter`). Falls back to legacy top-level `"kiwix"` block if `"kiwix_servers"` is not present.
 
 ### Public Methods
 

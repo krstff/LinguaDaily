@@ -4,16 +4,29 @@
 
 {% block content %}
 <h1>Sources</h1>
-<p class="subtitle">Manage content sources — Kiwix servers and RSS news feeds</p>
+<p class="subtitle">Manage content sources — Wikipedia (Kiwix offline / wikipedia.org online) and RSS news feeds</p>
 
 <div class="toolbar">
   <button class="btn btn-primary" onclick="openAddLangModal()">+ Add Language</button>
 </div>
 
+<!-- ── Wikipedia Backend ──────────────────────────────────── -->
+<div class="model-panel" style="border-left:3px solid var(--blue);">
+  <h2>Wikipedia Backend</h2>
+  <p class="subtitle">Where lesson articles come from. In <strong>auto</strong> mode each language uses its Kiwix server when configured, and wikipedia.org (online) otherwise.</p>
+  <div class="form-row" style="max-width:420px;">
+    <select id="wiki-backend-select" onchange="saveWikiBackend()">
+      <option value="auto" {% if wikipedia_backend == 'auto' %}selected{% endif %}>Auto — Kiwix if configured, else wikipedia.org</option>
+      <option value="kiwix" {% if wikipedia_backend == 'kiwix' %}selected{% endif %}>Kiwix only (offline)</option>
+      <option value="online" {% if wikipedia_backend == 'online' %}selected{% endif %}>wikipedia.org only (online)</option>
+    </select>
+  </div>
+</div>
+
 <!-- ── Kiwix Servers ──────────────────────────────────────── -->
 <div class="model-panel" style="border-left:3px solid var(--green);">
-  <h2>Kiwix Servers</h2>
-  <p class="subtitle">Per-language Wikipedia servers (ZIM files)</p>
+  <h2>Kiwix Servers <span style="font-size:13px;color:var(--fg_dim);font-weight:normal;">(offline, optional)</span></h2>
+  <p class="subtitle">Per-language Wikipedia servers (ZIM files). Languages without a server here use wikipedia.org in auto mode.</p>
 
   <div class="toolbar">
     <button class="btn btn-secondary" onclick="openKiwixModal(null)">+ Add Server</button>
@@ -411,6 +424,29 @@ function escapeHtml(str) {
 
 function escapeJs(str) {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+// ── Wikipedia backend selector ─────────────────────────
+async function saveWikiBackend() {
+  const backend = document.getElementById('wiki-backend-select').value;
+  try {
+    const formData = new FormData();
+    formData.append('backend', backend);
+    const res = await fetch('/api/sources/wikipedia-backend', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.message || 'Failed to save backend', true);
+      document.getElementById('wiki-backend-select').value = '{{ wikipedia_backend }}';
+      return;
+    }
+    showToast(data.message || 'Backend saved', false);
+    fetch('/api/reload', { method: 'POST' }).catch(() => {});
+  } catch (e) {
+    showToast('Failed to save backend', true);
+  }
 }
 
 // ── Close modals on overlay click ────────────────────────
