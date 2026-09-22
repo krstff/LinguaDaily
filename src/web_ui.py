@@ -666,61 +666,54 @@ def create_app(config_path=None, log_file=None, password=None,
     @app.route("/api/models/fetch")
     @require_auth
     def fetch_models():
-        """Fetch available models from the OpenAI-compatible API.
+        """Fetch available models from the OpenAI-compatible endpoints.
 
-        Queries both the LLM base_url and TTS base_url endpoints,
-        returning a merged list of unique model IDs.
+        Queries the LLM endpoint and the TTS endpoint separately so the
+        dashboard offers chat models and TTS models in distinct lists.
         """
         config = load_config(_config_path)
         llm_cfg = config.get("llm", {})
         tts_cfg = config.get("tts", {})
 
-        urls = []
         llm_url = llm_cfg.get("base_url", "")
-        if llm_url:
-            urls.append(llm_url)
+        if not llm_url:
+            llm_url = os.environ.get("LLAMA_BASE_URL", "")
         tts_url = tts_cfg.get("base_url", "")
-        if tts_url and tts_url != llm_url:
-            urls.append(tts_url)
 
-        # Fallback to env vars
-        import os as _os
-        env_url = _os.environ.get("LLAMA_BASE_URL", "")
-        if env_url and env_url not in urls:
-            urls.append(env_url)
-
-        if not urls:
+        if not llm_url and not tts_url:
             return jsonify({"llm_models": [], "tts_models": [], "error": "No API URLs configured"})
-
-        llm_models = []
-        tts_models = []
-        errors = []
 
         try:
             from openai import OpenAI
         except ImportError:
             return jsonify({"llm_models": [], "tts_models": [], "error": "openai package not installed"})
 
-        for url in urls:
-            api_key = llm_cfg.get("api_key", "") or "none"
+        results = {"llm_models": [], "tts_models": [], "errors": []}
+
+        def list_models(url, api_key):
+            client = OpenAI(base_url=url, api_key=api_key or "none", timeout=10)
+            return [getattr(m, "id", str(m)) for m in client.models.list()]
+
+        if llm_url:
             try:
-                client = OpenAI(base_url=url, api_key=api_key, timeout=10)
-                models = client.models.list()
-                for m in models:
-                    model_id = getattr(m, "id", str(m))
-                    if model_id not in llm_models:
-                        llm_models.append(model_id)
-                    # TTS models typically have "tts" or "voice" in the ID, but
-                    # we also include all models since OmniVoice may use any
-                    if model_id not in tts_models:
-                        tts_models.append(model_id)
+                results["llm_models"] = list_models(llm_url, llm_cfg.get("api_key", ""))
             except Exception as e:
-                errors.append(f"{url}: {e}")
+                results["errors"].append(f"{llm_url}: {e}")
+
+        if tts_url:
+            if tts_url == llm_url:
+                # Same server — reuse the list we just fetched
+                results["tts_models"] = list(results["llm_models"])
+            else:
+                try:
+                    results["tts_models"] = list_models(tts_url, tts_cfg.get("api_key", ""))
+                except Exception as e:
+                    results["errors"].append(f"{tts_url}: {e}")
 
         return jsonify({
-            "llm_models": sorted(llm_models),
-            "tts_models": sorted(tts_models),
-            "errors": errors,
+            "llm_models": sorted(results["llm_models"]),
+            "tts_models": sorted(results["tts_models"]),
+            "errors": results["errors"],
         })
 
     @app.route("/api/models/save", methods=["POST"])
@@ -730,9 +723,8 @@ def create_app(config_path=None, log_file=None, password=None,
 
         Expects JSON body:
         {
-            "translate_model": "model-name",
-            "tutor_model": "model-name",
-            "tts_model": TTS_DEFAULT_MODEL,
+            "default_model": "model-name",   # general model (translate, vocab, tutor, simplify)
+            "tts_model": "omnivoice",
             "embedding_model": "nomic-embed-text"
         }
         """
@@ -747,22 +739,14 @@ def create_app(config_path=None, log_file=None, password=None,
 
         changed = []
 
-        if "translate_model" in data:
-            val = data["translate_model"]
-            # Empty string means "use default"
+        if "default_model" in data:
+            val = data["default_model"]
+            # Empty string means "use built-in default"
             if val:
-                llm_cfg["translate_model"] = val
-            elif "translate_model" in llm_cfg:
-                del llm_cfg["translate_model"]
-            changed.append("translate_model")
-
-        if "tutor_model" in data:
-            val = data["tutor_model"]
-            if val:
-                llm_cfg["tutor_model"] = val
-            elif "tutor_model" in llm_cfg:
-                del llm_cfg["tutor_model"]
-            changed.append("tutor_model")
+                llm_cfg["default_model"] = val
+            elif "default_model" in llm_cfg:
+                del llm_cfg["default_model"]
+            changed.append("default_model")
 
         if "tts_model" in data:
             val = data["tts_model"]
@@ -798,8 +782,6 @@ def create_app(config_path=None, log_file=None, password=None,
         rag_cfg = config.get("rag", {})
         return jsonify({
             "default_model": llm_cfg.get("default_model", ""),
-            "translate_model": llm_cfg.get("translate_model", ""),
-            "tutor_model": llm_cfg.get("tutor_model", ""),
             "tts_model": tts_cfg.get("model", TTS_DEFAULT_MODEL),
             "embedding_model": rag_cfg.get("embedding_model", "nomic-embed-text"),
         })

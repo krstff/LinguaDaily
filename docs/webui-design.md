@@ -34,15 +34,15 @@ The main management page with three sections:
 Card-style counters for total profiles, scheduled (enabled + has schedule), and target languages.
 
 #### Model Selection panel
-Three dropdowns populated by calling `/v1/models` on your LLM server:
+Three dropdowns populated by calling `/v1/models` on the configured endpoints:
 
 | Dropdown | Config key | Used by |
 |----------|-----------|---------|
-| Translation Model | `llm.translate_model` | Article translation + vocabulary extraction |
-| Tutoring Model | `llm.tutor_model` | Interactive tutor chat |
+| General Model | `llm.default_model` | Lesson generation, translation, vocabulary, tutor chat |
 | TTS Model | `tts.model` | Text-to-speech synthesis |
+| Embedding Model | `rag.embedding_model` | RAG embeddings |
 
-Leave a dropdown on "→ default" to use the global `default_model`. Changes apply globally (all profiles) and are saved with the **Save Models** button.
+Leave the General dropdown on "→ built-in default" to use the hardcoded fallback. Changes apply globally (all profiles) and are saved with the **Save Models** button.
 
 #### Profile table
 Columns: Name, Enabled toggle, Language pair, Chat ID, Schedule, TTS voice, Source type, Actions.
@@ -83,17 +83,13 @@ Opens a modal form with fields: name, Telegram chat ID, native/learning language
 
 ## Model Selection Details
 
-The model selection panel works in two steps:
+The model selection panel works in three steps:
 
-1. **Fetch**: On page load, JS calls `/api/models/fetch`. The backend queries `llm.base_url/v1/models` and `tts.base_url/v1/models`, merges results, and returns sorted lists.
+1. **Fetch**: On page load, JS calls `/api/models/fetch`. The backend queries `/v1/models` on the LLM endpoint (for general + embedding models) and the TTS endpoint (for TTS models) separately, and returns two sorted lists.
 2. **Populate**: Dropdowns are filled with available model IDs. Current selections from config are loaded via `/api/models/current` and the matching options are selected.
-3. **Save**: Clicking "Save Models" POSTs `{translate_model, tutor_model, tts_model}` to `/api/models/save`. The backend writes these into `llm.translate_model`, `llm.tutor_model`, and `tts.model` in config.json.
+3. **Save**: Clicking "Save Models" POSTs `{default_model, tts_model, embedding_model}` to `/api/models/save`. The backend writes these into `llm.default_model`, `tts.model`, and `rag.embedding_model` in config.json.
 
-Model resolution follows the existing priority chain (see [LLM Client Guide](llama-client.md)):
-1. Profile-level override (`profile.llm_translate_model`)
-2. Profile-level generic (`profile.llm_model`)
-3. **Global task default** (`llm.translate_model`, `llm.tutor_model`) ← set by Web UI
-4. Global default model (`llm.default_model`)
+Model resolution: the single general model (`llm.default_model`) handles all chat tasks. Per-profile overrides (`profile.llm_model` etc.) remain available as an escape hatch (see [LLM Client Guide](llama-client.md)).
 
 ## Gruvbox Palette (dark)
 

@@ -96,6 +96,17 @@ class TestModelResolution:
         assert client.resolve_model("translate") == "gemma4-26b"
         assert client.resolve_model("tutor") == "mistral-7b"
 
+    def test_deprecated_task_models_ignored(self, sample_config):
+        """llm.translate_model / tutor_model / simplify_model are deprecated
+        and no longer affect model resolution."""
+        from src.llama_client import LlamaClient
+        config = dict(sample_config[0])
+        config["llm"]["translate_model"] = "deprecated-model"
+        config["llm"]["tutor_model"] = "deprecated-model"
+        client = LlamaClient(config=config, profile_name="krystof")
+        assert client.resolve_model("translate") == "gemma4-26b"
+        assert client.resolve_model("tutor") == "gemma4-26b"
+
     @patch("config.get_openai_client")
     def test_explicit_model_param(self, mock_get_client, sample_config):
         """Explicit model arg in _chat overrides resolution."""
@@ -353,11 +364,10 @@ class TestSimplifyLanguage:
         assert call_args["temperature"] == 0.1
 
     @patch("openai.OpenAI")
-    def test_simplify_uses_simplify_model(self, MockOpenAI, sample_config):
-        """Should resolve the 'simplify' model task."""
+    def test_simplify_uses_general_model(self, MockOpenAI, sample_config):
+        """Simplify uses the single general model (llm.default_model)."""
         from src.llama_client import LlamaClient
-        config = dict(sample_config[0])
-        config["llm"]["simplify_model"] = "simplifier-model"
+        config = sample_config[0]
         mock_instance = MagicMock()
         mock_instance.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(message=MagicMock(content="Simple."))]
@@ -368,7 +378,7 @@ class TestSimplifyLanguage:
         client.simplify_language("text", level="A1")
 
         call_args = mock_instance.chat.completions.create.call_args[1]
-        assert call_args["model"] == "simplifier-model"
+        assert call_args["model"] == "gemma4-26b"
 
     def test_simplify_returns_none_on_error(self, sample_config):
         from src.llama_client import LlamaClient

@@ -1,8 +1,8 @@
 # LLM Client Guide
 
-`src/llama_client.py` is the interface to local **llama.cpp** models via an OpenAI-compatible API. It handles translation, vocabulary extraction, and interactive tutoring — the three core language-learning tasks.
+`src/llama_client.py` is the interface to **OpenAI-compatible** models (local llama.cpp, OpenAI, or any other compatible API). It handles translation, vocabulary extraction, and interactive tutoring — the three core language-learning tasks.
 
-Designed for a default single-model setup with optional per-task and per-profile model overrides.
+A single **general model** (`llm.default_model`) handles all chat tasks. Per-profile model overrides remain available as an escape hatch.
 
 ## Architecture
 
@@ -32,19 +32,17 @@ All three public methods use the same `_chat()` core — they differ only in sys
     "base_url": "http://llama-swap:8080/v1",
     "default_model": "gemma-4-26B-language",
     "api_key": "",
-    "timeout": 600,
-    "translate_model": "gemma-4-26B",    // optional: model for translation + vocab
-    "tutor_model": "Qwen3.6-27B"          // optional: model for tutoring
+    "timeout": 600
   },
   "profiles": {
     "krystof": {
-      "llm_model": "other-model",           // optional: override all tasks
-      "llm_translate_model": "...",         // optional: separate model for translation
-      "llm_tutor_model": "..."              // optional: separate model for tutoring
+      "llm_model": "other-model"           // optional: per-profile override (escape hatch)
     }
   }
 }
 ```
+
+The old per-task keys (`llm.translate_model`, `llm.tutor_model`, `llm.simplify_model`) are deprecated and stripped on config load — the single general model is used for all tasks.
 
 ### Environment variable fallbacks
 
@@ -53,15 +51,15 @@ All three public methods use the same `_chat()` core — they differ only in sys
 | `llm.base_url` | `LLAMA_BASE_URL` | `http://llama-swap:8080/v1` |
 | `llm.default_model` | `LLAMA_MODEL` | `gemma-4-26B-language` |
 | `llm.timeout` | `LLAMA_TIMEOUT` | `600` (seconds) |
+| `llm.api_key` | `LLM_API_KEY` | `none` |
 
-### Model resolution priority
+### Model resolution
 
-`resolve_model(task)` determines which model to use for a given task. Priority (highest first):
+`resolve_model(task)` determines which model to use for a given task. A single general model handles translate, simplify, vocab, and tutor. Priority (highest first):
 
-1. **Profile-level task-specific override** — e.g., `profile.llm_translate_model`
-2. **Profile-level generic override** — `profile.llm_model`
-3. **LLM-level task default** — `llm.translate_model`, `llm.tutor_model` (settable via Web UI)
-4. **Global default model** — `llm.default_model`
+1. **Profile-level task override** (escape hatch) — e.g., `profile.llm_translate_model`
+2. **Profile-level generic override** (escape hatch) — `profile.llm_model`
+3. **General model** — `llm.default_model`
 
 ```python
 client = LlamaClient(config=config, profile_name="krystof")
@@ -167,7 +165,7 @@ Core chat completion wrapper. Handles:
 
 ### `_get_client()`
 
-Lazy-initializes the `openai.OpenAI` client with configured `base_url`, `api_key`, and `timeout`. Cached — called once per client instance.
+Returns the shared OpenAI client for the configured endpoint from the per-endpoint cache in `src/config.py` (keyed by `base_url` + `api_key` + `timeout`). All LlamaClient instances with the same endpoint share one client, so the LLM, TTS, and embedding endpoints can point at completely different servers without interfering.
 
 ## CLI Usage
 

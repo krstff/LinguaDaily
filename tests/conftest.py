@@ -13,17 +13,20 @@ if SRC_DIR not in sys.path:
 import pytest
 
 
+def _reset_client_caches():
+    """Clear the shared OpenAI client caches in all loaded config modules."""
+    for module_name in ("config", "src.config"):
+        if module_name in sys.modules:
+            mod = sys.modules[module_name]
+            if hasattr(mod, "reset_openai_client"):
+                mod.reset_openai_client()
+            if hasattr(mod, "reset_embedding_client"):
+                mod.reset_embedding_client()
+
+
 @pytest.fixture(autouse=True)
 def reset_shared_openai_client():
-    """Reset the shared OpenAI client singleton before/after each test."""
-    for module_name in ("config", "src.config"):
-        if module_name in sys.modules:
-            mod = sys.modules[module_name]
-            if hasattr(mod, "get_openai_client") and hasattr(mod.get_openai_client, "_instance"):
-                mod.get_openai_client._instance = None
+    """Reset the shared OpenAI client caches before/after each test."""
+    _reset_client_caches()
     yield
-    for module_name in ("config", "src.config"):
-        if module_name in sys.modules:
-            mod = sys.modules[module_name]
-            if hasattr(mod, "get_openai_client") and hasattr(mod.get_openai_client, "_instance"):
-                mod.get_openai_client._instance = None
+    _reset_client_caches()

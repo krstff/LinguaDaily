@@ -41,13 +41,14 @@ from config import (
 
 # ── Required Python packages ────────────────────────────────────────
 
+# Package name -> (import name, purpose)
 REQUIRED_PACKAGES = {
-    "openai":         "LLM client (translation, vocab, tutor)",
-    "requests":       "HTTP client (Kiwix, TTS, news RSS)",
-    "beautifulsoup4": "HTML parsing (Wikipedia article extraction)",
-    "feedparser":     "RSS feed parsing (news source)",
-    "aiogram":        "Telegram bot framework",
-    "apscheduler":   "Lesson scheduler",
+    "openai":         ("openai",         "LLM client (translation, vocab, tutor)"),
+    "requests":       ("requests",       "HTTP client (Kiwix, TTS, news RSS)"),
+    "beautifulsoup4": ("bs4",            "HTML parsing (Wikipedia article extraction)"),
+    "feedparser":     ("feedparser",     "RSS feed parsing (news source)"),
+    "aiogram":        ("aiogram",        "Telegram bot framework"),
+    "apscheduler":   ("apscheduler",   "Lesson scheduler"),
 }
 
 # Valid sources a profile can use
@@ -313,24 +314,11 @@ def check_llm(config):
             if mid:
                 available_models.add(mid)
 
-    # 3. Check that configured models exist on the server
+    # 3. Check that the configured general model exists on the server
     models_to_check = {}
     default_model = llm.get("default_model")
     if default_model:
         models_to_check["llm.default_model"] = default_model
-    translate_model = llm.get("translate_model")
-    if translate_model:
-        models_to_check["llm.translate_model"] = translate_model
-    tutor_model = llm.get("tutor_model")
-    if tutor_model:
-        models_to_check["llm.tutor_model"] = tutor_model
-
-    # Also check per-profile model overrides
-    for pname, profile in config.get("profiles", {}).items():
-        for key in ("llm_model", "llm_translate_model", "llm_tutor_model"):
-            val = profile.get(key)
-            if val:
-                models_to_check[f"profiles.{pname}.{key}"] = val
 
     for cfg_key, model_name in models_to_check.items():
         if model_name not in available_models:
@@ -455,9 +443,9 @@ def check_news_feeds(config):
 def check_packages():
     """Return list of (ok: bool, message: str) for each required package."""
     results = []
-    for pkg_name, purpose in REQUIRED_PACKAGES.items():
+    for pkg_name, (import_name, purpose) in REQUIRED_PACKAGES.items():
         try:
-            mod = importlib.import_module(pkg_name)
+            mod = importlib.import_module(import_name)
             version = getattr(mod, "__version__", "?")
             results.append((True, f"✅ {pkg_name} ({version}) — {purpose}"))
         except ImportError:

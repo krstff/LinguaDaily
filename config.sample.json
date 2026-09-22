@@ -5,10 +5,7 @@
     "base_url": "http://localhost:8080/v1",
     "default_model": "gemma-4-26B-language",
     "api_key": "",
-    "timeout": 600,
-    "translate_model": "gemma-4-26B-language",
-    "tutor_model": "gemma-4-26B-language",
-    "simplify_model": "gemma-4-26B-language"
+    "timeout": 600
   },
 
   "telegram": {

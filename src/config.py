@@ -178,22 +178,41 @@ def tts_speed_for_level(level: str) -> float:
     return TTS_SPEED_BY_LEVEL.get(level.upper(), 1.0)
 
 
-# ── Shared OpenAI client (singleton) ──────────────────────────────
+# ── Shared OpenAI clients (per-endpoint cache) ──────────────────────
 #
-# All modules that talk to llama.cpp share ONE OpenAI client instance.
-# This avoids multiple HTTP connection pools fighting over the same
-# server — especially important when llama-swap is loading/unloading
-# models and transient timeouts trigger independent retries from
-# separate clients ("zombie" duplicate requests).
+# All modules that talk to an OpenAI-compatible API (local llama.cpp,
+# OpenAI, OpenRouter, …) get their client from a small cache keyed by
+# (base_url, api_key, timeout).  Each distinct endpoint gets exactly ONE
+# client, so LLM, TTS, and embedding endpoints can point at completely
+# different servers (e.g. OpenAI API for chat + local OmniVoice for TTS)
+# without one silently hijacking the other.
+#
+# One client per endpoint also avoids multiple HTTP connection pools
+# fighting over the same server — especially important when llama-swap
+# is loading/unloading models and transient timeouts trigger independent
+# retries from separate clients ("zombie" duplicate requests).
+
+_CLIENT_CACHE = {}
+_EMBED_CLIENT_CACHE = {}
+
+
+def get_llm_api_key(path=None) -> str:
+    """Return the LLM api_key from config.json (default: "none")."""
+    import os
+    cfg = load_config(path, fallback={})
+    return (
+        (cfg.get("llm", {}) or {}).get("api_key")
+        or os.environ.get("LLM_API_KEY")
+        or "none"
+    )
+
 
 def get_openai_client(base_url: str = None, api_key: str = "none", timeout: float = 60):
     """
-    Get or create the shared OpenAI-compatible client for llama.cpp.
+    Get (or create) the shared OpenAI-compatible client for an endpoint.
 
-    Only ONE instance is ever created (module-level singleton) regardless
-    of how many times this function is called. The base_url, api_key, and
-    timeout are used on first creation only — subsequent calls return the
-    same instance.
+    Clients are cached per (base_url, api_key, timeout) and shared by all
+    modules, so each distinct endpoint gets exactly one client instance.
 
     Parameters
     ----------
@@ -217,23 +236,25 @@ def get_openai_client(base_url: str = None, api_key: str = "none", timeout: floa
         logger_cfg.warning("'openai' package not installed — LLM calls will fail.")
         return None
 
-    if not hasattr(get_openai_client, "_instance") or get_openai_client._instance is None:
-        resolved_url = base_url or get_llm_base_url()
-        get_openai_client._instance = OpenAI(
+    resolved_url = base_url or get_llm_base_url()
+    key = (resolved_url, api_key or "none", timeout)
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+        client = OpenAI(
             base_url=resolved_url,
             api_key=api_key or "none",
             timeout=timeout,
         )
-    return get_openai_client._instance
+        _CLIENT_CACHE[key] = client
+    return client
 
 
 def reset_openai_client():
-    """Reset the shared OpenAI client (for tests / config reload)."""
-    if hasattr(get_openai_client, "_instance"):
-        get_openai_client._instance = None
+    """Reset the shared OpenAI client cache (for tests / config reload)."""
+    _CLIENT_CACHE.clear()
 
 
-def get_embedding_client(base_url: str = None, timeout: float = 300):
+def get_embedding_client(base_url: str = None, api_key: str = None, timeout: float = 300):
     """Get a dedicated OpenAI client for embedding requests.
 
     This is separate from the main LLM client because embeddings need
@@ -242,10 +263,17 @@ def get_embedding_client(base_url: str = None, timeout: float = 300):
         llama-swap's already-full send buffer)
       - Longer timeout (larger batches take more time)
 
+    If no explicit api_key is given, the LLM config's api_key is used
+    when the embedding endpoint equals the LLM endpoint (so a remote
+    API like OpenAI works for both chat and embeddings); otherwise
+    "none" (typical local llama.cpp setup).
+
     Parameters
     ----------
     base_url : str or None
-        API base URL. Falls back to LLM base URL.
+        API base URL. Falls back to the LLM base URL.
+    api_key : str or None
+        API key. None = resolve from the LLM config (see above).
     timeout : float
         Request timeout in seconds (default 300 = 5 minutes for large batches).
 
@@ -258,27 +286,55 @@ def get_embedding_client(base_url: str = None, timeout: float = 300):
     except ImportError:
         return None
 
-    if not hasattr(get_embedding_client, "_instance") or get_embedding_client._instance is None:
-        resolved_url = base_url or get_llm_base_url()
-        get_embedding_client._instance = OpenAI(
+    resolved_url = base_url or get_llm_base_url()
+    if api_key is None:
+        api_key = get_llm_api_key() if resolved_url == get_llm_base_url() else "none"
+
+    key = (resolved_url, api_key, timeout)
+    client = _EMBED_CLIENT_CACHE.get(key)
+    if client is None:
+        client = OpenAI(
             base_url=resolved_url,
-            api_key="none",
+            api_key=api_key,
             timeout=timeout,
             max_retries=0,   # CRITICAL: retries during congestion make llama-swap worse
         )
-    return get_embedding_client._instance
+        _EMBED_CLIENT_CACHE[key] = client
+    return client
 
 
 def reset_embedding_client():
-    """Reset the embedding client (for tests / config reload)."""
-    if hasattr(get_embedding_client, "_instance"):
-        get_embedding_client._instance = None
+    """Reset the embedding client cache (for tests / config reload)."""
+    _EMBED_CLIENT_CACHE.clear()
 
 
 # ── Config loader ────────────────────────────────────────────────────
 
+# ── Deprecated per-task model keys ──────────────────────────────────
+#
+# The old config supported per-task model overrides (llm.translate_model,
+# llm.tutor_model, llm.simplify_model).  Everything chat-like now uses the
+# single general model (llm.default_model).  Stale keys are stripped on
+# load so old configs behave identically and get cleaned up automatically
+# on the next web-UI save.
+
+_DEPRECATED_LLM_MODEL_KEYS = ("translate_model", "tutor_model", "simplify_model")
+
+
+def _strip_deprecated_keys(config: dict) -> dict:
+    """Remove deprecated per-task model keys from a loaded config dict."""
+    llm = config.get("llm")
+    if isinstance(llm, dict):
+        for key in _DEPRECATED_LLM_MODEL_KEYS:
+            llm.pop(key, None)
+    return config
+
+
 def load_config(path=None, fallback=None):
     """Load and return the project config as a dict.
+
+    Deprecated per-task model keys (llm.translate_model, llm.tutor_model,
+    llm.simplify_model) are stripped on load — use llm.default_model.
 
     Args:
         path: Optional path to a JSON config file. Defaults to
@@ -295,7 +351,7 @@ def load_config(path=None, fallback=None):
     target = pathlib.Path(path) if path else CONFIG_PATH
     try:
         with open(target, encoding="utf-8") as f:
-            return json.load(f)
+            return _strip_deprecated_keys(json.load(f))
     except Exception:
         if fallback is not None:
             return fallback

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-LLM client for local llama.cpp models (OpenAI-compatible API).
+LLM client for OpenAI-compatible models (local llama.cpp or hosted APIs).
 
 Supports translation, vocabulary extraction, and interactive tutoring.
-Designed for a default single-model setup with optional per-task model overrides
-for future extensibility.
+A single "general" model (llm.default_model) handles all chat tasks;
+per-profile model overrides remain available as an escape hatch.
 
 Usage (import):
     from src.llama_client import LlamaClient
@@ -23,9 +23,7 @@ Config structure in config.json:
       },
       "profiles": {
         "krystof": {
-          "llm_model": "other-model",       // optional per-profile override
-          "llm_translate_model": "...",    // optional: separate model for translation
-          "llm_tutor_model": "..."         // optional: separate model for tutoring
+          "llm_model": "other-model"       // optional per-profile override
         }
       }
     }
@@ -258,48 +256,51 @@ class LlamaClient:
         """
         Resolve which model to use for a given task.
 
+        A single "general" model (llm.default_model) handles all chat
+        tasks (translate, simplify, vocab, tutor).  Profile-level
+        overrides remain as an escape hatch.
+
         Priority (highest first):
-          1. Profile-level override (e.g. profile.llm_translate_model)
+          1. Profile-level task override (e.g. profile.llm_translate_model)
           2. Profile-level generic override (profile.llm_model)
-          3. LLM-level task default (llm.translate_model, llm.tutor_model)
-          4. Global default model
+          3. Global default model (llm.default_model)
 
         Parameters
         ----------
         task : str
-            Task identifier: "translate", "vocab", "tutor", or "default".
+            Task identifier: "translate", "vocab", "tutor", or "default"
+            (kept for call-site compatibility; all tasks share the general model).
 
         Returns
         -------
         str
             Model name to use.
         """
-        # Profile-level task-specific override (e.g. llm_translate_model)
-        task_key = f"llm_{task}_model"
-        if self.profile and task_key in self.profile:
-            return self.profile[task_key]
-
-        # Profile-level generic override
-        if self.profile and "llm_model" in self.profile:
-            return self.profile["llm_model"]
-
-        # LLM-level task default (future extensibility)
-        llm_task = self.llm_cfg.get(f"{task}_model")
-        if llm_task:
-            return llm_task
+        # Profile-level escape-hatch overrides
+        if self.profile:
+            task_key = f"llm_{task}_model"
+            if task_key in self.profile:
+                return self.profile[task_key]
+            if "llm_model" in self.profile:
+                return self.profile["llm_model"]
 
         return self.default_model
 
-    # ── OpenAI client (shared singleton) ────────────────────────
+    # ── OpenAI client (shared per-endpoint cache) ───────────────
 
     def _get_client(self):
-        """Get the shared OpenAI-compatible client.
+        """Get the shared OpenAI-compatible client for this endpoint.
 
-        All LlamaClient instances share ONE underlying OpenAI client
-        to avoid multiple connection pools fighting llama.cpp.
+        All LlamaClient instances with the same endpoint share ONE
+        underlying OpenAI client (cached per base_url+api_key+timeout in
+        config) to avoid multiple connection pools fighting the server.
         """
         from config import get_openai_client
-        return get_openai_client(base_url=self.base_url, api_key=self.api_key)
+        return get_openai_client(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout,
+        )
 
     # ── Core chat completion ───────────────────────────────────────
 

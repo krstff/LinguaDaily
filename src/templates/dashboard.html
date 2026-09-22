@@ -28,18 +28,12 @@
 <!-- ── Model Selection Panel ──────────────────────────── -->
 <div class="model-panel">
   <h2>Model Selection</h2>
-  <p class="subtitle">Choose models for translation, tutoring, TTS and RAG embeddings (applies to all profiles)</p>
-  <div class="form-grid" style="grid-template-columns:repeat(4,1fr);">
+  <p class="subtitle">Choose the general model (lessons, translation, vocab, tutor), TTS and RAG embeddings (applies to all profiles)</p>
+  <div class="form-grid" style="grid-template-columns:repeat(3,1fr);">
     <div class="form-row">
-      <label>Translation Model</label>
-      <select id="model_translate">
-        <option value="">→ default model</option>
-      </select>
-    </div>
-    <div class="form-row">
-      <label>Tutoring Model</label>
-      <select id="model_tutor">
-        <option value="">→ default</option>
+      <label>General Model</label>
+      <select id="model_general">
+        <option value="">→ built-in default</option>
       </select>
     </div>
     <div class="form-row">
