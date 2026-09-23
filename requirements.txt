@@ -22,3 +22,7 @@ flask>=3.0.0             # Admin panel for config management + log viewer
 qdrant-client>=1.7.0          # Qdrant vector DB client
 pdfplumber>=0.10.0            # PDF text extraction (ingest_textbooks.py)
 python-docx>=1.1.0            # DOCX text extraction (ingest_textbooks.py)
+
+# Testing (dev only)
+pytest>=8.0.0                 # Test runner
+pytest-asyncio>=0.23.0        # Async test support (@pytest.mark.asyncio)

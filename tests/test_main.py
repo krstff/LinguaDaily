@@ -282,9 +282,8 @@ class TestSignalHandling:
         daemon = LinguaDaemon(config=full_config[0])
         daemon._shutdown_event.set()
 
-        loop = asyncio.get_event_loop()
         # Should return immediately since event is already set
-        loop.run_until_complete(daemon._wait_for_shutdown())
+        asyncio.run(daemon._wait_for_shutdown())
 
 
 class TestCLI:
