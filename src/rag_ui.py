@@ -54,6 +54,18 @@ def register_rag_ui(app, config_path=None):
     """Register the RAG document management routes on a Flask app."""
     _documents_dir.mkdir(parents=True, exist_ok=True)
 
+    # Honor an explicit config path (used by tests); default to the global one
+    _config_path = Path(config_path) if config_path else CONFIG_PATH
+
+    def _save_config(config):
+        """Write config to disk with a .bak backup. Raises on failure."""
+        backup = _config_path.with_suffix(".json.bak")
+        if _config_path.exists():
+            shutil.copy2(_config_path, backup)
+        with open(_config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
     def _get_rag():
         """Lazy-init RAGService, always reading fresh config."""
         from src.rag_service import RAGService
@@ -82,9 +94,14 @@ def register_rag_ui(app, config_path=None):
             rag_config = {}
 
         available_languages = []
+        wiktionary_backend = "auto"
+        wiktionary_servers = {}
         try:
-            config = load_config(CONFIG_PATH)
+            config = load_config(_config_path)
             available_languages = sorted(config.get("kiwix_servers", {}).keys())
+            wt = config.get("wiktionary") or {}
+            wiktionary_backend = wt.get("backend") or "auto"
+            wiktionary_servers = wt.get("servers") or {}
         except Exception:
             pass
 
@@ -95,6 +112,8 @@ def register_rag_ui(app, config_path=None):
             sources=sources,
             available_languages=available_languages,
             rag_config=rag_config,
+            wiktionary_backend=wiktionary_backend,
+            wiktionary_servers=wiktionary_servers,
         )
 
     # ── Settings API ─────────────────────────────────────────────
@@ -103,7 +122,7 @@ def register_rag_ui(app, config_path=None):
     def get_settings():
         """Return current RAG settings from config."""
         try:
-            config = load_config(CONFIG_PATH)
+            config = load_config(_config_path)
             rag_cfg = config.get("rag", {})
             return jsonify(rag_cfg)
         except Exception as e:
@@ -127,7 +146,7 @@ def register_rag_ui(app, config_path=None):
             return jsonify({"message": "Invalid JSON body"}), 400
 
         try:
-            config = load_config(CONFIG_PATH)
+            config = load_config(_config_path)
             rag_cfg = config.setdefault("rag", {})
 
             changed = []
@@ -164,13 +183,7 @@ def register_rag_ui(app, config_path=None):
                 except (ValueError, TypeError):
                     pass
 
-            backup = CONFIG_PATH.with_suffix(".json.bak")
-            if CONFIG_PATH.exists():
-                shutil.copy2(CONFIG_PATH, backup)
-
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            _save_config(config)
 
             return jsonify({
                 "message": f"RAG settings saved ({', '.join(changed)})",
@@ -476,6 +489,113 @@ def register_rag_ui(app, config_path=None):
             return jsonify(rag.get_progress())
         except Exception as e:
             return jsonify({"message": f"Failed to get progress: {e}"}), 500
+
+    # ── Wiktionary (word lookup) API ────────────────────────────
+    #
+    # Config shape (parallel to kiwix_servers on the Sources page):
+    #   "wiktionary": {
+    #     "backend": "auto" | "kiwix" | "online",
+    #     "servers": {"de": {"base_url": "http://host:8080",
+    #                        "zim_name": "de.wiktionary_..."}}
+    #   }
+
+    @bp.route("/api/documents/wiktionary-backend", methods=["POST"])
+    def save_wiktionary_backend():
+        """Save the wiktionary backend mode (auto / kiwix / online)."""
+        backend = (request.form.get("backend") or "auto").strip().lower()
+        if backend not in ("auto", "kiwix", "online"):
+            return jsonify({"message": f"Invalid backend: {backend}"}), 400
+        try:
+            config = load_config(_config_path)
+            wt = config.setdefault("wiktionary", {})
+            wt["backend"] = backend
+            _save_config(config)
+            return jsonify({
+                "message": f"Wiktionary backend set to {backend}",
+                "backend": backend,
+            })
+        except Exception as e:
+            logger.error("Failed to save wiktionary backend: %s", e, exc_info=True)
+            return jsonify({"message": f"Save failed: {e}"}), 500
+
+    @bp.route("/api/documents/wiktionary", methods=["POST"])
+    def upsert_wiktionary_server():
+        """Add or edit a per-language wiktionary server.
+
+        Form fields: action (add|edit), lang, base_url, zim_name
+        """
+        data = request.form
+        action = (data.get("action") or "add").strip().lower()
+        lang = (data.get("lang") or "").strip().lower()
+        base_url = (data.get("base_url") or "").strip()
+        zim_name = (data.get("zim_name") or "").strip()
+
+        if not lang or not base_url or not zim_name:
+            return jsonify({
+                "message": "Language, base URL and ZIM name are all required"
+            }), 400
+
+        try:
+            config = load_config(_config_path)
+            wt = config.setdefault("wiktionary", {})
+            servers = wt.setdefault("servers", {})
+
+            if action == "add" and lang in servers:
+                return jsonify({
+                    "message": f"{lang} already has a wiktionary server — use Edit"
+                }), 409
+            if action == "edit" and lang not in servers:
+                return jsonify({"message": f"No server for {lang} to edit"}), 404
+
+            servers[lang] = {"base_url": base_url, "zim_name": zim_name}
+            _save_config(config)
+            return jsonify({
+                "message": f"Wiktionary server for {lang} {'updated' if action == 'edit' else 'added'}"
+            })
+        except Exception as e:
+            logger.error("Failed to save wiktionary server: %s", e, exc_info=True)
+            return jsonify({"message": f"Save failed: {e}"}), 500
+
+    @bp.route("/api/documents/wiktionary/<lang>", methods=["DELETE"])
+    def delete_wiktionary_server(lang):
+        """Remove a per-language wiktionary server."""
+        lang = lang.strip().lower()
+        try:
+            config = load_config(_config_path)
+            servers = (config.get("wiktionary") or {}).get("servers", {})
+            if lang not in servers:
+                return jsonify({"message": f"No wiktionary server for {lang}"}), 404
+            del servers[lang]
+            _save_config(config)
+            return jsonify({"message": f"Removed wiktionary server for {lang}"})
+        except Exception as e:
+            logger.error("Failed to delete wiktionary server: %s", e, exc_info=True)
+            return jsonify({"message": f"Delete failed: {e}"}), 500
+
+    @bp.route("/api/documents/wiktionary-test", methods=["POST"])
+    def test_wiktionary():
+        """Test a lookup: form fields lang, term. Returns a preview of the
+        extracted entry, or an explanatory 404 message."""
+        lang = (request.form.get("lang") or "").strip().lower()
+        term = (request.form.get("term") or "").strip()
+        if not lang or not term:
+            return jsonify({"message": "Language and word are required"}), 400
+        try:
+            config = load_config(_config_path)
+            from src.wiktionary_client import fetch_wiktionary_entry
+            entry = fetch_wiktionary_entry(term, language=lang, config=config)
+            if not entry:
+                backend, _ = "kiwix" if (config.get("wiktionary") or {}).get(
+                    "servers", {}).get(lang, {}).get("zim_name") else "online", None
+                return jsonify({
+                    "message": (f"No entry for '{term}' — check the ZIM name"
+                                f" (backend: {backend})"),
+                    "found": False,
+                }), 404
+            return jsonify({"message": f"Found '{term}'", "found": True, "preview": entry[:400]})
+        except Exception as e:
+            logger.error("Wiktionary test failed: %s", e, exc_info=True)
+            return jsonify({"message": f"Lookup failed: {e}", "found": False}), 500
 
     app.register_blueprint(bp)
     logger.info("RAG document management UI registered at /documents")

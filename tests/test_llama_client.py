@@ -326,12 +326,55 @@ class TestIntentRewrite:
         MockOpenAI.return_value = mock_instance
 
         client = LlamaClient(config=config)
-        intent, query = client._classify_intent(
+        result = client._classify_intent(
             "what does Hallo mean?", "German",
             history=[{"role": "user", "content": "teach me greetings"}],
         )
-        assert intent == "vocab_query"
-        assert query == "meaning of the German word 'Hallo' in English"
+        assert result["intent"] == "vocab_query"
+        assert result["query"] == "meaning of the German word 'Hallo' in English"
+        assert result["terms"] == []
+        assert result["lemma"] == ""
+
+    @patch("openai.OpenAI")
+    def test_classify_intent_extracts_terms_and_lemma(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=json.dumps({
+                "intent": "grammar_query",
+                "query": "past tense conjugation of the German verb gehen",
+                "terms": ["geht"],
+                "lemma": "gehen",
+            })))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        result = client._classify_intent("what is the past tense of geht?", "German")
+        assert result["terms"] == ["geht"]
+        assert result["lemma"] == "gehen"
+
+    @patch("openai.OpenAI")
+    def test_classify_intent_terms_junk_filtered(self, MockOpenAI, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=json.dumps({
+                "intent": "vocab_query",
+                "query": "q",
+                "terms": ["Haus", "", 42, "Hund", "Esel", "Pferd"],
+                "lemma": 7,
+            })))]
+        )
+        MockOpenAI.return_value = mock_instance
+
+        client = LlamaClient(config=config)
+        result = client._classify_intent("Haus, Hund, Esel?", "German")
+        # non-strings and empties dropped, capped at 3
+        assert result["terms"] == ["Haus", "Hund", "Esel"]
+        assert result["lemma"] == ""
 
     @patch("openai.OpenAI")
     def test_classify_intent_chitchat_null_query(self, MockOpenAI, sample_config):
@@ -346,9 +389,10 @@ class TestIntentRewrite:
         MockOpenAI.return_value = mock_instance
 
         client = LlamaClient(config=config)
-        intent, query = client._classify_intent("hi there!", "German")
-        assert intent == "chitchat"
-        assert query == ""
+        result = client._classify_intent("hi there!", "German")
+        assert result["intent"] == "chitchat"
+        assert result["query"] == ""
+        assert result["terms"] == []
 
     @patch("openai.OpenAI")
     def test_classify_intent_bad_json_falls_back(self, MockOpenAI, sample_config):
@@ -361,9 +405,10 @@ class TestIntentRewrite:
         MockOpenAI.return_value = mock_instance
 
         client = LlamaClient(config=config)
-        intent, query = client._classify_intent("what is the subjunctive?", "German")
-        assert intent == "chitchat"
-        assert query == ""
+        result = client._classify_intent("what is the subjunctive?", "German")
+        assert result["intent"] == "chitchat"
+        assert result["query"] == ""
+        assert result["terms"] == []
 
     @patch("src.rag_service.get_rag_service")
     def test_fetch_rag_context_uses_rewritten_query(self, mock_get_rag, sample_config):
@@ -395,6 +440,119 @@ class TestIntentRewrite:
 
         client._fetch_rag_context("What is Konjunktiv II?", search_query="")
         mock_rag.embed_text.assert_called_once_with("What is Konjunktiv II?")
+
+
+class TestTutorDictionary:
+    """Word-level questions get dictionary references injected."""
+
+    def _mock_llm(self, intent_json, reply="The answer."):
+        mock_instance = MagicMock()
+        mock_instance.chat.completions.create.side_effect = [
+            MagicMock(choices=[MagicMock(message=MagicMock(content=intent_json))]),
+            MagicMock(choices=[MagicMock(message=MagicMock(content=reply))]),
+        ]
+        return mock_instance
+
+    @patch("src.wiktionary_client.get_dictionary_reference")
+    @patch("src.rag_service.get_rag_service")
+    @patch("openai.OpenAI")
+    def test_terms_trigger_dictionary_lookup(self, MockOpenAI, mock_get_rag,
+                                            mock_dict, sample_config):
+        from src.llama_client import LlamaClient
+        mock_instance = self._mock_llm(json.dumps({
+            "intent": "grammar_query",
+            "query": "past tense of gehen",
+            "terms": ["geht"],
+            "lemma": "gehen",
+        }))
+        MockOpenAI.return_value = mock_instance
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = [{"text": "chunk"}]
+        mock_get_rag.return_value = mock_rag
+        mock_dict.return_value = "=== geht ===\npast: ging"
+
+        client = LlamaClient(config=sample_config[0])
+        client.tutor_chat("Was ist das Präteritum von geht?", language_name="German")
+
+        mock_dict.assert_called_once()
+        args, _ = mock_dict.call_args
+        assert args[0] == ["geht"]      # terms
+        assert args[1] == "gehen"       # lemma
+        assert args[2] == "de"          # language code derived from name
+
+        # Dictionary reference (first) + RAG chunk (second) in the system prompt
+        final_messages = mock_instance.chat.completions.create.call_args_list[1][1]["messages"]
+        system = final_messages[0]["content"]
+        assert "=== geht ===" in system
+        assert "past: ging" in system
+        assert "chunk" in system
+        assert system.index("=== geht ===") < system.index("chunk")
+
+    @patch("src.wiktionary_client.get_dictionary_reference")
+    @patch("src.rag_service.get_rag_service")
+    @patch("openai.OpenAI")
+    def test_dictionary_failure_does_not_break_chat(self, MockOpenAI, mock_get_rag,
+                                                    mock_dict, sample_config):
+        from src.llama_client import LlamaClient
+        mock_instance = self._mock_llm(json.dumps({
+            "intent": "vocab_query",
+            "query": "meaning of nosit",
+            "terms": ["nosit"],
+            "lemma": None,
+        }), reply="It means nose.")
+        MockOpenAI.return_value = mock_instance
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = []
+        mock_get_rag.return_value = mock_rag
+        mock_dict.side_effect = RuntimeError("kiwix down")
+
+        client = LlamaClient(config=sample_config[0])
+        reply = client.tutor_chat("What does nosit mean?", language_name="German")
+
+        assert reply == "It means nose."
+
+    @patch("src.wiktionary_client.get_dictionary_reference")
+    @patch("src.rag_service.get_rag_service")
+    @patch("openai.OpenAI")
+    def test_chitchat_skips_dictionary(self, MockOpenAI, mock_get_rag,
+                                       mock_dict, sample_config):
+        from src.llama_client import LlamaClient
+        mock_instance = self._mock_llm(json.dumps({
+            "intent": "chitchat", "query": None, "terms": [], "lemma": None,
+        }))
+        MockOpenAI.return_value = mock_instance
+        mock_get_rag.return_value = MagicMock()
+
+        client = LlamaClient(config=sample_config[0])
+        client.tutor_chat("Hi!", language_name="German")
+
+        mock_dict.assert_not_called()
+        mock_get_rag.assert_not_called()
+
+    @patch("src.wiktionary_client.get_dictionary_reference")
+    @patch("src.rag_service.get_rag_service")
+    @patch("openai.OpenAI")
+    def test_no_terms_skips_dictionary(self, MockOpenAI, mock_get_rag,
+                                       mock_dict, sample_config):
+        from src.llama_client import LlamaClient
+        mock_instance = self._mock_llm(json.dumps({
+            "intent": "grammar_query",
+            "query": "how to use the dative case",
+            "terms": [],
+            "lemma": None,
+        }))
+        MockOpenAI.return_value = mock_instance
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = []
+        mock_get_rag.return_value = mock_rag
+
+        client = LlamaClient(config=sample_config[0])
+        client.tutor_chat("How does the dative case work?", language_name="German")
+
+        mock_dict.assert_not_called()
 
 
 class TestHealthCheck:

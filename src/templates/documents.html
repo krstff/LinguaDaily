@@ -257,8 +257,223 @@
   </div>
 </div>
 
+<!-- ── Wiktionary (word lookup) ─────────────────────────── -->
+<div class="model-panel" style="border-color: var(--purple, #9b59b6);">
+  <h2>Wiktionary <span style="font-size:13px;color:var(--fg_dim);font-weight:normal;">(word lookup for the tutor)</span></h2>
+  <p class="subtitle">Where word translations and conjugations come from. In <strong>auto</strong> mode each language uses its Kiwix server when configured, and wiktionary.org (online) otherwise.</p>
+
+  <div class="form-row" style="max-width:420px;">
+    <select id="wiktionary-backend-select" onchange="saveWiktionaryBackend()">
+      <option value="auto" {% if wiktionary_backend == 'auto' %}selected{% endif %}>Auto — Kiwix if configured, else wiktionary.org</option>
+      <option value="kiwix" {% if wiktionary_backend == 'kiwix' %}selected{% endif %}>Kiwix only (offline)</option>
+      <option value="online" {% if wiktionary_backend == 'online' %}selected{% endif %}>wiktionary.org only (online)</option>
+    </select>
+  </div>
+
+  <p class="subtitle" style="margin-top:12px;">Per-language Wiktionary servers (ZIM files, e.g. <code>de.wiktionary_all_nopic_2025-06.zim</code>). Languages without a server use wiktionary.org in auto mode.</p>
+
+  <div class="toolbar">
+    <button class="btn btn-secondary" onclick="openWiktionaryModal(null)">+ Add Server</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Language</th>
+        <th>Base URL</th>
+        <th>ZIM Name</th>
+        <th style="width:120px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="wiktionary-table">
+      {% if wiktionary_servers %}
+      {% for lang, srv in wiktionary_servers.items() | sort %}
+      <tr
+        data-lang="{{ lang }}"
+        data-base-url="{{ srv.base_url or '' }}"
+        data-zim-name="{{ srv.zim_name or '' }}">
+        <td><span class="badge badge-active" style="font-size:11px;">{{ lang }}</span></td>
+        <td style="font-family:monospace;font-size:12px;">{{ srv.base_url or '—' }}</td>
+        <td style="font-family:monospace;font-size:12px;" title="{{ srv.zim_name }}">{{ srv.zim_name or '—' }}</td>
+        <td>
+          <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="openWiktionaryModal(this.closest('tr'))">Edit</button>
+          <button class="btn btn-danger" style="padding:4px 10px;font-size:12px;" onclick="deleteWiktionaryServer('{{ lang }}')">✕</button>
+        </td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr>
+        <td colspan="4" style="color:var(--fg_dim);font-size:13px;">No wiktionary servers configured — auto mode uses wiktionary.org online.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <div class="form-grid" style="margin-top:12px;max-width:520px;">
+    <div class="form-row">
+      <label>Test lookup</label>
+      <select id="wiktionary-test-lang">
+        {% for lang in wiktionary_servers.keys() | sort %}
+        <option value="{{ lang }}">{{ lang }} (kiwix)</option>
+        {% endfor %}
+        {% for lang in available_languages %}
+        {% if lang not in wiktionary_servers %}
+        <option value="{{ lang }}">{{ lang }} (online)</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Word</label>
+      <input type="text" id="wiktionary-test-term" placeholder="e.g. gehen" onkeydown="if(event.key==='Enter')testWiktionary()">
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-top:8px;">
+    <button class="btn btn-secondary" onclick="testWiktionary()">Test</button>
+    <span id="wiktionary-test-status" style="font-size:12px;color:var(--fg_dim);"></span>
+  </div>
+  <pre id="wiktionary-test-preview" style="display:none;max-height:200px;overflow:auto;font-size:12px;margin-top:8px;"></pre>
+</div>
+
+<!-- Wiktionary server modal -->
+<div class="modal-overlay" id="wiktionary-modal" style="display:none;">
+  <div class="modal">
+    <h3 id="wiktionary-modal-title">Add Wiktionary Server</h3>
+    <form onsubmit="saveWiktionaryServer(event)">
+      <input type="hidden" id="wiktionary-modal-action" value="add">
+      <input type="hidden" id="wiktionary-modal-lang" value="">
+      <div class="form-row">
+        <label>Language code</label>
+        <input type="text" id="wiktionary-modal-lang-input" placeholder="de" maxlength="8">
+      </div>
+      <div class="form-row">
+        <label>Base URL</label>
+        <input type="text" id="wiktionary-modal-base-url" placeholder="http://192.168.100.52:8080">
+      </div>
+      <div class="form-row">
+        <label>ZIM name</label>
+        <input type="text" id="wiktionary-modal-zim" placeholder="de.wiktionary_all_nopic_2025-06.zim">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeWiktionaryModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
 <!-- ── JavaScript ─────────────────────────────────────────── -->
 <script>
+// ── Wiktionary (word lookup) ──────────────────────────────
+async function saveWiktionaryBackend() {
+  const backend = document.getElementById('wiktionary-backend-select').value;
+  try {
+    const formData = new FormData();
+    formData.append('backend', backend);
+    const res = await fetch('/api/documents/wiktionary-backend', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.message || 'Failed to save backend', true);
+      document.getElementById('wiktionary-backend-select').value = '{{ wiktionary_backend }}';
+      return;
+    }
+    showToast(data.message || 'Backend saved', false);
+  } catch (e) {
+    showToast('Failed to save backend', true);
+  }
+}
+
+function openWiktionaryModal(row) {
+  const modal = document.getElementById('wiktionary-modal');
+  if (row) {
+    const lang = row.dataset.lang;
+    document.getElementById('wiktionary-modal-title').textContent = 'Edit Wiktionary Server';
+    document.getElementById('wiktionary-modal-action').value = 'edit';
+    document.getElementById('wiktionary-modal-lang').value = lang;
+    document.getElementById('wiktionary-modal-lang-input').value = lang;
+    document.getElementById('wiktionary-modal-lang-input').disabled = true;
+    document.getElementById('wiktionary-modal-base-url').value = row.dataset.baseUrl;
+    document.getElementById('wiktionary-modal-zim').value = row.dataset.zimName;
+  } else {
+    document.getElementById('wiktionary-modal-title').textContent = 'Add Wiktionary Server';
+    document.getElementById('wiktionary-modal-action').value = 'add';
+    document.getElementById('wiktionary-modal-lang').value = '';
+    document.getElementById('wiktionary-modal-lang-input').value = '';
+    document.getElementById('wiktionary-modal-lang-input').disabled = false;
+    document.getElementById('wiktionary-modal-base-url').value = '';
+    document.getElementById('wiktionary-modal-zim').value = '';
+  }
+  modal.style.display = 'flex';
+}
+
+function closeWiktionaryModal() {
+  document.getElementById('wiktionary-modal').style.display = 'none';
+}
+
+async function saveWiktionaryServer(event) {
+  event.preventDefault();
+  const formData = new FormData();
+  formData.append('action', document.getElementById('wiktionary-modal-action').value);
+  formData.append('lang', document.getElementById('wiktionary-modal-lang-input').value.trim());
+  formData.append('base_url', document.getElementById('wiktionary-modal-base-url').value.trim());
+  formData.append('zim_name', document.getElementById('wiktionary-modal-zim').value.trim());
+  try {
+    const res = await fetch('/api/documents/wiktionary', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.message || 'Failed to save server', true);
+      return;
+    }
+    showToast(data.message || 'Server saved', false);
+    setTimeout(() => location.reload(), 800);
+  } catch (e) {
+    showToast('Failed to save server', true);
+  }
+}
+
+async function deleteWiktionaryServer(lang) {
+  if (!confirm(`Remove wiktionary server for ${lang}?`)) return;
+  try {
+    const res = await fetch(`/api/documents/wiktionary/${encodeURIComponent(lang)}`, { method: 'DELETE' });
+    const data = await res.json();
+    showToast(data.message || 'Deleted', !res.ok);
+    if (res.ok) setTimeout(() => location.reload(), 800);
+  } catch (e) {
+    showToast('Failed to delete server', true);
+  }
+}
+
+async function testWiktionary() {
+  const lang = document.getElementById('wiktionary-test-lang').value;
+  const term = document.getElementById('wiktionary-test-term').value.trim();
+  const status = document.getElementById('wiktionary-test-status');
+  const preview = document.getElementById('wiktionary-test-preview');
+  if (!lang || !term) {
+    status.textContent = 'Choose a language and a word';
+    return;
+  }
+  status.textContent = 'Looking up…';
+  preview.style.display = 'none';
+  const formData = new FormData();
+  formData.append('lang', lang);
+  formData.append('term', term);
+  try {
+    const res = await fetch('/api/documents/wiktionary-test', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (res.ok && data.found) {
+      status.textContent = '✓ Found';
+      preview.textContent = data.preview;
+      preview.style.display = 'block';
+    } else {
+      status.textContent = '✗ ' + (data.message || 'Not found');
+    }
+  } catch (e) {
+    status.textContent = 'Network error';
+  }
+}
+
+
 // ── Settings save ─────────────────────────────────────────
 document.getElementById('settings-form').addEventListener('submit', async function(e) {
   e.preventDefault();

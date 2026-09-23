@@ -27,6 +27,16 @@
     }
   },
 
+  "wiktionary": {
+    "backend": "auto",
+    "servers": {
+      "de": {
+        "base_url": "http://localhost:8081",
+        "zim_name": "de.wiktionary_all_nopic_2026-01"
+      }
+    }
+  },
+
   "tts": {
     "base_url": "http://localhost:8080/v1",
     "api_key": "",

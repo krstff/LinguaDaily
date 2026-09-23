@@ -171,7 +171,7 @@ INTENT_SYSTEM_PROMPT = """You are the front-end filter for a language tutor's kn
 Classify the learner's latest message, then rewrite it as a retrieval query.
 
 Reply with ONLY a JSON object:
-{{"intent": "...", "query": "..."}}
+{{"intent": "...", "query": "...", "terms": [...], "lemma": "..."}}
 
 "intent" — exactly one of:
   "chitchat"      — casual conversation, greetings, opinions, non-educational
@@ -186,6 +186,14 @@ Reply with ONLY a JSON object:
     context below.  Prefer the terms as they appear in textbooks of the
     language being learned.
   - For chitchat: null
+
+"terms" — up to 3 specific words or phrases in the language being learned
+  that the question is ABOUT: the word to translate, the verb to conjugate,
+  the noun to decline.  Use the exact word forms as the user wrote them.
+  Empty list [] when the question is not about a specific word.
+
+"lemma" — the base / dictionary form of the first term
+  (e.g. "geht" → "gehen", "Häuser" → "Haus"), or null when there is no term.
 
 Conversation context (may be empty):
 {context}
@@ -217,10 +225,14 @@ Rules:
 # ── RAG-injected block appended to tutor system prompt ───────────────
 
 RAG_REFERENCE_BLOCK = """
-You have access to reference material from textbooks and learning resources.
-Use it to ground your answers.  If the reference material contradicts your own
-knowledge, prefer the reference.  Do NOT mention that you are using references
-unless the user asks.
+You have access to reference material from textbooks, learning resources and
+dictionary entries.  Use it to ground your answers.  If the reference material
+contradicts your own knowledge, prefer the reference.  Do NOT mention that you
+are using references unless the user asks.
+
+Entries marked "=== word ===" are dictionary lookups (translations, parts of
+speech, conjugation/declension tables).  When the question is about one of
+those words, quote its translations and forms directly.
 
 === REFERENCE MATERIAL ===
 {references}
@@ -518,25 +530,28 @@ class LlamaClient:
         message: str,
         language_name: str = "German",
         history: Optional[list] = None,
-    ) -> tuple[str, str]:
+    ) -> dict:
         """
         Lightweight intent classifier + retrieval-query rewriter.
 
-        Returns a tuple (intent, search_query):
-          intent       — "chitchat" | "grammar_query" | "vocab_query"
-          search_query — standalone, self-contained query for the knowledge
-                         base (pronouns resolved, key terms included).  Empty
-                         string if no rewrite is available (the caller then
-                         falls back to the raw message).
+        Returns a dict:
+          intent — "chitchat" | "grammar_query" | "vocab_query"
+          query  — standalone, self-contained query for the knowledge base
+                   (pronouns resolved, key terms included); empty string if
+                   no rewrite is available (caller falls back to raw message)
+          terms  — list of specific words/phrases (max 3) the question is
+                   about, for dictionary lookup
+          lemma  — base form of the first term (or "")
 
         Recent conversation history is included so the rewrite can resolve
         anaphora ("what does it mean?" after a word was discussed).
-        Falls back to ("chitchat", "") on any error (safe default — no RAG).
+        Falls back to a chitchat result on any error (safe default — no RAG).
         """
+        empty = {"intent": "chitchat", "query": "", "terms": [], "lemma": ""}
         model = self.resolve_model("tutor")
 
         # Build short context from the most recent turns
-        context_lines = []
+        context_lines: list = []
         if history:
             for m in history[-4:]:
                 role = str(m.get("role", "?"))
@@ -557,7 +572,7 @@ class LlamaClient:
             temperature=0.0,
         )
         if not result:
-            return "chitchat", ""
+            return empty
 
         # Parse JSON from response (strip fences if present)
         text = result.strip()
@@ -571,17 +586,24 @@ class LlamaClient:
             if intent in _INTENT_LABELS:
                 query = data.get("query")
                 query = query.strip() if isinstance(query, str) else ""
-                return intent, query
+                raw_terms = data.get("terms")
+                terms = [t.strip() for t in raw_terms
+                         if isinstance(t, str) and t.strip()][:3] \
+                    if isinstance(raw_terms, list) else []
+                lemma = data.get("lemma")
+                lemma = lemma.strip() if isinstance(lemma, str) else ""
+                return {"intent": intent, "query": query,
+                        "terms": terms, "lemma": lemma}
         except (json.JSONDecodeError, AttributeError):
             pass
 
-        # Fuzzy fallback — check for keywords in raw output (no rewrite available)
+        # Fuzzy fallback — check for keywords in raw output (no rewrite/terms)
         lower = text.lower()
         if "grammar" in lower:
-            return "grammar_query", ""
+            return {"intent": "grammar_query", "query": "", "terms": [], "lemma": ""}
         if "vocab" in lower:
-            return "vocab_query", ""
-        return "chitchat", ""
+            return {"intent": "vocab_query", "query": "", "terms": [], "lemma": ""}
+        return empty
 
     def _fetch_rag_context(
         self,
@@ -627,9 +649,13 @@ class LlamaClient:
         Handle an interactive tutoring chat message.
 
         Flow:
-          1. Classify intent (chitchat / grammar_query / vocab_query)
-          2. If grammar or vocab → query RAG for textbook grounding
-          3. Inject lesson + RAG references into system prompt
+          1. Classify intent (chitchat / grammar_query / vocab_query) and
+             extract the specific word(s) the question is about
+          2. If grammar or vocab:
+             a. dictionary lookup for the extracted terms (Wiktionary via
+                local Kiwix ZIM or wiktionary.org — see wiktionary_client)
+             b. semantic RAG query for document grounding
+          3. Inject lesson + references into system prompt
           4. Generate tutor reply
 
         Parameters
@@ -657,11 +683,16 @@ class LlamaClient:
         model = self.resolve_model("tutor")
 
         # ── Step 1: Classify intent + rewrite retrieval query ─────
-        intent, search_query = self._classify_intent(message, language_name, history=history)
-        logger.info("Tutor intent=%s | msg=%s | query=%r",
-                    _INTENT_LABELS.get(intent, intent), message[:60], search_query[:80])
+        intent_info = self._classify_intent(message, language_name, history=history)
+        intent = intent_info["intent"]
+        search_query = intent_info["query"]
+        terms = intent_info["terms"]
+        lemma = intent_info["lemma"]
+        logger.info("Tutor intent=%s | msg=%s | query=%r | terms=%s",
+                    _INTENT_LABELS.get(intent, intent), message[:60],
+                    search_query[:80], terms)
 
-        # ── Step 2: Fetch RAG context for educational queries ─────
+        # ── Step 2: Gather references for educational queries ─────
         references = []
         if intent in ("grammar_query", "vocab_query"):
             # Derive language code from name (e.g. "German" → "de")
@@ -671,8 +702,25 @@ class LlamaClient:
                 if name.lower() == language_name.lower():
                     lang_code = code
                     break
-            references = self._fetch_rag_context(message, lang_code, search_query=search_query)
-            logger.info("RAG returned %d chunks", len(references))
+
+            # Tier 1: exact dictionary lookup (Wiktionary, Kiwix or online)
+            if terms:
+                try:
+                    from src.wiktionary_client import get_dictionary_reference
+                    dict_ref = get_dictionary_reference(
+                        terms, lemma, lang_code, self.config,
+                    )
+                    if dict_ref:
+                        references.append(dict_ref)
+                        logger.info("Dictionary reference injected for %s", terms)
+                except Exception as e:
+                    logger.warning("Wiktionary lookup failed (continuing): %s", e)
+
+            # Tier 2: semantic RAG over indexed documents
+            references.extend(
+                self._fetch_rag_context(message, lang_code, search_query=search_query)
+            )
+            logger.info("Total references: %d", len(references))
 
         # ── Step 3: Build system prompt ───────────────────────────
         system = TUTOR_SYSTEM_PROMPT.format(
