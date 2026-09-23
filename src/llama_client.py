@@ -625,7 +625,7 @@ class LlamaClient:
             hits = rag.query_knowledge_base(
                 query_vector=rag.embed_text(query),
                 language=language_code,
-                top_k=5,
+                top_k=3,
             )
             logger.info(
                 "RAG search: %d hits (lang=%s) query=%r",
@@ -654,7 +654,9 @@ class LlamaClient:
           2. If grammar or vocab:
              a. dictionary lookup for the extracted terms (Wiktionary via
                 local Kiwix ZIM or wiktionary.org — see wiktionary_client)
-             b. semantic RAG query for document grounding
+             b. semantic RAG query for document grounding — only when the
+                dictionary lookup produced no reference (the dictionary
+                entry is the authoritative source; RAG is the fallback)
           3. Inject lesson + references into system prompt
           4. Generate tutor reply
 
@@ -704,6 +706,7 @@ class LlamaClient:
                     break
 
             # Tier 1: exact dictionary lookup (Wiktionary, Kiwix or online)
+            dict_ref_found = False
             if terms:
                 try:
                     from src.wiktionary_client import get_dictionary_reference
@@ -712,14 +715,17 @@ class LlamaClient:
                     )
                     if dict_ref:
                         references.append(dict_ref)
+                        dict_ref_found = True
                         logger.info("Dictionary reference injected for %s", terms)
                 except Exception as e:
                     logger.warning("Wiktionary lookup failed (continuing): %s", e)
 
-            # Tier 2: semantic RAG over indexed documents
-            references.extend(
-                self._fetch_rag_context(message, lang_code, search_query=search_query)
-            )
+            # Tier 2: semantic RAG over indexed documents — skipped when a
+            # dictionary reference was found (no need to fetch Qdrant data)
+            if not dict_ref_found:
+                references.extend(
+                    self._fetch_rag_context(message, lang_code, search_query=search_query)
+                )
             logger.info("Total references: %d", len(references))
 
         # ── Step 3: Build system prompt ───────────────────────────

@@ -481,13 +481,41 @@ class TestTutorDictionary:
         assert args[1] == "gehen"       # lemma
         assert args[2] == "de"          # language code derived from name
 
-        # Dictionary reference (first) + RAG chunk (second) in the system prompt
+        # Dictionary reference in the system prompt; RAG is NOT queried
+        # when a dictionary reference was found
         final_messages = mock_instance.chat.completions.create.call_args_list[1][1]["messages"]
         system = final_messages[0]["content"]
         assert "=== geht ===" in system
         assert "past: ging" in system
-        assert "chunk" in system
-        assert system.index("=== geht ===") < system.index("chunk")
+        assert "chunk" not in system
+        mock_rag.query_knowledge_base.assert_not_called()
+
+    @patch("src.wiktionary_client.get_dictionary_reference")
+    @patch("src.rag_service.get_rag_service")
+    @patch("openai.OpenAI")
+    def test_rag_used_when_dictionary_not_found(self, MockOpenAI, mock_get_rag,
+                                                mock_dict, sample_config):
+        from src.llama_client import LlamaClient
+        mock_instance = self._mock_llm(json.dumps({
+            "intent": "vocab_query",
+            "query": "meaning of qqqxyz",
+            "terms": ["qqqxyz"],
+            "lemma": None,
+        }))
+        MockOpenAI.return_value = mock_instance
+        mock_rag = MagicMock()
+        mock_rag.embed_text.return_value = [0.1] * 8
+        mock_rag.query_knowledge_base.return_value = [{"text": "chunk"}]
+        mock_get_rag.return_value = mock_rag
+        mock_dict.return_value = None  # wiktionary has no entry
+
+        client = LlamaClient(config=sample_config[0])
+        client.tutor_chat("What does qqqxyz mean?", language_name="German")
+
+        # Dictionary produced nothing → RAG fallback runs
+        mock_rag.query_knowledge_base.assert_called_once()
+        final_messages = mock_instance.chat.completions.create.call_args_list[1][1]["messages"]
+        assert "chunk" in final_messages[0]["content"]
 
     @patch("src.wiktionary_client.get_dictionary_reference")
     @patch("src.rag_service.get_rag_service")
