@@ -273,6 +273,14 @@ class TestDeliverLesson:
 
 # ── Tutor chat tests ────────────────────────────────────────────────
 
+async def _await_tutor_task(bot, chat_id):
+    """Wait for the background tutor reply task to finish."""
+    entry = bot._in_flight.get(chat_id)
+    assert entry is not None, "no tutor task registered"
+    await entry["task"]
+    assert chat_id not in bot._in_flight, "task did not clean up _in_flight"
+
+
 class TestTutorChat:
     """Test tutor message routing."""
 
@@ -282,24 +290,27 @@ class TestTutorChat:
         config = sample_config[0]
         bot = TelegramBot(config=config)
 
-        # Mock LlamaClient.tutor_chat
+        # Mock LlamaClient.tutor_chat_stream
         with patch.object(bot, "_get_llama_client") as mock_get:
             mock_client = MagicMock()
-            mock_client.tutor_chat.return_value = "Hallo means hello in German."
+            mock_client.tutor_chat_stream = AsyncMock(
+                return_value="Hallo means hello in German.")
             mock_get.return_value = mock_client
 
             await bot.handle_tutor_message(111222333, "What does Hallo mean?")
+            await _await_tutor_task(bot, 111222333)
 
-            # Should call tutor_chat with correct profile settings
-            mock_client.tutor_chat.assert_called_once()
-            call_kwargs = mock_client.tutor_chat.call_args[1]
+            # Should call tutor_chat_stream with correct profile settings
+            mock_client.tutor_chat_stream.assert_awaited_once()
+            call_kwargs = mock_client.tutor_chat_stream.call_args[1]
             assert call_kwargs["message"] == "What does Hallo mean?"
             assert call_kwargs["language_name"] == "German"
             assert call_kwargs["native_lang"] == "en"
 
-            # Should send reply on Telegram
-            mock_aiogram.send_message.assert_called_once()
-            sent = mock_aiogram.send_message.call_args[1]["text"]
+            # Should post the reply on Telegram (edit of the Thinking… msg)
+            sent = (mock_aiogram.edit_message_text.call_args[1]["text"]
+                    if mock_aiogram.edit_message_text.called
+                    else mock_aiogram.send_message.call_args[1]["text"])
             assert "Hallo means hello" in sent
 
         bot.db.close()
@@ -327,10 +338,11 @@ class TestTutorChat:
 
         with patch.object(bot, "_get_llama_client") as mock_get:
             mock_client = MagicMock()
-            mock_client.tutor_chat.return_value = "Great question!"
+            mock_client.tutor_chat_stream = AsyncMock(return_value="Great question!")
             mock_get.return_value = mock_client
 
             await bot.handle_tutor_message(111222333, "What is Konjunktiv?")
+            await _await_tutor_task(bot, 111222333)
 
             # Verify history was stored
             history = bot.db.get_history(111222333, "krystof")
@@ -348,17 +360,21 @@ class TestTutorChat:
 
         with patch.object(bot, "_get_llama_client") as mock_get:
             mock_client = MagicMock()
-            mock_client.tutor_chat.return_value = "A" * 5000
+            mock_client.tutor_chat_stream = AsyncMock(return_value="A" * 5000)
             mock_get.return_value = mock_client
 
             await bot.handle_tutor_message(111222333, "Tell me everything about German grammar.")
+            await _await_tutor_task(bot, 111222333)
 
             # With telegramify-markdown: truncated to 4096, sent with entities
-            sent = mock_aiogram.send_message.call_args[1]["text"]
+            call = mock_aiogram.edit_message_text.call_args \
+                if mock_aiogram.edit_message_text.called \
+                else mock_aiogram.send_message.call_args
+            sent = call[1]["text"]
             assert len(sent) <= 4096
             assert sent.endswith("...")
             # Should use entities parameter (not parse_mode)
-            call_kwargs = mock_aiogram.send_message.call_args[1]
+            call_kwargs = call[1]
             assert "entities" in call_kwargs or not call_kwargs.get("parse_mode")
 
         bot.db.close()
@@ -371,14 +387,100 @@ class TestTutorChat:
 
         with patch.object(bot, "_get_llama_client") as mock_get:
             mock_client = MagicMock()
-            mock_client.tutor_chat.return_value = None  # LLM failure
+            mock_client.tutor_chat_stream = AsyncMock(return_value=None)  # LLM failure
             mock_get.return_value = mock_client
 
             await bot.handle_tutor_message(111222333, "Hello tutor")
+            await _await_tutor_task(bot, 111222333)
 
-            sent = mock_aiogram.send_message.call_args[1]["text"]
+            sent = (mock_aiogram.edit_message_text.call_args[1]["text"]
+                    if mock_aiogram.edit_message_text.called
+                    else mock_aiogram.send_message.call_args[1]["text"])
             assert "unavailable" in sent.lower()
 
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_tutor_chat_rejected_while_in_flight(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # Simulate a reply still being generated
+        bot._in_flight[111222333] = {
+            "task": asyncio.get_running_loop().create_task(asyncio.sleep(10)),
+            "message_id": 42,
+        }
+
+        await bot.handle_tutor_message(111222333, "another question")
+
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "still working" in sent
+        assert "/stop" in sent
+        bot._in_flight[111222333]["task"].cancel()
+        bot.db.close()
+
+
+# ── /stop command tests ─────────────────────────────────────────────
+
+class TestStopCommand:
+    """Test the /stop cancel command."""
+
+    @pytest.mark.asyncio
+    async def test_stop_nothing_in_flight(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        await bot.handle_stop(111222333)
+
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Nothing to stop" in sent
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_task_and_deletes_placeholder(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(asyncio.sleep(10))
+        bot._in_flight[111222333] = {"task": task, "message_id": 42}
+
+        await bot.handle_stop(111222333)
+
+        # Task cancelled and placeholder removed
+        assert task.cancelling() or task.cancelled()
+        mock_aiogram.delete_message.assert_awaited_once()
+        delete_args = mock_aiogram.delete_message.call_args
+        assert delete_args[0][:2] == (111222333, 42) or \
+            delete_args[1] == {"chat_id": 111222333, "message_id": 42}
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Stopped" in sent
+
+        task.cancel()
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_stop_twice_sends_nothing_to_stop(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        loop = asyncio.get_running_loop()
+        bot._in_flight[111222333] = {
+            "task": loop.create_task(asyncio.sleep(10)), "message_id": 42,
+        }
+
+        await bot.handle_stop(111222333)
+        mock_aiogram.send_message.reset_mock()
+        await bot.handle_stop(111222333)
+
+        # Second /stop while cancellation is in progress → not "Stopped" again
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Nothing to stop" in sent
+        bot._in_flight[111222333]["task"].cancel()
         bot.db.close()
 
 
@@ -435,6 +537,81 @@ class TestCommands:
         cid_profiles = bot.chat_id_to_profiles.get(111222333, [])
         assert "krystof" in cid_profiles
         assert "anna" in cid_profiles
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_profiles_menu_has_switch_buttons(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # One chat with two profiles
+        bot.register_user(111222333, "anna")
+
+        await bot.handle_profiles(111222333)
+
+        kwargs = mock_aiogram.send_message.call_args[1]
+        assert "Your profiles" in kwargs["text"]
+        markup = kwargs["reply_markup"]
+        buttons = markup.inline_keyboard
+        assert len(buttons) == 2
+        callbacks = [b.callback_data for row in buttons for b in row]
+        assert "sw:111222333:krystof" in callbacks
+        assert "sw:111222333:anna" in callbacks
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_profiles_menu_single_profile_no_buttons(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # Chat with only one profile — menu is sent as plain text
+        await bot.handle_profiles(111222333)
+
+        kwargs = mock_aiogram.send_message.call_args[1]
+        markup = kwargs.get("reply_markup")
+        assert markup is None or not markup.inline_keyboard
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_switch_callback_switches_and_deletes_menu(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        bot.register_user(111222333, "anna")
+        assert bot.resolve_profile(111222333) == "krystof"
+
+        menu_message = MagicMock()
+        menu_message.delete = AsyncMock()
+
+        ok = await bot.handle_switch_callback(111222333, "anna", menu_message)
+
+        assert ok is True
+        assert bot.resolve_profile(111222333) == "anna"
+        menu_message.delete.assert_awaited_once()
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Switched to" in sent
+        assert "anna" in sent
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_switch_callback_invalid_profile(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        menu_message = MagicMock()
+        menu_message.delete = AsyncMock()
+
+        ok = await bot.handle_switch_callback(111222333, "ghost", menu_message)
+
+        assert ok is False
+        # Profile unchanged, menu not deleted, no confirmation sent
+        assert bot.resolve_profile(111222333) == "krystof"
+        menu_message.delete.assert_not_awaited()
+        mock_aiogram.send_message.assert_not_awaited()
         bot.db.close()
 
     @pytest.mark.asyncio

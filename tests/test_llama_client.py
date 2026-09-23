@@ -1,5 +1,6 @@
 """Tests for src/llama_client.py — model resolution, config loading, API calls."""
 
+import asyncio
 import json
 import os
 import pytest
@@ -307,6 +308,92 @@ class TestTutorChat:
         client.tutor_chat("What is Konjunktiv?")
         call_args = mock_instance.chat.completions.create.call_args[1]
         assert call_args["temperature"] == 0.7
+
+
+class TestTutorChatStream:
+    """Streaming tutor variant (used by the Telegram bot / /stop)."""
+
+    @staticmethod
+    def _make_client(sample_config, chunks, stream_state):
+        import src.llama_client as lc_mod
+        from src.llama_client import LlamaClient
+
+        client = LlamaClient(config=sample_config[0], profile_name="krystof")
+        client._prepare_tutor_messages = lambda **kw: (
+            [{"role": "user", "content": "hi"}], "gemma4-26b")
+
+        class FakeStream:
+            def __init__(self):
+                self._i = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._i >= len(chunks):
+                    raise StopAsyncIteration
+                token = chunks[self._i]
+                self._i += 1
+                if stream_state is not None:
+                    await asyncio.sleep(stream_state.pop("delay", 0.001))
+                return MagicMock(choices=[MagicMock(delta=MagicMock(content=token))])
+
+            async def close(self):
+                if stream_state is not None:
+                    stream_state["closed"] = True
+
+        async def fake_create(**kw):
+            fake_create.stream_kwargs = kw
+            return FakeStream()
+
+        return client, fake_create
+
+    def test_stream_concatenates_chunks(self, sample_config):
+
+        client, fake_create = self._make_client(
+            sample_config, ["Hello ", "world"], None)
+
+        with patch("config.get_async_openai_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = fake_create
+            mock_get.return_value = mock_client
+
+            reply = asyncio.run(client.tutor_chat_stream(message="hi"))
+
+        assert reply == "Hello world"
+        assert fake_create.stream_kwargs["stream"] is True
+
+    def test_cancellation_closes_stream(self, sample_config):
+        """Cancelling the task must close the stream (→ server aborts gen)."""
+
+        state = {"delay": 0.01, "closed": False}
+        client, fake_create = self._make_client(
+            sample_config, ["x "] * 100, state)
+
+        with patch("config.get_async_openai_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = fake_create
+            mock_get.return_value = mock_client
+
+            async def run():
+                task = asyncio.create_task(client.tutor_chat_stream(message="hi"))
+                await asyncio.sleep(0.05)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+            asyncio.run(run())
+
+        assert state["closed"], "stream must be closed on cancellation"
+
+    def test_client_none_returns_none(self, sample_config):
+        from src.llama_client import LlamaClient
+
+        client = LlamaClient(config=sample_config[0], profile_name="krystof")
+        client._prepare_tutor_messages = lambda **kw: ([("user", "hi")], "m")
+
+        with patch("config.get_async_openai_client", return_value=None):
+            assert asyncio.run(client.tutor_chat_stream(message="hi")) is None
 
 
 class TestIntentRewrite:

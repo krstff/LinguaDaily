@@ -252,6 +252,44 @@ def get_openai_client(base_url: str = None, api_key: str = "none", timeout: floa
 def reset_openai_client():
     """Reset the shared OpenAI client cache (for tests / config reload)."""
     _CLIENT_CACHE.clear()
+    _ASYNC_CLIENT_CACHE.clear()
+
+
+_ASYNC_CLIENT_CACHE = {}
+
+
+def get_async_openai_client(base_url: str = None, api_key: str = "none", timeout: float = 60):
+    """
+    Get (or create) the shared *async* OpenAI-compatible client for an endpoint.
+
+    Mirrors get_openai_client() for code paths that need to await/abort
+    requests (e.g. the Telegram tutor stream, where closing the connection
+    makes the server stop generating).
+
+    Returns
+    -------
+    AsyncOpenAI client instance, or None if the package is not installed.
+    """
+    import logging
+
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        logger_cfg = logging.getLogger("lingua")
+        logger_cfg.warning("'openai' package not installed — LLM calls will fail.")
+        return None
+
+    resolved_url = base_url or get_llm_base_url()
+    key = (resolved_url, api_key or "none", timeout)
+    client = _ASYNC_CLIENT_CACHE.get(key)
+    if client is None:
+        client = AsyncOpenAI(
+            base_url=resolved_url,
+            api_key=api_key or "none",
+            timeout=timeout,
+        )
+        _ASYNC_CLIENT_CACHE[key] = client
+    return client
 
 
 def get_embedding_client(base_url: str = None, api_key: str = None, timeout: float = 300):

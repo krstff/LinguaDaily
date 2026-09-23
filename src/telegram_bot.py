@@ -248,6 +248,11 @@ class TelegramBot:
         # Cooldown tracking for /another command (chat_id → timestamp)
         self._last_lesson_request: dict[int, float] = {}
 
+        # In-flight tutor replies (chat_id → {"task", "message_id"}) —
+        # lets /stop cancel a running LLM generation and remove the
+        # "Thinking…" placeholder.
+        self._in_flight: dict[int, dict] = {}
+
     # ── Config / mapping ───────────────────────────────────────────
 
     def _build_mapping(self):
@@ -297,7 +302,7 @@ class TelegramBot:
         """Return the active profile for a Telegram user.
 
         If the user has multiple profiles, returns whichever they selected
-        via /switch.  If only one profile exists it is returned automatically.
+        via /profiles.  If only one profile exists it is returned automatically.
         Returns None if the chat ID has no profiles at all.
         """
         cid = int(chat_id)
@@ -695,6 +700,17 @@ class TelegramBot:
             )
             return
 
+        # Reject new messages while a reply is still being generated
+        existing = self._in_flight.get(int(chat_id))
+        if existing is not None and self._tutor_task_running(existing["task"]):
+            bot = await self._get_aiogram_bot()
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⏳ I'm still working on the previous message — "
+                     "send /stop to cancel it.",
+            )
+            return
+
         profile = self.config.get("profiles", {}).get(profile_name, {})
         learning_language = profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
         language_name = resolve_language_name(learning_language)
@@ -718,29 +734,112 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to fetch lesson for '%s': %s", profile_name, e)
 
-        # Call LLM tutor (may take time — model loading, RAG, etc.)
-        client = self._get_llama_client(profile_name)
-        reply = client.tutor_chat(
-            message=text,
+        # Run the (streaming) LLM call as a task so the event loop stays
+        # free — /stop can cancel it, aborting server-side generation.
+        task = asyncio.create_task(self._run_tutor_reply(
+            chat_id=chat_id,
+            profile_name=profile_name,
+            text=text,
             language_name=language_name,
             native_lang=native_lang,
             history=history,
-            max_history=10,
             lesson=lesson,
-        )
+            message_id=thinking_message_id,
+        ))
+        self._in_flight[int(chat_id)] = {
+            "task": task,
+            "message_id": thinking_message_id,
+        }
 
-        if not reply:
-            reply = "⚠️ The tutor is currently unavailable. Please try again later."
+    async def _run_tutor_reply(
+        self,
+        chat_id: int,
+        profile_name: str,
+        text: str,
+        language_name: str,
+        native_lang: str,
+        history: list,
+        lesson: Optional[dict],
+        message_id: int,
+    ):
+        """Background task: stream the tutor reply and post it to Telegram.
 
-        # Store in history (best-effort — don't block the reply on DB errors)
+        If cancelled via /stop, the streaming connection is closed so the
+        model server stops generating; the placeholder was already deleted
+        by the /stop handler, so nothing is sent here.
+        """
+        bot = await self._get_aiogram_bot()
         try:
-            self.db.add_message(chat_id, profile_name, "user", text)
-            self.db.add_message(chat_id, profile_name, "assistant", reply)
-        except sqlite3.Error as e:
-            logger.error("Failed to write chat history for %s: %s", chat_id, e)
+            client = self._get_llama_client(profile_name)
+            reply = await client.tutor_chat_stream(
+                message=text,
+                language_name=language_name,
+                native_lang=native_lang,
+                history=history,
+                max_history=10,
+                lesson=lesson,
+            )
 
-        # ── Replace thinking message with actual reply ───────────
-        await self._edit_tutor_reply(bot, chat_id, thinking_message_id, reply)
+            if not reply:
+                reply = "⚠️ The tutor is currently unavailable. Please try again later."
+
+            # Store in history (best-effort — don't block the reply on DB errors)
+            try:
+                self.db.add_message(chat_id, profile_name, "user", text)
+                self.db.add_message(chat_id, profile_name, "assistant", reply)
+            except sqlite3.Error as e:
+                logger.error("Failed to write chat history for %s: %s", chat_id, e)
+
+            # ── Replace thinking message with actual reply ───────
+            await self._edit_tutor_reply(bot, chat_id, message_id, reply)
+        except asyncio.CancelledError:
+            logger.info("[chat %d] Tutor reply cancelled via /stop", chat_id)
+            raise
+        except Exception as e:
+            logger.error("[chat %d] Tutor reply failed: %s", chat_id, e, exc_info=True)
+            try:
+                await self._edit_tutor_reply(
+                    bot, chat_id, message_id,
+                    "⚠️ The tutor is currently unavailable. Please try again later.",
+                )
+            except Exception:
+                pass  # e.g. placeholder already removed by /stop
+        finally:
+            self._in_flight.pop(int(chat_id), None)
+
+    @staticmethod
+    def _tutor_task_running(task) -> bool:
+        """True while a tutor task is running or being cancelled."""
+        # task.cancelling() (3.11+) covers the brief window between cancel()
+        # being requested and the task actually finishing (avoids double /stop)
+        cancelling = getattr(task, "cancelling", lambda: False)()
+        return not task.done() and not cancelling
+
+    async def handle_stop(self, chat_id: int):
+        """Cancel the in-flight tutor reply for this chat (if any).
+
+        Cancelling the task closes the streaming HTTP connection, which
+        makes the inference server abort the generation.  The "Thinking…"
+        placeholder is deleted so the exchange disappears from the chat.
+        """
+        bot = await self._get_aiogram_bot()
+        entry = self._in_flight.get(int(chat_id))
+        if entry is None or not self._tutor_task_running(entry["task"]):
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⏹ Nothing to stop — no pending reply.",
+            )
+            return
+
+        entry["task"].cancel()
+        try:
+            await bot.delete_message(chat_id, entry["message_id"])
+        except Exception as e:
+            logger.debug("Could not delete thinking message: %s", e)
+        await bot.send_message(
+            chat_id=chat_id,
+            text="⏹ Stopped.",
+        )
 
     # ── Command handlers ───────────────────────────────────────────
 
@@ -764,8 +863,8 @@ class TelegramBot:
                     f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
                     f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
                     f"/chatid — Show your Telegram Chat ID\n"
-                    f"/profiles — List your profiles\n"
-                    f"/switch &lt;name&gt; — Switch active profile\n"
+                    f"/profiles — List & switch your profiles\n"
+                    f"/stop — Cancel a pending tutor reply\n"
                     f"/history clear — Clear chat history\n"
                     f"/status — Show current status"
                 ),
@@ -837,7 +936,15 @@ class TelegramBot:
         )
 
     async def handle_profiles(self, chat_id: int):
-        """List all profiles available for this chat ID."""
+        """List all profiles available for this chat ID (with switch buttons)."""
+        await self._send_profile_menu(chat_id)
+
+    async def _send_profile_menu(self, chat_id: int, header: str = ""):
+        """Send the profile list as a message with one inline button per profile.
+
+        Clicking a button switches the active profile and removes the menu
+        message (see handle_switch_callback).
+        """
         bot = await self._get_aiogram_bot()
         profiles = self.chat_id_to_profiles.get(int(chat_id), [])
         if not profiles:
@@ -848,23 +955,71 @@ class TelegramBot:
             return
 
         active = self.resolve_profile(chat_id)
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
         lines = []
+        rows = []
         for p in profiles:
             profile_cfg = self.config.get("profiles", {}).get(p, {})
             lang = resolve_language_name(
                 profile_cfg.get("learning_language", "?"))
             marker = " ◀ active" if p == active else ""
             lines.append(f"  • <b>{self._escape_html(p)}</b> — {self._escape_html(lang)}{marker}")
+            if len(profiles) > 1:
+                btn_text = f"{'✅ ' if p == active else ''}{p} ({lang})"[:64]
+                rows.append([InlineKeyboardButton(
+                    text=btn_text,
+                    callback_data=f"sw:{chat_id}:{p}",
+                )])
 
+        footer = ("Tap a button to switch your active profile."
+                  if rows else "You have only one profile — it is active.")
+        text = header + (
+            f"👤 Your profiles:\n\n"
+            + "\n".join(lines) + "\n\n"
+            + footer
+        )
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+        )
+
+    async def handle_switch_callback(
+        self, chat_id: int, profile_name: str, message=None,
+    ) -> bool:
+        """Switch the active profile after a user tapped an inline button.
+
+        Removes the menu message so it disappears, then sends a short
+        confirmation. Returns False if the profile is not valid for this chat.
+        """
+        bot = await self._get_aiogram_bot()
+        cid = int(chat_id)
+        if profile_name not in self.chat_id_to_profiles.get(cid, []):
+            return False
+
+        self.select_profile(cid, profile_name)
+
+        # Remove the menu message so it disappears after switching
+        if message is not None:
+            try:
+                await message.delete()
+            except Exception as e:
+                logger.debug("Could not delete profile menu message: %s", e)
+
+        lang = resolve_language_name(
+            self.config.get("profiles", {}).get(profile_name, {}).get(
+                "learning_language", "?"))
         await bot.send_message(
             chat_id=chat_id,
             text=(
-                f"👤 Your profiles:\n\n"
-                + "\n".join(lines) + "\n\n"
-                + "Use <code>/switch &lt;name&gt;</code> to change active profile."
+                f"✅ Switched to <b>{self._escape_html(profile_name)}</b> ({self._escape_html(lang)})\n\n"
+                f"Tutor messages will now use this profile."
             ),
             parse_mode="HTML",
         )
+        return True
 
     async def handle_another_lesson(self, chat_id: int):
         """Trigger an on-demand lesson for the user's active profile.
@@ -912,57 +1067,6 @@ class TelegramBot:
             )
         except Exception as e:
             logger.error("[%s] On-demand lesson failed: %s", profile_name, e, exc_info=True)
-
-    async def handle_switch(self, chat_id: int, args: str):
-        """Switch the active profile for this chat ID."""
-        bot = await self._get_aiogram_bot()
-        target = args.strip().lower() if args else ""
-        profiles = self.chat_id_to_profiles.get(int(chat_id), [])
-
-        if not profiles:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ No profiles found for this chat.",
-            )
-            return
-
-        # Exact match first, then case-insensitive prefix (only if no exact match)
-        matched = None
-        for p in profiles:
-            if p.lower() == target:
-                matched = p
-                break
-        if not matched:
-            for p in profiles:
-                if p.lower().startswith(target):
-                    matched = p
-                    break
-
-        if not matched:
-            names = ", ".join(f"<code>{p}</code>" for p in profiles)
-            await bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"❌ Unknown profile. Available:\n\n"
-                    f"{names}\n\n"
-                    f"Usage: <code>/switch &lt;name&gt;</code>"
-                ),
-                parse_mode="HTML",
-            )
-            return
-
-        self.select_profile(chat_id, matched)
-        lang = resolve_language_name(
-            self.config.get("profiles", {}).get(matched, {}).get(
-                "learning_language", "?"))
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"✅ Switched to <b>{self._escape_html(matched)}</b> ({self._escape_html(lang)})\n\n"
-                f"Tutor messages will now use this profile."
-            ),
-            parse_mode="HTML",
-        )
 
     # ── aiogram integration ────────────────────────────────────────
 
@@ -1039,14 +1143,9 @@ class TelegramBot:
         async def cmd_profiles(message: types.Message):
             await self.handle_profiles(message.chat.id)
 
-        @dp.message(Command("switch"))
-        async def cmd_switch(message: types.Message):
-            args = message.text.split(maxsplit=1)
-            subcommand = args[1] if len(args) > 1 else ""
-            if not subcommand.strip():
-                await self.handle_profiles(message.chat.id)
-            else:
-                await self.handle_switch(message.chat.id, subcommand)
+        @dp.message(Command("stop"))
+        async def cmd_stop(message: types.Message):
+            await self.handle_stop(message.chat.id)
 
         @dp.message(Command("another"))
         async def cmd_another(message: types.Message):
@@ -1109,6 +1208,25 @@ class TelegramBot:
                 profile_name=profile_name,
                 count=count,
             )
+
+        # ── Profile switch callback (inline buttons) ────────────
+        @dp.callback_query(lambda c: c.data and c.data.startswith("sw:"))
+        async def switch_callback(callback_query: types.CallbackQuery):
+            parts = callback_query.data.split(":", 2)
+            if len(parts) != 3:
+                await callback_query.answer()
+                return
+            menu_chat_id, profile_name = int(parts[1]), parts[2]
+            # Only the menu owner may use it
+            if int(callback_query.from_user.id) != menu_chat_id:
+                await callback_query.answer("⚠️ This menu is not for you", show_alert=True)
+                return
+            if not await self.handle_switch_callback(
+                    menu_chat_id, profile_name, callback_query.message):
+                await callback_query.answer(
+                    "⚠️ This profile is no longer available", show_alert=True)
+                return
+            await callback_query.answer()
 
         # ── Study callback queries (flashcards + quiz) ───────────
         @dp.callback_query(lambda c: c.data and (c.data.startswith("fc:") or c.data.startswith("qz:")))

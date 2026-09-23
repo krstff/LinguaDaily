@@ -29,6 +29,7 @@ Config structure in config.json:
     }
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -682,6 +683,38 @@ class LlamaClient:
         str or None
             Tutor's reply, or None on failure.
         """
+        # ── Prepare prompt (intent, references, system prompt) ────
+        messages, model = self._prepare_tutor_messages(
+            message=message,
+            language_name=language_name,
+            native_lang=native_lang,
+            history=history,
+            max_history=max_history,
+            lesson=lesson,
+        )
+
+        # ── Generate reply ────────────────────────────────────────
+        reply = self._chat(messages, model=model, temperature=0.7)
+        if reply:
+            reply = _clean_latex(reply)
+        return reply
+
+    def _prepare_tutor_messages(
+        self,
+        message: str,
+        language_name: str = "German",
+        native_lang: str = "English",
+        history: Optional[list] = None,
+        max_history: int = 10,
+        lesson: Optional[dict] = None,
+    ) -> tuple[list, str]:
+        """Run the pre-generation steps of tutor_chat (intent classification,
+        dictionary/RAG reference gathering, system prompt + history assembly).
+
+        Returns (messages, model) ready for a chat completion call.  Kept
+        synchronous so both the blocking tutor_chat() and the streaming
+        tutor_chat_stream() can share it.
+        """
         model = self.resolve_model("tutor")
 
         # ── Step 1: Classify intent + rewrite retrieval query ─────
@@ -777,7 +810,7 @@ Translation ({native_lang}):
             lesson_block += "\n=== END LESSON ==="
             system += lesson_block
 
-        # ── Step 4: Generate reply ────────────────────────────────
+        # ── Step 4: Assemble messages ─────────────────────────────
         messages = [{"role": "system", "content": system}]
 
         if history:
@@ -786,10 +819,78 @@ Translation ({native_lang}):
 
         messages.append({"role": "user", "content": message})
 
-        reply = self._chat(messages, model=model, temperature=0.7)
-        if reply:
-            reply = _clean_latex(reply)
-        return reply
+        return messages, model
+
+    async def tutor_chat_stream(
+        self,
+        message: str,
+        language_name: str = "German",
+        native_lang: str = "English",
+        history: Optional[list] = None,
+        max_history: int = 10,
+        lesson: Optional[dict] = None,
+    ) -> Optional[str]:
+        """Streaming variant of tutor_chat() for the Telegram tutor.
+
+        Generates the reply with stream=True via the async OpenAI client.
+        If the awaiting task is cancelled (user pressed /stop), the HTTP
+        connection is closed, which makes the inference server abort the
+        in-flight generation — so model compute actually stops.
+
+        Returns
+        -------
+        str or None
+            Tutor's reply, or None on failure.
+        """
+        from config import get_async_openai_client
+
+        # Intent classification + RAG are sync LLM/IO calls — run them in a
+        # worker thread so the event loop stays responsive.
+        messages, model = await asyncio.to_thread(
+            self._prepare_tutor_messages,
+            message=message,
+            language_name=language_name,
+            native_lang=native_lang,
+            history=history,
+            max_history=max_history,
+            lesson=lesson,
+        )
+
+        client = get_async_openai_client(
+            base_url=self.base_url, api_key=self.api_key, timeout=self.timeout
+        )
+        if client is None:
+            return None
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                stream=True,
+            )
+            parts: list[str] = []
+            try:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        parts.append(delta)
+            finally:
+                # Cancelling the task raises CancelledError here; closing the
+                # stream drops the TCP connection so the server stops
+                # generating.  On a normal exit this is a no-op cleanup.
+                await stream.close()
+        except asyncio.CancelledError:
+            logger.info("Tutor stream cancelled for %r", message[:60])
+            raise
+        except Exception as e:
+            logger.error("Tutor stream error: %s", e, exc_info=True)
+            return None
+
+        reply = "".join(parts).strip()
+        return _clean_latex(reply) if reply else None
 
     def health_check(self) -> bool:
         """Check if the LLM endpoint is reachable."""
