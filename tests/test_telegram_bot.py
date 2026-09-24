@@ -672,18 +672,21 @@ class TestCommands:
         bot.db.close()
 
     @pytest.mark.asyncio
-    async def test_command_status(self, sample_config, mock_aiogram):
+    async def test_command_stats(self, sample_config, mock_aiogram):
         from src.telegram_bot import TelegramBot
         config = sample_config[0]
         bot = TelegramBot(config=config)
 
-        await bot.handle_status(111222333)
+        await bot.handle_stats(111222333)
 
         sent = mock_aiogram.send_message.call_args[1]["text"]
         assert "krystof" in sent
         assert "German" in sent
         assert "08:00" in sent
         assert "Europe/Berlin" in sent
+        # stats sections merged in
+        assert "Lessons" in sent
+        assert "Vocabulary" in sent
         bot.db.close()
 
     @pytest.mark.asyncio

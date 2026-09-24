@@ -508,21 +508,24 @@ def check_files(config):
     else:
         results.append((False, f"❌ Cannot create data dir: parent of {DATA_DIR} missing"))
 
-    # Per-profile data dirs and vocab files
-    for name, profile in config.get("profiles", {}).items():
-        pdir = DATA_DIR / name
-        vfile = pdir / "vocabulary.csv"
-        if pdir.exists():
-            if vfile.exists():
-                results.append((True, f"  ✅ {name}: data dir + vocabulary.csv OK"))
-            else:
-                results.append(
-                    (True, f"  ℹ️  {name}: data dir exists, vocabulary.csv created on first lesson")
-                )
-        else:
-            results.append(
-                (True, f"  ℹ️  {name}: data dir will be created on first lesson")
-            )
+    # Per-profile vocab entries in the shared SQLite store
+    from vocab_db import VocabDB
+    db_path = DATA_DIR / "chat_history.db"
+    if db_path.exists():
+        results.append((True, f"✅ Vocab DB: {db_path}"))
+        try:
+            vdb = VocabDB(db_path)
+            for name, profile in config.get("profiles", {}).items():
+                count = vdb.word_count(name)
+                if count:
+                    results.append((True, f"  ✅ {name}: {count} vocabulary words"))
+                else:
+                    results.append((True, f"  ℹ️  {name}: no vocabulary yet (added on first lesson)"))
+            vdb.close()
+        except Exception as e:
+            results.append((False, f"❌ Vocab DB unreadable: {e}"))
+    else:
+        results.append((True, f"  ℹ️  Vocab DB will be created on first run: {db_path}"))
 
     # Output directory for TTS
     from config import OUTPUT_DIR

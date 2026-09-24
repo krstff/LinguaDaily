@@ -15,6 +15,7 @@ The Web UI is a lightweight Flask admin panel for managing profiles, selecting m
 src/web_ui.py   (standalone or importable from main.py)
   ├── GET  /          → Dashboard (profiles + model selection)
   ├── GET  /logs      → Live log viewer (tail style, auto-scroll, color-coded levels)
+  ├── GET  /stats     → Per-profile learning stats (also GET /api/stats/<profile>)
   ├── GET  /config    → Full config.json editor with validation
   ├── POST /api/*     → CRUD for profiles, model settings, config save
   └── Embedded CSS    → Gruvbox palette, no external framework
@@ -22,7 +23,7 @@ src/web_ui.py   (standalone or importable from main.py)
 
 ## Navigation
 
-Top nav bar: **Dashboard** | **Logs** | **Config**
+Top nav bar: **Dashboard** | **Logs** | **Stats** | **Config**
 
 ## Pages
 

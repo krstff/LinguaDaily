@@ -184,6 +184,56 @@ def create_app(config_path=None, log_file=None, password=None,
                                scheduled_count=scheduled,
                                lang_count=len(langs))
 
+    # ── Stats ──────────────────────────────────────────────
+    @app.route("/stats")
+    @require_auth
+    def stats_page():
+        try:
+            config = load_config(_config_path)
+        except Exception as e:
+            return render_template("stats.html", active="stats",
+                                   profiles={}, selected=None, stats=None,
+                                   error=str(e)), 500
+
+        profiles = config.get("profiles", {})
+        selected = request.args.get("profile")
+        if selected not in profiles:
+            # Default to first profile (keep enabled ones first)
+            ordered = sorted(profiles, key=lambda p: (not profiles[p].get("enabled", True), p))
+            selected = ordered[0] if ordered else None
+
+        stats = None
+        if selected:
+            from src.stats import profile_stats
+            try:
+                stats = profile_stats(selected, config=config)
+            except Exception as e:
+                logger = __import__("logging").getLogger(__name__)
+                logger.error("Stats failed for '%s': %s", selected, e)
+                stats = None
+
+        return render_template("stats.html", active="stats",
+                               profiles=profiles,
+                               selected=selected,
+                               stats=stats)
+
+    @app.route("/api/stats/<profile>")
+    @require_auth
+    def api_stats(profile):
+        try:
+            config = load_config(_config_path)
+        except Exception as e:
+            return jsonify({"error": f"Config error: {e}"}), 500
+
+        if profile not in config.get("profiles", {}):
+            return jsonify({"error": "Unknown profile"}), 404
+
+        from src.stats import profile_stats
+        try:
+            return jsonify(profile_stats(profile, config=config))
+        except Exception as e:
+            return jsonify({"error": f"Stats failed: {e}"}), 500
+
     # ── Logs viewer ──────────────────────────────────────
     @app.route("/logs")
     @require_auth

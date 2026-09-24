@@ -1,138 +1,96 @@
-"""Tests for src/processor.py — vocabulary file management."""
+"""Tests for src/processor.py — vocabulary storage (SQLite via VocabDB)."""
 
-import os
 import pytest
 
 
 class TestProcessorInit:
     """Test LinguaProcessor initialization."""
 
-    def test_default_init(self):
+    def test_default_init(self, tmp_path):
         from src.processor import LinguaProcessor
-        proc = LinguaProcessor(learning_language="de", profile="test")
+        proc = LinguaProcessor(learning_language="de", profile="test",
+                               db_path=str(tmp_path / "test.db"))
         assert proc.learning_language == "de"
         assert proc.learning_language_name == "German"
         assert proc.profile == "test"
+        proc.close()
 
-    def test_explicit_vocab_path(self, tmp_path):
+    def test_explicit_db_path(self, tmp_path):
         from src.processor import LinguaProcessor
-        vocab = tmp_path / "vocab.md"
-        proc = LinguaProcessor(profile="test", vocab_path=str(vocab))
-        assert str(vocab) in proc.vocab_path
+        db = tmp_path / "custom.db"
+        proc = LinguaProcessor(profile="test", db_path=str(db))
+        assert str(db) in str(proc.db.db_path)
+        proc.close()
 
-    def test_default_vocab_path(self, tmp_path, monkeypatch):
-        from src import config as cfg
-        # Patch PROJECT_DIR so default vocab path resolves under tmp_path
-        monkeypatch.setattr(cfg, "PROJECT_DIR", tmp_path)
+    def test_external_db_not_closed_by_processor(self, tmp_path):
         from src.processor import LinguaProcessor
-        proc = LinguaProcessor(profile="test_user")
-        assert "test_user" in str(proc.vocab_path)
-
-
-class TestVocabFile:
-    """Test vocabulary file management."""
-
-    @pytest.fixture
-    def processor(self, tmp_path):
-        from src.processor import LinguaProcessor
-        vocab = tmp_path / "vocab.md"
-        return LinguaProcessor(profile="test", vocab_path=str(vocab))
-
-    def test_ensure_vocab_file_creates_if_missing(self, processor):
-        assert not os.path.exists(processor.vocab_path)
-        processor._ensure_vocab_file()
-        assert os.path.exists(processor.vocab_path)
-
-    def test_ensure_vocab_file_skips_existing(self, processor):
-        with open(processor.vocab_path, "w") as f:
-            f.write("existing content")
-        processor._ensure_vocab_file()
-        with open(processor.vocab_path) as f:
-            assert "existing content" in f.read()
-
-    def test_read_existing_vocab(self, processor):
-        # Write a sample vocab file (CSV format)
-        with open(processor.vocab_path, "w", newline="") as f:
-            f.write("word,meaning,frequency,last_seen\n")
-            f.write("hello,greeting,3,2026-01-01\n")
-            f.write("world,earth,1,2026-01-02\n")
-
-        vocab = processor._read_existing_vocab()
-        assert "hello" in vocab
-        assert vocab["hello"]["frequency"] == 3
-        assert "world" in vocab
-        assert vocab["world"]["frequency"] == 1
-
-    def test_read_existing_vocab_empty_file(self, processor):
-        with open(processor.vocab_path, "w") as f:
-            f.write("# Empty\n")
-        vocab = processor._read_existing_vocab()
-        assert vocab == {}
-
-    def test_read_existing_vocab_missing_file(self, processor):
-        # File doesn't exist yet
-        vocab = processor._read_existing_vocab()
-        assert vocab == {}
+        from src.vocab_db import VocabDB
+        db = VocabDB(str(tmp_path / "external.db"))
+        proc = LinguaProcessor(profile="test", db=db)
+        proc.update_vocab(["hello"])
+        proc.close()
+        assert db.word_count("test") == 1  # externally owned → still open
+        db.close()
 
 
 class TestUpdateVocab:
-    """Test vocabulary updates."""
+    """Test vocabulary updates against a temporary database."""
 
     @pytest.fixture
     def processor(self, tmp_path):
         from src.processor import LinguaProcessor
-        vocab = tmp_path / "vocab.md"
-        return LinguaProcessor(profile="test", vocab_path=str(vocab))
+        proc = LinguaProcessor(profile="test",
+                               db_path=str(tmp_path / "test.db"))
+        yield proc
+        proc.close()
 
     def test_add_new_word_string(self, processor):
-        processor._ensure_vocab_file()
         processor.update_vocab(["hello"])
-        vocab = processor._read_existing_vocab()
-        assert "hello" in vocab
+        entries = {e["word"].lower(): e for e in processor.db.get_entries("test")}
+        assert "hello" in entries
 
     def test_add_new_word_dict(self, processor):
-        processor._ensure_vocab_file()
-        processor.update_vocab([{"word": "bonjour", "meaning": "greeting", "freq": 1}])
-        vocab = processor._read_existing_vocab()
-        assert "bonjour" in vocab
+        processor.update_vocab([{"word": "bonjour", "meaning": "greeting"}])
+        entries = {e["word"].lower(): e for e in processor.db.get_entries("test")}
+        assert "bonjour" in entries
+        assert entries["bonjour"]["meaning"] == "greeting"
 
-    def test_skip_duplicate(self, processor):
-        processor._ensure_vocab_file()
+    def test_reencounter_increments_frequency(self, processor):
         processor.update_vocab(["hello"])
-        processor.update_vocab(["hello"])  # duplicate
-        vocab = processor._read_existing_vocab()
-        assert vocab["hello"]["frequency"] == 1  # Should still be 1, not incremented
+        assert processor.update_vocab(["hello"]) == 1  # refreshed, not new
+        entries = {e["word"].lower(): e for e in processor.db.get_entries("test")}
+        assert entries["hello"]["frequency"] == 2
+        assert processor.db.word_count("test") == 1
 
     def test_skip_empty_words(self, processor):
-        processor._ensure_vocab_file()
         processor.update_vocab(["", "  ", "hello"])
-        vocab = processor._read_existing_vocab()
-        assert "" not in vocab
-        assert "hello" in vocab
+        entries = {e["word"].lower(): e for e in processor.db.get_entries("test")}
+        assert "" not in entries
+        assert "hello" in entries
 
-    def test_case_insensitive_dedup(self, processor):
-        processor._ensure_vocab_file()
+    def test_case_insensitive_reencounter(self, processor):
         processor.update_vocab(["Hello"])
         processor.update_vocab(["hello"])  # same word, different case
-        vocab = processor._read_existing_vocab()
-        assert len(vocab) == 1
-        assert "hello" in vocab
+        entries = processor.db.get_entries("test")
+        assert len(entries) == 1
+        assert entries[0]["word"] == "Hello"  # original form kept
+        assert entries[0]["frequency"] == 2
 
     def test_multiple_words_batch(self, processor):
-        processor._ensure_vocab_file()
-        processor.update_vocab([
+        assert processor.update_vocab([
             {"word": "Haus", "meaning": "house"},
             {"word": "Auto", "meaning": "car"},
             {"word": "Buch", "meaning": "book"},
-        ])
-        vocab = processor._read_existing_vocab()
-        assert len(vocab) == 3
+        ]) == 3
+        assert processor.db.word_count("test") == 3
 
     def test_todays_date_recorded(self, processor):
         from datetime import date
-        processor._ensure_vocab_file()
         processor.update_vocab([{"word": "test", "meaning": "test"}])
+        entries = processor.db.get_entries("test")
+        assert entries[0]["last_seen"] == date.today().isoformat()
 
-        with open(processor.vocab_path) as f:
-            content = f.read()
-        assert date.today().isoformat() in content
+    def test_profiles_isolated(self, processor):
+        processor.update_vocab(["only-test"])
+        assert processor.db.word_count("other-profile") == 0
+        assert processor.db.word_count("test") == 1

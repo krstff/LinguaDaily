@@ -1061,7 +1061,7 @@ class TelegramBot:
                     f"/profiles — List & switch your profiles\n"
                     f"/stop — Cancel a pending tutor reply\n"
                     f"/history clear — Clear chat history\n"
-                    f"/status — Show current status"
+                    f"/stats — Show your stats"
                 ),
                 parse_mode="HTML",
             )
@@ -1090,33 +1090,69 @@ class TelegramBot:
             chat_id=chat_id, text="🗑️ Conversation history cleared."
         )
 
-    async def handle_status(self, chat_id: int):
+    async def handle_stats(self, chat_id: int):
+        """/stats — current status + learning statistics for the profile."""
         bot = await self._get_aiogram_bot()
         profile_name = self.resolve_profile(chat_id)
-        if profile_name:
-            profile = self.config.get("profiles", {}).get(profile_name, {})
-            lang = resolve_language_name(
-                profile.get("learning_language", "?"))
-            schedule = profile.get("schedule", {})
-            time_str = schedule.get("time", "not set")
-            tz = schedule.get("tz", "not set")
-
-            await bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"📊 <b>Status for {self._escape_html(profile_name)}</b>\n\n"
-                    f"Learning: {self._escape_html(lang)}\n"
-                    f"Schedule: {self._escape_html(time_str)} ({self._escape_html(tz)})\n"
-                    f"TTS: {'✅' if profile.get('use_tts') else '❌'}\n"
-                    f"Telegram ID: {chat_id}"
-                ),
-                parse_mode="HTML",
-            )
-        else:
+        if not profile_name:
             await bot.send_message(
                 chat_id=chat_id,
                 text="⚠️ Not registered. Ask an admin via the web UI."
             )
+            return
+
+        profile = self.config.get("profiles", {}).get(profile_name, {})
+        lang = resolve_language_name(
+            profile.get("learning_language", "?"))
+        schedule = profile.get("schedule", {})
+        time_str = schedule.get("time", "not set")
+        tz = schedule.get("tz", "not set")
+
+        from stats import profile_stats
+        try:
+            stats = profile_stats(profile_name, config=self.config)
+        except Exception as e:
+            logger.error("Failed to compute stats for '%s': %s", profile_name, e)
+            stats = None
+
+        lines = [
+            f"📊 <b>Stats for {self._escape_html(profile_name)}</b>",
+            "",
+            f"Learning: {self._escape_html(lang)}",
+            f"Schedule: {self._escape_html(time_str)} ({self._escape_html(tz)})",
+            f"TTS: {'✅' if profile.get('use_tts') else '❌'}",
+        ]
+
+        if stats:
+            L = stats["lessons"]
+            V = stats["vocab"]
+            lines += [
+                "",
+                "📖 <b>Lessons</b>",
+                f"Delivered: {L['delivered']}",
+                f"Finished: {L['finished']}"
+                + (f" ({L['completion_rate']}%)" if L['completion_rate'] is not None else ""),
+                f"Current streak: {L['current_streak']} day(s)",
+                f"Best streak: {L['best_streak']} day(s)",
+                "",
+                "📚 <b>Vocabulary</b>",
+                f"Words: {V['total_words']}",
+                f"Quiz accuracy: "
+                + (f"{V['quiz_accuracy']}% ({V['quiz_correct']}/{V['quiz_attempts']})"
+                   if V['quiz_accuracy'] is not None else "no data yet"),
+                f"Avg mastery: {V['avg_mastery']:.2f} "
+                f"· mastered (≥80%): {V['mastered_words']}",
+            ]
+            if L["last_lesson"]:
+                lines.append(f"Last lesson: {L['last_lesson']}")
+
+        lines.append(f"\nTelegram ID: {chat_id}")
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text="\n".join(lines),
+            parse_mode="HTML",
+        )
 
     async def handle_chat_id(self, chat_id: int):
         bot = await self._get_aiogram_bot()
@@ -1326,9 +1362,9 @@ class TelegramBot:
                     message.chat.id, text="Usage: /history clear"
                 )
 
-        @dp.message(Command("status"))
-        async def cmd_status(message: types.Message):
-            await self.handle_status(message.chat.id)
+        @dp.message(Command("stats"))
+        async def cmd_stats(message: types.Message):
+            await self.handle_stats(message.chat.id)
 
         @dp.message(Command("chatid"))
         async def cmd_chatid(message: types.Message):
@@ -1465,82 +1501,9 @@ class TelegramBot:
         async def study_callback(callback_query: types.CallbackQuery):
             if self.study_handler is None:
                 return
-
-            # Handle post-quiz result buttons (retry_missed / new_quiz / to_flashcards)
-            # These arrive after the main session is destroyed.
-            # Only intercept known result actions — everything else falls through
-            # to handle_callback for active quiz/flashcard sessions.
-            data = callback_query.data
-            if data.startswith("qz:") and self.study_handler:
-                parts = data.split(":", 4)
-                if len(parts) >= 4:
-                    result_chat_id = int(parts[1])
-                    token = parts[2]
-                    action = parts[3]
-                    # Check for a results-mode session
-                    result_session = self.study_handler._sessions.get(result_chat_id)
-                    if result_session and result_session.get("mode") == "quiz_results":
-                        if result_session.get("_token") != token:
-                            await callback_query.answer("⚠️ Session expired, start a new quiz")
-                            self.study_handler._end_session(result_chat_id)
-                            return
-                        active_profile = self.resolve_profile(result_chat_id)
-                        if not active_profile:
-                            await callback_query.answer("⚠️ No profile found")
-                            return
-
-                        if action == "retry_missed":
-                            await callback_query.answer()
-                            from flashcards import VocabLoader
-
-                            missed = result_session.get("missed_words", [])
-                            if missed:
-                                profile_cfg = self.config.get("profiles", {}).get(
-                                    active_profile, {})
-                                lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
-                                loader = VocabLoader(
-                                    profile=active_profile,
-                                    learning_language=lang,
-                                )
-                                all_entries = loader.all_entries()
-                                questions = self.study_handler._build_questions(
-                                    missed, all_entries)
-                                import secrets
-                                self.study_handler._sessions[result_chat_id] = {
-                                    "mode": "quiz",
-                                    "profile": active_profile,
-                                    "questions": questions,
-                                    "index": 0,
-                                    "created_at": time.time(),
-                                    "message_id": None,
-                                    "score": 0,
-                                    "answered": False,
-                                    "missed_words": [],
-                                    "answer_log": [],
-                                    "_token": secrets.token_urlsafe(4)[:6],
-                                }
-                                await self.study_handler._render_question(result_chat_id)
-                            return
-                        elif action == "new_quiz":
-                            await callback_query.answer()
-                            self.study_handler._end_session(result_chat_id)
-                            await self.study_handler.start_quiz(
-                                chat_id=result_chat_id,
-                                profile_name=active_profile,
-                                count=result_session.get("questions_count", FLASHCARD_DEFAULT_QUIZ_COUNT),
-                            )
-                            return
-
-                        elif action == "to_flashcards":
-                            await callback_query.answer()
-                            self.study_handler._end_session(result_chat_id)
-                            await self.study_handler.start_flashcards(
-                                chat_id=result_chat_id,
-                                profile_name=result_session["profile"],
-                                count=FLASHCARD_DEFAULT_CARD_COUNT,
-                            )
-                            return
-
+            # Active quiz/flashcard sessions and the post-quiz result
+            # buttons (retry_missed / new_quiz / to_flashcards) are all
+            # handled inside the study handler.
             await self.study_handler.handle_callback(callback_query)
 
         # ── All other messages → tutor chat ──

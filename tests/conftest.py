@@ -30,3 +30,25 @@ def reset_shared_openai_client():
     _reset_client_caches()
     yield
     _reset_client_caches()
+
+
+@pytest.fixture(autouse=True)
+def isolate_shared_vocab_db(tmp_path, monkeypatch):
+    """Ensure tests never leak into (or read from) the real shared VocabDB.
+
+    The shared instance is created lazily on first use, so redirecting
+    ``DEFAULT_DB_PATH`` to a per-test tmp dir before any test runs is
+    sufficient: any accidental shared-DB access lands in tmp.
+
+    Note: production code imports the top-level ``vocab_db`` module
+    (src/ is on sys.path), while some tests import ``src.vocab_db`` —
+    these are distinct module objects, so both are patched + reset.
+    """
+    import vocab_db
+    from src import vocab_db as pkg_vocab_db
+    for mod in (vocab_db, pkg_vocab_db):
+        mod.reset_shared_db()
+        monkeypatch.setattr(mod, "DEFAULT_DB_PATH", tmp_path / "shared_vocab.db")
+    yield
+    vocab_db.reset_shared_db()
+    pkg_vocab_db.reset_shared_db()

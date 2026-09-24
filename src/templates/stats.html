@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}LinguaDaily — Stats{% endblock %}
+{% block content %}
+<h1>Learning Stats</h1>
+<div class="subtitle">Lessons, streaks and vocabulary progress per profile</div>
+
+{% if error %}
+<div class="toast" style="position:static;border-left-color:var(--red);">{{ error }}</div>
+{% endif %}
+
+{% if profiles %}
+<div class="toolbar">
+  <label style="margin:0;">Profile</label>
+  <select onchange="location.href='/stats?profile=' + this.value">
+    {% for name in profiles %}
+    <option value="{{ name }}" {% if name == selected %}selected{% endif %}>
+      {{ name }} ({{ profiles[name].get('learning_language', '?') }})
+      {% if not profiles[name].get('enabled', True) %}· disabled{% endif %}
+    </option>
+    {% endfor %}
+  </select>
+</div>
+
+{% if stats %}
+<!-- ── Headline stat cards ─────────────────────────── -->
+<div class="stats">
+  <div class="stat-card">
+    <div class="value">{{ stats.lessons.delivered }}</div>
+    <div class="label">Lessons delivered</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ stats.lessons.finished }}{% if stats.lessons.completion_rate is not none %} / {{ stats.lessons.completion_rate }}%{% endif %}</div>
+    <div class="label">Lessons finished</div>
+  </div>
+  <div class="stat-card">
+    <div class="value" style="color:var(--green);">🔥 {{ stats.lessons.current_streak }}</div>
+    <div class="label">Current streak (days)</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">🏆 {{ stats.lessons.best_streak }}</div>
+    <div class="label">Best streak (days)</div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="value">{{ stats.vocab.total_words }}</div>
+    <div class="label">Vocabulary words</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ stats.vocab.quiz_accuracy if stats.vocab.quiz_accuracy is not none else '—' }}{% if stats.vocab.quiz_accuracy is not none %}%{% endif %}</div>
+    <div class="label">Quiz accuracy ({{ stats.vocab.quiz_correct }}/{{ stats.vocab.quiz_attempts }})</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ '%.2f' | format(stats.vocab.avg_mastery) }}</div>
+    <div class="label">Avg mastery</div>
+  </div>
+  <div class="stat-card">
+    <div class="value" style="color:var(--aqua);">{{ stats.vocab.mastered_words }}</div>
+    <div class="label">Mastered (≥80%)</div>
+  </div>
+</div>
+
+<!-- ── 14-day activity chart ───────────────────────── -->
+<h1 style="font-size:15px;margin-top:8px;">Last {{ stats.recent_activity | length }} days</h1>
+<div class="subtitle" style="display:flex;gap:18px;align-items:center;">
+  <span><span style="display:inline-block;width:10px;height:10px;background:var(--blue);border-radius:2px;margin-right:6px;vertical-align:middle;"></span>Lesson delivered</span>
+  <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:6px;vertical-align:middle;"></span>Lesson finished</span>
+</div>
+<div style="background:var(--bg0);border-radius:6px;padding:14px;margin-bottom:24px;">
+  <div style="display:flex;align-items:flex-end;gap:4px;height:110px;">
+    {% set max_count = stats.recent_activity | map(attribute='delivered') | max %}
+    {% set max_count = max_count if max_count else 1 %}
+    {% for day in stats.recent_activity %}
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end;"
+         title="{{ day.date }} — delivered: {{ day.delivered }}, finished: {{ day.finished }}">
+      <div style="display:flex;gap:2px;align-items:flex-end;width:100%;justify-content:center;flex:1;">
+        <div style="width:38%;height:{{ (100 * day.delivered / max_count) | int }}%;min-height:2px;
+                    background:var(--blue);border-radius:2px 2px 0 0;"></div>
+        <div style="width:38%;height:{{ (100 * day.finished / max_count) | int }}%;min-height:2px;
+                    background:var(--green);border-radius:2px 2px 0 0;"></div>
+      </div>
+      <div style="font-size:9px;color:var(--fg_dim);">{{ day.date[5:] }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ── Meta ────────────────────────────────────────── -->
+<table>
+  <tr><th style="width:35%;">Detail</th><th>Value</th></tr>
+  <tr><td>Learning language</td><td>{{ stats.learning_language_name }} ({{ stats.learning_language }})</td></tr>
+  <tr><td>Native language</td><td>{{ stats.native_language or '—' }}</td></tr>
+  <tr><td>First lesson</td><td>{{ stats.lessons.first_lesson or '—' }}</td></tr>
+  <tr><td>Last lesson</td><td>{{ stats.lessons.last_lesson or '—' }}</td></tr>
+  <tr><td>Last finished</td><td>{{ stats.lessons.last_finished or '—' }}</td></tr>
+  <tr><td>Total exposures</td><td>{{ stats.vocab.total_exposures }}</td></tr>
+  <tr><td>Last vocab review</td><td>{{ stats.vocab.last_reviewed or '—' }}</td></tr>
+</table>
+
+<!-- ── Top words ─────────────────────────────────── -->
+{% if stats.top_words %}
+<h1 style="font-size:15px;">Top words</h1>
+<div class="subtitle">Most frequently encountered (top {{ stats.top_words | length }})</div>
+<table>
+  <tr><th>Word</th><th>Meaning</th><th style="width:90px;">Seen</th></tr>
+  {% for w in stats.top_words %}
+  <tr>
+    <td>{{ w.word }}</td>
+    <td>{{ w.meaning or '—' }}</td>
+    <td>× {{ w.frequency }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<!-- ── Recent lessons ──────────────────────────────── -->
+{% if stats.recent_lessons %}
+<h1 style="font-size:15px;">Recent lessons</h1>
+<div class="subtitle">Last {{ stats.recent_lessons | length }} delivered</div>
+<table>
+  <tr><th>Lesson</th><th>Delivered</th><th>Finished</th></tr>
+  {% for lesson in stats.recent_lessons %}
+  <tr>
+    <td>{{ lesson.title }}</td>
+    <td>{{ lesson.delivered_at[:16].replace('T', ' ') }}</td>
+    <td>{% if lesson.finished_at %}✅ {{ lesson.finished_at[:16].replace('T', ' ') }}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% else %}
+<div class="subtitle">No stats available for this profile.</div>
+{% endif %}
+
+{% else %}
+<div class="subtitle">No profiles configured. Add one on the <a href="/" style="color:var(--blue);">dashboard</a>.</div>
+{% endif %}
+{% endblock %}

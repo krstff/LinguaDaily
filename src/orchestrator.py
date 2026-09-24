@@ -424,11 +424,12 @@ class Orchestrator:
             if vocab:
                 logger.info("[%s] Extracted %d vocabulary words",
                            profile_name, len(vocab))
-                # Persist to markdown file
+                # Persist to the shared vocab DB
                 processor = self._get_processor(profile_name)
-                processor.update_vocab(vocab)
-                logger.info("[%s] Vocabulary saved to %s",
-                           profile_name, processor.vocab_path)
+                touched = processor.update_vocab(vocab)
+                logger.info("[%s] Vocabulary saved (%d added/refreshed, %d total)",
+                           profile_name, touched,
+                           processor.db.word_count(profile_name))
             return vocab
         except Exception as e:
             error_msg = str(e)

@@ -81,7 +81,7 @@ conda run -n lingua python src/main.py
 |---------|-------------|
 | `/start` | Show welcome message + current registration status |
 | `/history clear` | Clear your tutor conversation history |
-| `/status` | Show your schedule, language pair, and Telegram ID |
+| `/stats` | Show your schedule, language pair, lesson/streak/vocabulary stats |
 
 ### Tutor Chat
 

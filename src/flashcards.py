@@ -7,7 +7,7 @@ Two study modes:
   2. Quiz       — multiple-choice (forward & reverse) with instant feedback,
                   auto-advance, score tracking, and missed-word review
 
-Both use spaced-repetition word selection from the per-profile vocab file.
+Both use spaced-repetition word selection from the shared SQLite vocab store.
 
 Usage (import):
     from src.flashcards import StudyHandler
@@ -19,7 +19,6 @@ Integrates with TelegramBot by registering its command + callback handlers.
 """
 
 import asyncio
-import csv
 import html
 import logging
 import random
@@ -35,8 +34,9 @@ from config import (
     FLASHCARD_SESSION_TIMEOUT_SECS,
     FLASHCARD_QUIZ_AUTO_ADVANCE_SECS,
     FLASHCARD_QUIZ_DISTRACTORS,
-    PROJECT_DIR,
 )
+
+from vocab_db import VocabDB, get_shared_db
 
 logger = logging.getLogger(__name__)
 
@@ -44,55 +44,29 @@ logger = logging.getLogger(__name__)
 # ── Vocabulary Loader ───────────────────────────────────────────────
 
 class VocabLoader:
-    """Reads the per-profile vocabulary CSV and supports spaced-repetition queries."""
+    """Reads the per-profile vocabulary from SQLite and supports
+    spaced-repetition queries.
 
-    def __init__(self, profile: str, learning_language: str):
+    Pass ``db`` to share an existing VocabDB (it will not be closed by
+    ``close()``), or ``db_path`` for a dedicated connection. With
+    neither, the process-wide shared store is used.
+    """
+
+    def __init__(self, profile: str, learning_language: str,
+                 db=None, db_path=None):
         self.profile = profile
         self.learning_language = learning_language
-        self._data_dir = PROJECT_DIR / "data" / profile
-        self._csv_path = self._data_dir / "vocabulary.csv"
+        if db is not None:
+            self._db = db
+            self._owns_db = False
+        elif db_path is not None:
+            self._db = VocabDB(db_path)
+            self._owns_db = True
+        else:
+            self._db = get_shared_db()
+            self._owns_db = False
 
-    # ── Parsing ───────────────────────────────────────────────────
-
-    # ── CSV schema ─────────────────────────────────────────────
-    FIELDNAMES = [
-        "word", "meaning", "frequency", "last_seen",
-        "total_correct", "total_wrong", "mastery_score",
-    ]
-
-    def _parse_vocab(self) -> list[dict]:
-        """Parse CSV vocabulary file into list of entry dicts.
-
-        Missing SRS columns default to neutral values for backward
-        compatibility with legacy CSVs that lack them.
-        """
-        if not self._csv_path.exists():
-            return []
-        with open(self._csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            entries: list[dict] = []
-            for row in reader:
-                tc = row.get("total_correct") or ""
-                tw = row.get("total_wrong") or ""
-                ms = row.get("mastery_score") or ""
-                entries.append({
-                    "word": row.get("word", "").strip(),
-                    "meaning": row.get("meaning", "").strip(),
-                    "frequency": int(row.get("frequency", 1) or 1),
-                    "last_seen": row.get("last_seen", "").strip() or None,
-                    "total_correct": int(tc) if tc else 0,
-                    "total_wrong": int(tw) if tw else 0,
-                    "mastery_score": float(ms) if ms else 0.0,
-                })
-            return entries
-
-    def all_entries(self) -> list[dict]:
-        """Return all vocabulary entries (for distractor generation)."""
-        return self._parse_vocab()
-
-    # ── Writing / exposure tracking ───────────────────────────────
-
-    # ── Mastery model helpers (module-level for testability) ────
+    # ── Mastery model helpers ────────────────────────────────────
 
     # Daily decay rate — mastery drops by this much per day since last review.
     _DECAY_PER_DAY = 0.02
@@ -106,26 +80,18 @@ class VocabLoader:
         """How many days *should* pass between reviews at this mastery level."""
         return max(1, int(mastery ** 2 * VocabLoader._MAX_INTERVAL_DAYS))
 
-    @staticmethod
-    def _update_mastery(correct: int, wrong: int, was_correct: bool) -> tuple[int, int, float]:
-        """Bayesian mastery update with Laplace smoothing.
+    # ── Reads / writes ────────────────────────────────────────────
 
-        Returns (updated_correct, updated_wrong, new_mastery_score).
-        """
-        if was_correct:
-            correct += 1
-        else:
-            wrong += 1
-        # Prior of (1, 1) prevents 0/1 extremes with few data points.
-        mastery = (correct + 1) / (correct + wrong + 2)
-        return correct, wrong, round(mastery, 4)
+    def all_entries(self) -> list[dict]:
+        """Return all vocabulary entries (for distractor generation)."""
+        return self._db.get_entries(self.profile)
 
     def record_exposure(
         self,
         words: list[str],
         outcomes: list[tuple[str, bool]] | None = None,
     ):
-        """Persist session data to the vocabulary CSV.
+        """Persist session data to the vocabulary DB.
 
         Parameters
         ----------
@@ -136,43 +102,12 @@ class VocabLoader:
             multiple times (e.g. forward + reverse direction).  Each attempt is
             an independent mastery data point.
         """
-        if not self._csv_path.exists():
-            return
+        self._db.record_exposure(self.profile, words, outcomes=outcomes)
 
-        entries = self._parse_vocab()
-        today = date.today().isoformat()
-        word_map = {e["word"]: e for e in entries}
-
-        updated = False
-        for w in words:
-            entry = word_map.get(w)
-            if not entry:
-                continue
-            entry["frequency"] += 1
-            entry["last_seen"] = today
-            updated = True
-
-        # Apply quiz outcomes (each attempt is independent).
-        if outcomes:
-            for w, was_correct in outcomes:
-                entry = word_map.get(w)
-                if not entry:
-                    continue
-                c, wrong, mastery = self._update_mastery(
-                    entry["total_correct"],
-                    entry["total_wrong"],
-                    was_correct,
-                )
-                entry["total_correct"] = c
-                entry["total_wrong"] = wrong
-                entry["mastery_score"] = mastery
-                updated = True
-
-        if updated:
-            with open(self._csv_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
-                writer.writeheader()
-                writer.writerows(entries)
+    def close(self):
+        """Close the database connection (only if we own it)."""
+        if self._owns_db:
+            self._db.close()
 
     # ── Priority-based spaced-repetition selection ───────────────
 
@@ -186,7 +121,7 @@ class VocabLoader:
         again.  Words with mastery > 0.95 are excluded unless the vocab is
         small enough that we need to fill slots.
         """
-        entries = self._parse_vocab()
+        entries = self._db.get_entries(self.profile)
         if not entries:
             return []
 
@@ -439,7 +374,7 @@ class StudyHandler:
         if data.startswith("fc:"):
             return await self._handle_flashcard_callback(callback_query, data)
 
-        # ── Quiz callbacks ────────────────────────────────────────
+        # ── Quiz callbacks (active quiz + results screen) ─────────
         if data.startswith("qz:"):
             return await self._handle_quiz_callback(callback_query, data)
 
@@ -659,6 +594,13 @@ class StudyHandler:
             await callback_query.answer("⚠️ Not your session")
             return True
 
+        # Post-quiz results screen — handled separately so its buttons
+        # work after the active quiz state has been replaced.
+        session = self._sessions.get(chat_id)
+        if session and session.get("mode") == "quiz_results":
+            return await self._handle_results_action(
+                callback_query, session, chat_id, token, action_or_idx)
+
         session = self._get_session(chat_id)
         if not session or session["mode"] != "quiz":
             await callback_query.answer("⚠️ Session expired. Start a new one with /quiz")
@@ -699,40 +641,8 @@ class StudyHandler:
                     logger.debug("Failed to delete quiz message: %s", e)
             return True
 
-        if action_or_idx == "retry_missed":
-            await callback_query.answer()
-            missed = session.pop("missed_words", [])
-            if missed:
-                # Start a new quiz with just the missed words
-                profile_cfg = self.config.get("profiles", {}).get(session["profile"], {})
-                lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
-                all_entries = VocabLoader(
-                    profile=session["profile"], learning_language=lang
-                ).all_entries()
-                questions = self._build_questions(missed, all_entries)
-                session.update({
-                    "questions": questions,
-                    "index": 0,
-                    "score": 0,
-                    "answered": False,
-                    "missed_words": [],
-                    "answer_log": [],
-                    "message_id": None,
-                })
-                await self._render_question(chat_id)
-            else:
-                await self._send(chat_id, "🎉 No missed words to retry!")
-            return True
-
-        if action_or_idx == "new_quiz":
-            await callback_query.answer()
-            self._end_session(chat_id)
-            await self.start_quiz(
-                chat_id=chat_id,
-                profile_name=session["profile"],
-                count=len(session.get("questions", [])),
-            )
-            return True
+        # (retry_missed / new_quiz / to_flashcards only appear on the
+        #  results screen — see _handle_results_action)
 
         # ── Answer selection (numeric index) ──────────────────────
         try:
@@ -775,6 +685,69 @@ class StudyHandler:
 
         task = asyncio.create_task(self._quiz_auto_advance(chat_id))
         session["_auto_advance_task"] = task
+        return True
+
+    async def _handle_results_action(self, callback_query, session: dict,
+                                     chat_id: int, token: str,
+                                     action: str) -> bool:
+        """Handle post-quiz result buttons (retry_missed / new_quiz /
+        to_flashcards) shown after the quiz finishes."""
+        if session.get("_token") != token:
+            await callback_query.answer("⚠️ Session expired, start a new quiz")
+            self._end_session(chat_id)
+            return True
+
+        # The quiz belongs to the profile it was started with — keep it
+        # even if the user switched profiles while on the results screen.
+        profile = session["profile"]
+        profile_cfg = self.config.get("profiles", {}).get(profile, {})
+        lang = profile_cfg.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
+
+        if action == "retry_missed":
+            await callback_query.answer()
+            missed = session.get("missed_words", [])
+            if missed:
+                loader = VocabLoader(profile=profile, learning_language=lang)
+                questions = self._build_questions(missed, loader.all_entries())
+                self._sessions[chat_id] = {
+                    "mode": "quiz",
+                    "profile": profile,
+                    "questions": questions,
+                    "index": 0,
+                    "created_at": time.time(),
+                    "message_id": None,
+                    "score": 0,
+                    "answered": False,
+                    "missed_words": [],
+                    "answer_log": [],
+                    "_auto_advance_task": None,
+                    "generation": self._next_generation(),
+                    "_token": secrets.token_urlsafe(4)[:6],
+                }
+                await self._render_question(chat_id)
+            return True
+
+        if action == "new_quiz":
+            await callback_query.answer()
+            self._end_session(chat_id)
+            await self.start_quiz(
+                chat_id=chat_id,
+                profile_name=profile,
+                count=session.get("questions_count", FLASHCARD_DEFAULT_QUIZ_COUNT),
+            )
+            return True
+
+        if action == "to_flashcards":
+            await callback_query.answer()
+            self._end_session(chat_id)
+            await self.start_flashcards(
+                chat_id=chat_id,
+                profile_name=profile,
+                count=FLASHCARD_DEFAULT_CARD_COUNT,
+            )
+            return True
+
+        await callback_query.answer()
         return True
 
     async def _render_question(self, chat_id: int):
