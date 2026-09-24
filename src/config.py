@@ -139,6 +139,41 @@ TG_MAX_MSG_LEN           = 4096
 TG_SAFE_TRUNCATE         = 3900
 TG_HISTORY_PURGE_DAYS    = 30
 TG_LESSON_COOLDOWN_SECS  = 600   # minutes between /another requests
+TG_LESSON_ACK_DEFAULT    = True  # post-lesson "Finished" button (stats tracking)
+TG_LESSON_ACK_DELETE_DELAY_SECS = 5
+# Message effects for the lesson-done confirmation (sent as a NEW message
+# after the "Finished" click — effects are a send-time property, so editing
+# cannot change them). Keyed off the completion streak: streak % 28 == 0
+# (>= 28) → month effect, streak % 7 == 0 (>= 7) → week effect, otherwise
+# default. Values are the documented Bot API message effect ids — swap in
+# custom ids here if your Telegram build wants them.
+LESSON_ACK_EFFECT_DEFAULT        = "5104841245755180586" # Fire
+LESSON_ACK_EFFECT_WEEK_STREAK    = "5046509860389126442" # Confetti
+LESSON_ACK_EFFECT_MONTH_STREAK   = "5159385139981059251" # Heart
+
+# Post-lesson acknowledgement texts, per learner's LEARNING language
+# (the language of the lesson, not their native one).
+# Unknown language codes fall back to "en".
+LESSON_ACK_TEXT: dict[str, str] = {
+    "en": "📖 You've reached the end of your lesson.\nClick below when you're done reading 👇",
+    "de": "📖 Du bist am Ende deiner Lektion.\nKlicke unten, wenn du fertig bist 👇",
+    "cs": "📖 Jsi u konce lekce.\nKlikni dole, když budeš hotový 👇",
+    "hu": "📖 Elérkeztél a lecke végére.\nKattints lent, ha kész vagy 👇",
+    "it": "📖 Sei arrivato alla fine della lezione.\nClicca qui sotto quando hai finito 👇",
+    "es": "📖 Has llegado al final de la lección.\nHaz clic abajo cuando termines 👇",
+    "fr": "📖 Tu es à la fin de ta leçon.\nClique ci-dessous quand tu as fini 👇",
+}
+# Short "good job" confirmation shown (with the streak effect) after the
+# "Finished" click — also in the learning language.
+LESSON_ACK_DONE_TEXT: dict[str, str] = {
+    "en": "🎉 Good job!",
+    "de": "🎉 Gut gemacht!",
+    "cs": "🎉 Dobře!",
+    "hu": "🎉 Jól csináltad!",
+    "it": "🎉 Ben fatto!",
+    "es": "🎉 ¡Bien hecho!",
+    "fr": "🎉 Bien joué !",
+}
 
 # ── RAG ───────────────────────────────────────────────────
 RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"

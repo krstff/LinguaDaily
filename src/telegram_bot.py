@@ -38,7 +38,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telegramify_markdown import convert as md_convert, split_entities
@@ -50,7 +50,14 @@ from config import (
     DEFAULT_NATIVE_LANGUAGE,
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
+    LESSON_ACK_DONE_TEXT,
+    LESSON_ACK_EFFECT_DEFAULT,
+    LESSON_ACK_EFFECT_MONTH_STREAK,
+    LESSON_ACK_EFFECT_WEEK_STREAK,
+    LESSON_ACK_TEXT,
     TG_HISTORY_PURGE_DAYS,
+    TG_LESSON_ACK_DELETE_DELAY_SECS,
+    TG_LESSON_ACK_DEFAULT,
     TG_LESSON_COOLDOWN_SECS,
     TG_MAX_MSG_LEN,
     TG_SAFE_TRUNCATE,
@@ -102,6 +109,21 @@ class ChatHistoryDB:
                 vocab_json TEXT,
                 delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+        # ── One row per delivered lesson (stats: completion tracking) ──
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile TEXT NOT NULL,
+                title TEXT,
+                delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMP,
+                finished_by TEXT
+            )
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lesson_log_profile
+            ON lesson_log (profile, delivered_at)
         """)
         self.conn.commit()
 
@@ -188,6 +210,33 @@ class ChatHistoryDB:
         )
         self.conn.commit()
 
+    def log_lesson(self, profile: str, title: str) -> int:
+        """Insert a lesson_log row for a delivered lesson. Returns its id."""
+        cur = self.conn.execute(
+            "INSERT INTO lesson_log (profile, title, delivered_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (profile, title),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def mark_lesson_finished(self, lesson_id: int, user_id) -> bool:
+        """Mark a lesson as finished (read) by the given Telegram user.
+
+        Idempotent — only the first call wins (finished_at is NULL only
+        once). Returns True if this call performed the marking.
+        """
+        cur = self.conn.execute(
+            """
+            UPDATE lesson_log
+            SET finished_at = CURRENT_TIMESTAMP, finished_by = ?
+            WHERE id = ? AND finished_at IS NULL
+            """,
+            (str(user_id), lesson_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def get_latest_lesson(self, profile: str) -> Optional[dict]:
         """Return the most recent lesson dict for a profile, or None."""
         row = self.conn.execute(
@@ -247,6 +296,10 @@ class TelegramBot:
 
         # Cooldown tracking for /another command (chat_id → timestamp)
         self._last_lesson_request: dict[int, float] = {}
+
+        # Post-lesson "Finished" ack button (config: lesson_ack, default on)
+        self.lesson_ack_enabled = bool(
+            config.get("lesson_ack", TG_LESSON_ACK_DEFAULT))
 
         # In-flight tutor replies (chat_id → {"task", "message_id"}) —
         # lets /stop cancel a running LLM generation and remove the
@@ -560,8 +613,150 @@ class TelegramBot:
         except sqlite3.Error as e:
             logger.error("Failed to store lesson for '%s': %s", profile_name, e)
 
+        # ── Message 5: "Finished" ack button (completion tracking) ──
+        if self.lesson_ack_enabled:
+            lesson_id = None
+            try:
+                lesson_id = self.db.log_lesson(profile_name, title)
+            except sqlite3.Error as e:
+                logger.error("Failed to log lesson for '%s': %s", profile_name, e)
+            if lesson_id is not None:
+                await self._send_lesson_ack(bot, chat_id, profile_name, lesson_id)
+
         # Auto-switch tutor context to the profile that just received a lesson
         self.select_profile(chat_id, profile_name)
+
+    async def _send_lesson_ack(
+        self, bot, chat_id: int, profile_name: str, lesson_id: int,
+    ):
+        """Send the post-lesson acknowledgement message (message 5).
+
+        Plain text + a single "Finished" button (no effect — the streak
+        effect is reserved for the done confirmation in
+        handle_lesson_done). The click is recorded in lesson_log.
+        """
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        # Messages are in the learner's LEARNING language (the lesson's
+        # language), not their native one.
+        lang = (self.config.get("profiles", {}).get(profile_name, {})
+                .get("learning_language", DEFAULT_LEARNING_LANGUAGE))
+        text = LESSON_ACK_TEXT.get(lang, LESSON_ACK_TEXT["en"])
+        button = InlineKeyboardButton(
+            text="✅ Finished",
+            callback_data=f"ld:{profile_name}:{lesson_id}",
+        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
+            )
+            logger.info("Sent lesson-ack message (lesson %d) to chat %d",
+                        lesson_id, chat_id)
+        except Exception as e:
+            logger.error("Failed to send lesson-ack message: %s", e)
+
+    def _lesson_streak_days(self, profile_name: str) -> int:
+        """Count consecutive days (ending today) with at least one finished
+        lesson for the profile.
+
+        Today counts only if a lesson was already marked finished (e.g. a
+        second daily lesson); otherwise the count starts at yesterday.
+        """
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT date(finished_at) FROM lesson_log "
+            "WHERE profile = ? AND finished_at IS NOT NULL "
+            "ORDER BY date(finished_at) DESC",
+            (profile_name,),
+        ).fetchall()
+        days = {r[0] for r in rows}
+        d = datetime.now(timezone.utc).date()
+        streak = 0
+        if d.isoformat() not in days:
+            d -= timedelta(days=1)
+        while d.isoformat() in days:
+            streak += 1
+            d -= timedelta(days=1)
+        return streak
+
+    @staticmethod
+    def _lesson_ack_effect(streak_days: int) -> str:
+        """Pick the ack message effect from the completion streak.
+
+        Every 28th consecutive finished day → heart, every 7th → confetti,
+        everything else → fire (checked modulo, so streaks keep cycling).
+        """
+        if streak_days >= 28 and streak_days % 28 == 0:
+            return LESSON_ACK_EFFECT_MONTH_STREAK
+        if streak_days >= 7 and streak_days % 7 == 0:
+            return LESSON_ACK_EFFECT_WEEK_STREAK
+        return LESSON_ACK_EFFECT_DEFAULT
+
+    async def handle_lesson_done(self, profile_name: str, message) -> bool:
+        """Post-click effect for the lesson-ack message.
+
+        Deletes the ack message (with its button), sends a short
+        confirmation as a NEW message with the streak-based effect
+        (fire / confetti / heart) — effects are a send-time property,
+        so editing cannot change them — then deletes that one again after
+        TG_LESSON_ACK_DELETE_DELAY_SECS.
+        Falls back to in-place editing if the first delete is not allowed
+        (e.g. a group where the bot lacks delete rights).
+        Returns True if the confirmation was shown.
+        """
+        if message is None:
+            return False
+        from aiogram.types import InlineKeyboardMarkup
+
+        lang = (self.config.get("profiles", {}).get(profile_name, {})
+                .get("learning_language", DEFAULT_LEARNING_LANGUAGE))
+        done_text = LESSON_ACK_DONE_TEXT.get(lang, LESSON_ACK_DONE_TEXT["en"])
+
+        # 1) Remove the ack message (with its button)
+        try:
+            await message.delete()
+        except Exception as e:
+            logger.warning("Could not delete lesson-ack message: %s "
+                           "— falling back to in-place edit", e)
+            try:
+                await message.edit_text(
+                    text=done_text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+                )
+                return True
+            except Exception as e2:
+                logger.warning("Could not edit lesson-ack message either: %s", e2)
+                return False
+
+        # 2) Send the confirmation as a new message with the streak effect
+        bot = await self._get_aiogram_bot()
+        streak = self._lesson_streak_days(profile_name)
+        effect = self._lesson_ack_effect(streak)
+        try:
+            sent = await bot.send_message(
+                chat_id=message.chat.id,
+                text=done_text,
+                message_effect_id=effect,
+            )
+            logger.info(
+                "Lesson-done confirmation sent (profile '%s', streak %d, "
+                "effect %s)",
+                profile_name, streak, effect)
+        except Exception as e:
+            logger.error("Failed to send lesson-done confirmation: %s", e)
+            return False
+
+        # 3) Delete the confirmation after a short delay
+        try:
+            await asyncio.sleep(TG_LESSON_ACK_DELETE_DELAY_SECS)
+            await sent.delete()
+            logger.info("Lesson-done confirmation deleted (profile '%s')",
+                        profile_name)
+            return True
+        except Exception as e:
+            logger.info("Keeping lesson-done confirmation (delete failed): %s", e)
+            return True
 
     # ── Tutor chat handler ─────────────────────────────────────────
 
@@ -1227,6 +1422,43 @@ class TelegramBot:
                     "⚠️ This profile is no longer available", show_alert=True)
                 return
             await callback_query.answer()
+
+        # ── Lesson "Finished" ack callback (inline button) ────────
+        @dp.callback_query(lambda c: c.data and c.data.startswith("ld:"))
+        async def lesson_done_callback(callback_query: types.CallbackQuery):
+            parts = callback_query.data.split(":", 2)
+            if len(parts) != 3:
+                await callback_query.answer()
+                return
+            profile_name, lesson_id_raw = parts[1], parts[2]
+            try:
+                lesson_id = int(lesson_id_raw)
+            except ValueError:
+                await callback_query.answer()
+                return
+            if callback_query.message is None:
+                await callback_query.answer()
+                return
+            chat_id = int(callback_query.message.chat.id)
+            # Only a user with this profile registered in their chat may mark it
+            if profile_name not in self.chat_id_to_profiles.get(chat_id, []):
+                await callback_query.answer(
+                    "⚠️ This lesson is not for you", show_alert=True)
+                return
+            marked = self.db.mark_lesson_finished(
+                lesson_id, callback_query.from_user.id)
+            if not marked:
+                await callback_query.answer("Already marked ✓")
+                try:
+                    await callback_query.message.delete()
+                except Exception:
+                    pass
+                return
+            logger.info(
+                "Lesson %d marked finished by user %d (profile '%s')",
+                lesson_id, callback_query.from_user.id, profile_name)
+            await callback_query.answer()
+            await self.handle_lesson_done(profile_name, callback_query.message)
 
         # ── Study callback queries (flashcards + quiz) ───────────
         @dp.callback_query(lambda c: c.data and (c.data.startswith("fc:") or c.data.startswith("qz:")))

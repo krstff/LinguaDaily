@@ -70,11 +70,36 @@ class TestChatHistoryDB:
         db_path = str(tmp_path / "test_history.db")
         db = ChatHistoryDB(db_path)
 
-        # Verify table exists
-        cursor = db.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_history'"
-        )
-        assert cursor.fetchone() is not None
+        # Verify tables exist
+        for table in ("chat_history", "latest_lesson", "lesson_log"):
+            cursor = db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            )
+            assert cursor.fetchone() is not None, f"missing table {table}"
+        db.close()
+
+    def test_lesson_log_lifecycle(self, tmp_path):
+        from src.telegram_bot import ChatHistoryDB
+        db = ChatHistoryDB(str(tmp_path / "test.db"))
+
+        lid = db.log_lesson("krystof", "Some Title")
+        assert lid >= 1
+
+        # First marking wins, second is a no-op (idempotent)
+        assert db.mark_lesson_finished(lid, 12345) is True
+        assert db.mark_lesson_finished(lid, 99999) is False
+
+        row = db.conn.execute(
+            "SELECT profile, title, delivered_at, finished_at, finished_by "
+            "FROM lesson_log WHERE id=?",
+            (lid,),
+        ).fetchone()
+        assert row[0] == "krystof"
+        assert row[1] == "Some Title"
+        assert row[2] is not None
+        assert row[3] is not None
+        assert row[4] == "12345"
         db.close()
 
     def test_add_and_get_history(self, tmp_path):
@@ -214,8 +239,8 @@ class TestDeliverLesson:
 
         await bot.deliver_lesson("krystof", lesson)
 
-        # Should have called send_message twice: original + translation
-        assert mock_aiogram.send_message.call_count == 2
+        # Should have called send_message 3x: original + translation + ack
+        assert mock_aiogram.send_message.call_count == 3
         calls = mock_aiogram.send_message.call_args_list
 
         # Message 1: original text
@@ -229,6 +254,21 @@ class TestDeliverLesson:
         assert msg2_kwargs["chat_id"] == 111222333
         assert "Translation" in msg2_kwargs["text"]
         assert "English" in msg2_kwargs["text"]
+
+        # Message 3: lesson-ack — plain text + button (no effect; the
+        # streak effect is reserved for the post-click confirmation)
+        msg3_kwargs = calls[2][1]
+        assert msg3_kwargs["chat_id"] == 111222333
+        assert "message_effect_id" not in msg3_kwargs
+        button = msg3_kwargs["reply_markup"].inline_keyboard[0][0]
+        assert button.text == "✅ Finished"
+        assert button.callback_data.startswith("ld:krystof:")
+
+        # A lesson_log row was recorded
+        row = bot.db.conn.execute(
+            "SELECT COUNT(*) FROM lesson_log WHERE profile='krystof' AND title='Python Basics'"
+        ).fetchone()
+        assert row[0] >= 1
 
         bot.db.close()
 
@@ -262,9 +302,10 @@ class TestDeliverLesson:
 
         await bot.deliver_lesson("krystof", lesson)
 
-        assert mock_aiogram.send_message.call_count == 2
-        # Both messages should be under Telegram limit
-        for call in mock_aiogram.send_message.call_args_list:
+        # original + translation + short ack message
+        assert mock_aiogram.send_message.call_count == 3
+        # Long messages should be under Telegram limit and truncated
+        for call in mock_aiogram.send_message.call_args_list[:2]:
             text = call[1]["text"]
             assert len(text) <= 4096
             assert "\u2026" in text or "..." in text  # truncated
@@ -755,7 +796,7 @@ class TestBotLifecycle:
 
     @pytest.mark.asyncio
     async def test_deliver_lesson_no_audio(self, sample_config, mock_aiogram):
-        """Lesson without wav_path should still deliver text (2 messages)."""
+        """Lesson without wav_path should still deliver text (3 messages)."""
         from src.telegram_bot import TelegramBot
         config = sample_config[0]
         bot = TelegramBot(config=config)
@@ -771,9 +812,285 @@ class TestBotLifecycle:
         }
 
         await bot.deliver_lesson("krystof", lesson)
-        # Two text messages: original + translation (no audio call)
-        assert mock_aiogram.send_message.call_count == 2
+        # Three text messages: original + translation + ack (no audio call)
+        assert mock_aiogram.send_message.call_count == 3
         bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_deliver_lesson_ack_disabled(self, sample_config, mock_aiogram):
+        """lesson_ack: false suppresses the ack message and DB log row."""
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        config["lesson_ack"] = False
+        bot = TelegramBot(config=config)
+
+        before = bot.db.conn.execute("SELECT COUNT(*) FROM lesson_log").fetchone()[0]
+        lesson = {
+            "title": "No Ack",
+            "content": "content",
+            "original_content": "original",
+            "learning_language_name": "German",
+            "native_language": "English",
+            "vocab": [],
+        }
+
+        await bot.deliver_lesson("krystof", lesson)
+        assert mock_aiogram.send_message.call_count == 2
+        after = bot.db.conn.execute("SELECT COUNT(*) FROM lesson_log").fetchone()[0]
+        assert after == before  # no log row written
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_deliver_lesson_ack_language(self, sample_config, mock_aiogram):
+        """Ack text follows the profile's LEARNING language (krystof learns
+        German, natively English) — not the native language."""
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        lesson = {
+            "title": "Titel",
+            "content": "content",
+            "original_content": "original",
+            "learning_language_name": "German",
+            "native_language": "English",
+            "vocab": [],
+        }
+
+        await bot.deliver_lesson("krystof", lesson)
+        ack_text = mock_aiogram.send_message.call_args_list[2][1]["text"]
+        assert "Klicke unten" in ack_text  # German, not English
+
+        # Switching the learning language switches the ack text too
+        config["profiles"]["krystof"]["learning_language"] = "cs"
+        bot2 = TelegramBot(config=config)
+        await bot2.deliver_lesson("krystof", lesson)
+        ack_text = mock_aiogram.send_message.call_args_list[-1][1]["text"]
+        assert "Klikni dole" in ack_text  # Czech
+        bot.db.close()
+        bot2.db.close()
+
+
+# ── Lesson-ack click flow ───────────────────────────────────────────
+
+class TestLessonAckDone:
+    """Test the 'Finished' button post-click effect (edit + delete)."""
+
+    @pytest.mark.asyncio
+    async def test_handle_lesson_done_delete_send_delete(
+        self, sample_config, mock_aiogram, monkeypatch
+    ):
+        """Click → delete ack, send confirmation (with effect), delete it."""
+        import types as _types
+        import src.telegram_bot as tb_mod
+        from src.telegram_bot import TelegramBot
+        monkeypatch.setattr(tb_mod, "TG_LESSON_ACK_DELETE_DELAY_SECS", 0)
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        class FakeMessage:
+            def __init__(self, chat_id=111222333):
+                self.chat = _types.SimpleNamespace(id=chat_id)
+                self.edited = None
+                self.deleted = False
+
+            async def edit_text(self, text=None, reply_markup=None, **kw):
+                self.edited = (text, reply_markup)
+
+            async def delete(self):
+                self.deleted = True
+
+        old_msg = FakeMessage()
+        new_msg = FakeMessage()
+        mock_aiogram.send_message.return_value = new_msg
+        # deterministic streak → heart tier
+        monkeypatch.setattr(TelegramBot, "_lesson_streak_days",
+                            lambda self, profile: 28)
+
+        assert await bot.handle_lesson_done("krystof", old_msg) is True
+
+        # old ack message was deleted, not edited
+        assert old_msg.deleted is True
+        assert old_msg.edited is None
+        # confirmation sent as a NEW message: short text in the LEARNING
+        # language (krystof learns German) with the streak effect
+        kwargs = mock_aiogram.send_message.call_args[1]
+        assert kwargs["chat_id"] == 111222333
+        assert kwargs["text"] == "🎉 Gut gemacht!"
+        # streak 28 → month-tier effect (value comes from config)
+        assert kwargs["message_effect_id"] == tb_mod.LESSON_ACK_EFFECT_MONTH_STREAK
+        # and deleted again after the delay
+        assert new_msg.deleted is True
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_handle_lesson_done_delete_falls_back_to_edit(
+        self, sample_config, mock_aiogram, monkeypatch
+    ):
+        """If the ack message can't be deleted (e.g. group permissions),
+        fall back to editing it in place and skip the extra message."""
+        import types as _types
+        import src.telegram_bot as tb_mod
+        from src.telegram_bot import TelegramBot
+        monkeypatch.setattr(tb_mod, "TG_LESSON_ACK_DELETE_DELAY_SECS", 0)
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        class NoDeleteMessage:
+            def __init__(self):
+                self.chat = _types.SimpleNamespace(id=111222333)
+                self.edited = None
+
+            async def edit_text(self, text=None, reply_markup=None, **kw):
+                self.edited = (text, reply_markup)
+
+            async def delete(self):
+                raise RuntimeError("delete not allowed")
+
+        msg = NoDeleteMessage()
+        assert await bot.handle_lesson_done("krystof", msg) is True
+
+        text, markup = msg.edited
+        assert "🎉" in text
+        assert markup.inline_keyboard == []  # button removed
+        mock_aiogram.send_message.assert_not_called()
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_handle_lesson_done_send_failure(
+        self, sample_config, mock_aiogram, monkeypatch
+    ):
+        """Ack deleted but confirmation send fails → False, nothing to delete."""
+        import types as _types
+        import src.telegram_bot as tb_mod
+        from src.telegram_bot import TelegramBot
+        monkeypatch.setattr(tb_mod, "TG_LESSON_ACK_DELETE_DELAY_SECS", 0)
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        class FakeMessage:
+            def __init__(self):
+                self.chat = _types.SimpleNamespace(id=111222333)
+                self.deleted = False
+
+            async def delete(self):
+                self.deleted = True
+
+        msg = FakeMessage()
+        mock_aiogram.send_message.side_effect = RuntimeError("telegram down")
+
+        assert await bot.handle_lesson_done("krystof", msg) is False
+        assert msg.deleted is True
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_handle_lesson_done_none_message(self, sample_config):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+        assert await bot.handle_lesson_done("krystof", None) is False
+        bot.db.close()
+
+
+
+
+# ── Streak-based ack effects ────────────────────────────────────────
+
+class TestLessonAckEffect:
+    """Test completion streak counting and effect tier selection."""
+
+    @pytest.mark.parametrize(
+        ("streak", "tier"),
+        [
+            (0, "default"),
+            (1, "default"),
+            (6, "default"),
+            (7, "week"),
+            (13, "default"),
+            (14, "week"),
+            (27, "default"),
+            (28, "month"),
+            (35, "week"),
+            (56, "month"),
+        ],
+    )
+    def test_effect_tiers(self, streak, tier):
+        from src.config import (
+            LESSON_ACK_EFFECT_DEFAULT,
+            LESSON_ACK_EFFECT_MONTH_STREAK,
+            LESSON_ACK_EFFECT_WEEK_STREAK,
+        )
+        from src.telegram_bot import TelegramBot
+        expected = {
+            "default": LESSON_ACK_EFFECT_DEFAULT,
+            "week": LESSON_ACK_EFFECT_WEEK_STREAK,
+            "month": LESSON_ACK_EFFECT_MONTH_STREAK,
+        }[tier]
+        assert TelegramBot._lesson_ack_effect(streak) == expected
+
+    @staticmethod
+    def _mark_day(db, profile, day, title):
+        """Log a lesson for the profile and mark it finished on `day`."""
+        lid = db.log_lesson(profile, title)
+        db.conn.execute(
+            "UPDATE lesson_log SET finished_at=? WHERE id=?",
+            (f"{day.isoformat()} 08:00:00", lid),
+        )
+        return lid
+
+    def test_streak_counts_consecutive_finished_days(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from src.telegram_bot import ChatHistoryDB, TelegramBot
+        db = ChatHistoryDB(str(tmp_path / "test.db"))
+        today = datetime.now(timezone.utc).date()
+
+        # finished today + yesterday + 2 days ago → streak 3
+        for i in range(3):
+            day = today - timedelta(days=i)
+            self._mark_day(db, "p", day, f"t{i}")
+        # an unmarked lesson must not affect the streak
+        db.log_lesson("p", "unmarked")
+
+        bot = TelegramBot(config={"profiles": {}})
+        orig_db = bot.db
+        bot.db = db
+        try:
+            assert bot._lesson_streak_days("p") == 3
+        finally:
+            orig_db.close()
+            db.close()
+
+    def test_streak_gap_resets(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from src.telegram_bot import ChatHistoryDB, TelegramBot
+        db = ChatHistoryDB(str(tmp_path / "test.db"))
+        today = datetime.now(timezone.utc).date()
+
+        # finished yesterday and 3 days ago, but NOT 2 days ago → streak 1
+        for i in (1, 3):
+            day = today - timedelta(days=i)
+            self._mark_day(db, "p", day, f"t{i}")
+
+        bot = TelegramBot(config={"profiles": {}})
+        orig_db = bot.db
+        bot.db = db
+        try:
+            assert bot._lesson_streak_days("p") == 1
+        finally:
+            orig_db.close()
+            db.close()
+
+    def test_streak_empty(self, tmp_path):
+        from src.telegram_bot import ChatHistoryDB, TelegramBot
+        db = ChatHistoryDB(str(tmp_path / "test.db"))
+        bot = TelegramBot(config={"profiles": {}})
+        orig_db = bot.db
+        bot.db = db
+        try:
+            assert bot._lesson_streak_days("p") == 0
+        finally:
+            orig_db.close()
+            db.close()
 
 
 # ── Environment variable fallback ──────────────────────────────────
