@@ -27,7 +27,6 @@ from config import (
     OUTPUT_DIR,
     TTS_DEFAULT_MAX_AGE_DAYS,
     TTS_DEFAULT_MAX_FILES,
-    TTS_DEFAULT_MODEL,
     TTS_DEFAULT_NUM_STEP,
     TTS_DEFAULT_VOICE,
     load_config,
@@ -288,7 +287,14 @@ def synthesize(
     os.makedirs(output_dir, exist_ok=True)
 
     tts_cfg = config.get("tts", {})
-    model = tts_cfg.get("model", TTS_DEFAULT_MODEL)
+    # config.json is the single source of truth — no hardcoded fallback
+    model = tts_cfg.get("model")
+    if not model:
+        logger.error(
+            "tts.model is not set in config.json — TTS disabled "
+            "(lesson continues without audio)"
+        )
+        return None
     if voice is None:
         voice = tts_cfg.get("default_voice", TTS_DEFAULT_VOICE)
 

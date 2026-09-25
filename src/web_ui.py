@@ -28,7 +28,6 @@ from src.config import (
     DEFAULT_LEARNING_LANGUAGE,
     LOG_FILE,
     PROJECT_DIR,
-    TTS_DEFAULT_MODEL,
     TTS_DEFAULT_VOICE,
     resolve_language_name,
     load_config,
@@ -827,12 +826,21 @@ def create_app(config_path=None, log_file=None, password=None,
 
         if "tts_model" in data:
             val = data["tts_model"]
-            tts_cfg["model"] = val if val else TTS_DEFAULT_MODEL
+            # Empty string means "unconfigured" — remove the key so
+            # config.json stays the single source of truth (no hidden
+            # hardcoded defaults).
+            if val:
+                tts_cfg["model"] = val
+            elif "model" in tts_cfg:
+                del tts_cfg["model"]
             changed.append("tts_model")
 
         if "embedding_model" in data:
             val = data["embedding_model"]
-            rag_cfg["embedding_model"] = val if val else "nomic-embed-text"
+            if val:
+                rag_cfg["embedding_model"] = val
+            elif "embedding_model" in rag_cfg:
+                del rag_cfg["embedding_model"]
             changed.append("embedding_model")
 
         try:
@@ -859,8 +867,8 @@ def create_app(config_path=None, log_file=None, password=None,
         rag_cfg = config.get("rag", {})
         return jsonify({
             "default_model": llm_cfg.get("default_model", ""),
-            "tts_model": tts_cfg.get("model", TTS_DEFAULT_MODEL),
-            "embedding_model": rag_cfg.get("embedding_model", "nomic-embed-text"),
+            "tts_model": tts_cfg.get("model", ""),
+            "embedding_model": rag_cfg.get("embedding_model", ""),
         })
 
     return app

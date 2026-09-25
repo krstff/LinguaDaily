@@ -71,6 +71,25 @@ class TestLlamaClientInit:
         client = LlamaClient(config=config, profile_name="nonexistent")
         assert client.profile == {}
 
+    def test_init_no_default_model(self, sample_config):
+        """No hardcoded fallback: missing llm.default_model → None."""
+        from src.llama_client import LlamaClient
+        config = {"llm": {"base_url": "http://localhost:8080/v1"}}
+        with patch.dict(os.environ, {"LLAMA_MODEL": "env-model"}, clear=False):
+            client = LlamaClient(config=config)
+        assert client.default_model is None
+
+    def test_no_model_translate_returns_none(self, sample_config):
+        """Without a configured model, LLM calls are skipped (not silent
+        fallback to a hardcoded model)."""
+        from src.llama_client import LlamaClient
+        config = {"llm": {"base_url": "http://localhost:8080/v1"}}
+        client = LlamaClient(config=config)
+        assert client.resolve_model("translate") is None
+        assert client.translate("Hallo Welt") is None
+        assert client.simplify_language("text", level="A1") is None
+        assert client.extract_vocab("text") == []
+
 
 class TestModelResolution:
     """Test model resolution priority chain."""

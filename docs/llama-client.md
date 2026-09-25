@@ -30,7 +30,7 @@ All three public methods use the same `_chat()` core — they differ only in sys
 {
   "llm": {
     "base_url": "http://llama-swap:8080/v1",
-    "default_model": "gemma-4-26B-language",
+    "default_model": "my-model",        // REQUIRED — no built-in default
     "api_key": "",
     "timeout": 600
   },
@@ -44,12 +44,13 @@ All three public methods use the same `_chat()` core — they differ only in sys
 
 The old per-task keys (`llm.translate_model`, `llm.tutor_model`, `llm.simplify_model`) are deprecated and stripped on config load — the single general model is used for all tasks.
 
+**config.json is the single source of truth for model names** — there is no env var and no hardcoded fallback for `llm.default_model` (same for `tts.model` and `rag.embedding_model`). If `llm.default_model` is missing, LLM calls are disabled and an error is logged instead of silently using a default model.
+
 ### Environment variable fallbacks
 
 | Config key | Env var | Default |
 |-----------|---------|---------|
 | `llm.base_url` | `LLAMA_BASE_URL` | `http://llama-swap:8080/v1` |
-| `llm.default_model` | `LLAMA_MODEL` | `gemma-4-26B-language` |
 | `llm.timeout` | `LLAMA_TIMEOUT` | `600` (seconds) |
 | `llm.api_key` | `LLM_API_KEY` | `none` |
 
@@ -60,6 +61,8 @@ The old per-task keys (`llm.translate_model`, `llm.tutor_model`, `llm.simplify_m
 1. **Profile-level task override** (escape hatch) — e.g., `profile.llm_translate_model`
 2. **Profile-level generic override** (escape hatch) — `profile.llm_model`
 3. **General model** — `llm.default_model`
+
+If none resolves (no `llm.default_model` in config), `resolve_model()` returns `None` and the LLM call is skipped with an error log.
 
 ```python
 client = LlamaClient(config=config, profile_name="krystof")

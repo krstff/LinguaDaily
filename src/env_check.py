@@ -86,7 +86,7 @@ def validate_config(config):
             errors.append("llm.base_url is missing — LLM calls will fail")
         if not llm.get("default_model"):
             warnings.append(
-                "llm.default_model is not set (LLM client has a hardcoded fallback)"
+                "llm.default_model is not set — LLM (translate, vocab, tutor) disabled"
             )
     else:
         warnings.append(

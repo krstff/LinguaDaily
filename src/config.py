@@ -115,12 +115,12 @@ NEWS_FEED_CATALOGUE: dict[str, dict[str, list[str]]] = {
 NEWS_DEFAULT_FEEDS = ["https://feeds.bbci.co.uk/news/rss.xml"]
 
 # ── LLM ────────────────────────────────────────────────────────
+# NOTE: model names have NO defaults — config.json is the single source
+# of truth (llm.default_model, tts.model, rag.embedding_model).
 LLM_DEFAULT_BASE_URL   = "http://localhost:8080/v1"
-LLM_DEFAULT_MODEL      = "gemma-4-26B-language"
 LLM_DEFAULT_TIMEOUT    = 600
 
 # ── TTS ────────────────────────────────────────────────────────
-TTS_DEFAULT_MODEL       = "omnivoice"
 TTS_DEFAULT_VOICE       = "male"
 TTS_DEFAULT_NUM_STEP    = 20
 TTS_DEFAULT_MAX_AGE_DAYS = 7
@@ -178,7 +178,6 @@ LESSON_ACK_DONE_TEXT: dict[str, str] = {
 # ── RAG ───────────────────────────────────────────────────
 RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"
 RAG_DEFAULT_COLLECTION    = "linguadaily_docs"
-RAG_DEFAULT_EMBED_MODEL   = "nomic-embed-text"
 RAG_DEFAULT_CHUNK_SIZE    = 500
 RAG_DEFAULT_CHUNK_OVERLAP   = 100
 RAG_DEFAULT_EMBED_BATCH_SZ   = 32   # texts per batch — small enough that llama.cpp finishes before we send the next one
@@ -460,11 +459,7 @@ def get_rag_config(path=None) -> dict:
             or RAG_DEFAULT_QDRANT_URL
         ),
         "collection_name": rag.get("collection_name", RAG_DEFAULT_COLLECTION),
-        "embedding_model": (
-            rag.get("embedding_model")
-            or os.environ.get("EMBEDDING_MODEL")
-            or RAG_DEFAULT_EMBED_MODEL
-        ),
+        "embedding_model": rag.get("embedding_model"),
         "chunk_size": rag.get("chunk_size", RAG_DEFAULT_CHUNK_SIZE),
         "chunk_overlap": rag.get("chunk_overlap", RAG_DEFAULT_CHUNK_OVERLAP),
         "embed_batch_size": int(rag.get("embed_batch_size", RAG_DEFAULT_EMBED_BATCH_SZ)),

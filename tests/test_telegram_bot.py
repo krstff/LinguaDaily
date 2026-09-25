@@ -217,6 +217,37 @@ class TestTelegramBotInit:
         bot.db.close()
 
 
+class TestReloadConfig:
+    """Config reload must invalidate the cached LLM client."""
+
+    def test_reload_resets_llama_client(self, sample_config):
+        """After a model change in the web UI, reload_config() must drop the
+        cached LlamaClient so the next tutor request uses the new model."""
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # Build the cached client (as happens on first tutor message)
+        client = bot._get_llama_client("krystof")
+        assert client is not None
+        assert client.default_model == "gemma4-26b"
+
+        # Simulate a web-UI model change + /api/reload
+        new_config = dict(config)
+        new_config["llm"] = {"base_url": "http://localhost:8080/v1",
+                             "default_model": "other-model"}
+        with patch("src.telegram_bot.load_config", return_value=new_config):
+            bot.reload_config()
+
+        assert bot.config is new_config
+        assert bot._llama_client is None, "cached client must be reset on reload"
+
+        # Next access rebuilds the client with the new model
+        client2 = bot._get_llama_client("krystof")
+        assert client2.default_model == "other-model"
+        bot.db.close()
+
+
 # ── Lesson delivery tests ───────────────────────────────────────────
 
 class TestDeliverLesson:

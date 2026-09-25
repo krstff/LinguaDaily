@@ -337,6 +337,11 @@ class TelegramBot:
         # Reload config from disk
         self.config = load_config()
 
+        # Drop the cached LLM client so the next tutor request rebuilds it
+        # with the fresh config (e.g. after a model change in the web UI).
+        # Without this, the old model stays in use until a full restart.
+        self._llama_client = None
+
         # Reset mappings
         self.chat_id_to_profiles: dict[int, list[str]] = {}
         self.profile_to_chat_id: dict[str, int] = {}

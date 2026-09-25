@@ -184,7 +184,7 @@ All RAG settings live under `"rag"` in `config.json`:
 | Key | Description | Default |
 |---|---|---|
 | `qdrant_url` | Qdrant server address | `http://localhost:6333` |
-| `embedding_model` | Model name for `/v1/embeddings` calls | `nomic-embed-text` |
+| `embedding_model` | Model name for `/v1/embeddings` calls | (required — no default) |
 | `chunk_size` | Characters per text chunk | `500` |
 | `chunk_overlap` | Overlap between consecutive chunks | `100` |
 
@@ -195,7 +195,8 @@ The embedding API URL always reuses `llm.base_url` — no separate config needed
 | Variable | Overrides |
 |---|---|
 | `QDRANT_URL` | `rag.qdrant_url` |
-| `EMBEDDING_MODEL` | `rag.embedding_model` |
+
+Note: `rag.embedding_model` has **no env var and no default** — config.json is the single source of truth for model names.
 
 ---
 

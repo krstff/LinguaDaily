@@ -160,4 +160,4 @@ wav_path = synthesize(
 )
 ```
 
-The WAV path is included in the lesson dict and sent to Telegram as an audio file via `TelegramBot.deliver_lesson()`. The TTS model is selected from `tts.model` in config (default: `omnivoice`) and can be changed via the Web UI model selection panel.
+The WAV path is included in the lesson dict and sent to Telegram as an audio file via `TelegramBot.deliver_lesson()`. The TTS model is selected from `tts.model` in config (required — no default) and can be changed via the Web UI model selection panel.

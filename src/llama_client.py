@@ -17,7 +17,7 @@ Config structure in config.json:
     {
       "llm": {
         "base_url": "http://llama-swap:8080/v1",  # see LLM_DEFAULT_BASE_URL
-        "default_model": "see LLM_DEFAULT_MODEL",
+        "default_model": "REQUIRED — no built-in default",
         "api_key": "",
         "timeout": 600
       },
@@ -41,7 +41,6 @@ from config import (
     DEFAULT_LEARNING_LANGUAGE,
     DEFAULT_NATIVE_LANGUAGE,
     LLM_DEFAULT_BASE_URL,
-    LLM_DEFAULT_MODEL,
     LLM_DEFAULT_TIMEOUT,
     PROJECT_DIR,
     load_config,
@@ -266,9 +265,16 @@ class LlamaClient:
         self.base_url = self.llm_cfg.get(
             "base_url", os.environ.get("LLAMA_BASE_URL", LLM_DEFAULT_BASE_URL)
         )
-        self.default_model = self.llm_cfg.get(
-            "default_model", os.environ.get("LLAMA_MODEL", LLM_DEFAULT_MODEL)
-        )
+        # config.json is the single source of truth for the model name —
+        # there is no env var or hardcoded fallback.  If it is missing,
+        # LLM calls are disabled (and logged) instead of silently using
+        # a model the user never configured.
+        self.default_model = self.llm_cfg.get("default_model")
+        if not self.default_model:
+            logger.warning(
+                "llm.default_model is not set in config.json — "
+                "LLM calls (translate, vocab, tutor) are disabled"
+            )
         self.api_key = self.llm_cfg.get("api_key", "") or "none"
 
         # Timeout for LLM requests (model swap can be slow with large models)
@@ -295,6 +301,8 @@ class LlamaClient:
           1. Profile-level task override (e.g. profile.llm_translate_model)
           2. Profile-level generic override (profile.llm_model)
           3. Global default model (llm.default_model)
+
+        Returns None if no model is configured (caller must handle that).
 
         Parameters
         ----------
@@ -359,6 +367,12 @@ class LlamaClient:
 
         if model is None:
             model = self.default_model
+        if not model:
+            logger.error(
+                "No LLM model configured (llm.default_model missing in "
+                "config.json) — skipping LLM call"
+            )
+            return None
 
         try:
             response = client.chat.completions.create(
@@ -860,6 +874,13 @@ Translation ({native_lang}):
             base_url=self.base_url, api_key=self.api_key, timeout=self.timeout
         )
         if client is None:
+            return None
+
+        if not model:
+            logger.error(
+                "No LLM model configured (llm.default_model missing in "
+                "config.json) — skipping tutor reply"
+            )
             return None
 
         try:

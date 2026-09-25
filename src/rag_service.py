@@ -76,6 +76,11 @@ class RAGService:
         self.qdrant_url = rcfg["qdrant_url"]
         self.collection_name = rcfg["collection_name"]
         self.embedding_model = rcfg["embedding_model"]
+        if not self.embedding_model:
+            logger.warning(
+                "rag.embedding_model is not set in config.json — "
+                "RAG grounding is disabled"
+            )
         self.embedding_base_url = rcfg["embedding_base_url"]
         self.chunk_size = rcfg["chunk_size"]
         self.chunk_overlap = rcfg["chunk_overlap"]

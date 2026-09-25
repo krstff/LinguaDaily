@@ -43,7 +43,7 @@ Three dropdowns populated by calling `/v1/models` on the configured endpoints:
 | TTS Model | `tts.model` | Text-to-speech synthesis |
 | Embedding Model | `rag.embedding_model` | RAG embeddings |
 
-Leave the General dropdown on "→ built-in default" to use the hardcoded fallback. Changes apply globally (all profiles) and are saved with the **Save Models** button.
+Leave a dropdown on "→ default" to unconfigure that model (the key is removed from config.json — there are no hardcoded fallbacks; config.json is the single source of truth). Changes apply globally (all profiles) and are saved with the **Save Models** button, which also triggers a config reload so the running bot picks up the new model immediately.
 
 #### Profile table
 Columns: Name, Enabled toggle, Language pair, Chat ID, Schedule, TTS voice, Source type, Actions.
