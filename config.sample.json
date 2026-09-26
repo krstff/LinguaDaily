@@ -7,7 +7,10 @@
     "base_url": "http://localhost:8080/v1",
     "default_model": "gemma-4-26B-language",
     "api_key": "",
-    "timeout": 600
+    "timeout": 600,
+    "task_models": {
+      "convo": "small-fast-model-for-speaking-practice"
+    }
   },
 
   "telegram": {
@@ -43,6 +46,17 @@
     "base_url": "http://localhost:8080/v1",
     "api_key": "",
     "model": "omnivoice"
+  },
+
+  "stt": {
+    "base_url": "http://localhost:9002/v1",
+    "api_key": "",
+    "model": "whisper",
+    "timeout": 60
+  },
+
+  "convo": {
+    "turns": 4
   },
 
   "rag": {

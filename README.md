@@ -91,6 +91,7 @@ start - Get usega information
 another - Requests another article.
 flashcards - Show flashcards.
 quiz - Play a quiz.
+convo - Speaking practice: listen to a line, record your answer.
 history - Clears chat history on server.
 status - Get information about profile status.
 chatid - Get your chat id.
@@ -171,3 +172,4 @@ So i don't forget how this works :))
 - [TTS Module Guide](docs/tts.md) — OmniVoice wrapper, text sanitization
 - [Wikipedia Fetcher Guide](docs/wikipedia-fetcher.md) — Kiwix/ZIM client, HTML extraction, smart truncation
 - [RAG Guide](docs/rag_guide.md) — Optional textbook grounding for the tutor chat via Qdrant
+- [Conversation Practice](docs/convo.md) — Speaking/listening with /convo (STT + TTS + small LLM)

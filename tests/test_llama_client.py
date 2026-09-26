@@ -805,3 +805,75 @@ class TestCLI:
             assert exc.value.code == 0
         captured = capsys.readouterr()
         assert "healthy" in captured.out
+
+
+class TestChatJson:
+    """Test the chat_json() helper used by conversation practice."""
+
+    @patch("config.get_openai_client")
+    def test_parses_plain_json(self, mock_get_client, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        client = LlamaClient(config=config, profile_name="krystof")
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(
+                content='{"reply": "Hallo", "translation": "Hello"}'))])
+        mock_get_client.return_value = mock_openai
+
+        data = client.chat_json("sys", "user")
+        assert data == {"reply": "Hallo", "translation": "Hello"}
+
+    @patch("config.get_openai_client")
+    def test_strips_code_fences(self, mock_get_client, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        client = LlamaClient(config=config, profile_name="krystof")
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(
+                content='```json\n{"reply": "Hi"}\n```'))])
+        mock_get_client.return_value = mock_openai
+
+        assert client.chat_json("sys", "user") == {"reply": "Hi"}
+
+    @patch("config.get_openai_client")
+    def test_extracts_object_from_prose(self, mock_get_client, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        client = LlamaClient(config=config, profile_name="krystof")
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(
+                content='Sure! Here you go: {"score": 80} Hope that helps.'))])
+        mock_get_client.return_value = mock_openai
+
+        assert client.chat_json("sys", "user") == {"score": 80}
+
+    @patch("config.get_openai_client")
+    def test_bad_json_returns_none(self, mock_get_client, sample_config):
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        client = LlamaClient(config=config, profile_name="krystof")
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="no json here"))])
+        mock_get_client.return_value = mock_openai
+
+        assert client.chat_json("sys", "user") is None
+
+    @patch("config.get_openai_client")
+    def test_uses_task_model(self, mock_get_client, sample_config):
+        """chat_json resolves the model for its task (small convo model)."""
+        from src.llama_client import LlamaClient
+        config = sample_config[0]
+        config["llm"]["task_models"] = {"convo": "tiny-model"}
+        client = LlamaClient(config=config, profile_name="krystof")
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content='{"a": 1}'))])
+        mock_get_client.return_value = mock_openai
+
+        client.chat_json("sys", "user", task="convo")
+        call_kwargs = mock_openai.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "tiny-model"

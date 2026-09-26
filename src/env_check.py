@@ -447,6 +447,22 @@ def check_tts(config):
     return results
 
 
+def check_stt(config):
+    """Check STT endpoint connectivity (used by /convo speaking practice).
+
+    Not an error when unconfigured — conversation practice is optional.
+    """
+    stt = config.get("stt", {}) or {}
+    base_url = stt.get("base_url")
+    if not base_url:
+        return [(True, "  ℹ️  STT not configured — /convo speaking practice disabled")]
+
+    results = []
+    ok, msg = _http_get(base_url.rstrip("/") + "/models", "STT")
+    results.append(msg)
+    return results
+
+
 def check_news_feeds(config):
     """Check that configured news RSS feeds are accessible."""
     results = []
@@ -622,6 +638,11 @@ def run(config_path=None, skip_network=False):
         for msg in check_tts(config):
             print(f"  {msg}")
             if "❌" in msg:
+                all_errors.append(msg)
+
+        for ok, msg in check_stt(config):
+            print(f"  {msg}")
+            if not ok:
                 all_errors.append(msg)
 
         for msg in check_news_feeds(config):

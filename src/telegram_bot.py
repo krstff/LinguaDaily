@@ -44,6 +44,7 @@ from typing import Optional
 from telegramify_markdown import convert as md_convert, split_entities
 
 from config import (
+    CONVO_DEFAULT_TURNS,
     CONFIG_PATH,
     DATA_DIR,
     DEFAULT_LEARNING_LANGUAGE,
@@ -293,6 +294,9 @@ class TelegramBot:
 
         # Study handler (flashcards + quiz, lazy-init in start())
         self.study_handler: Optional["StudyHandler"] = None
+
+        # Convo handler (speaking/listening practice, lazy-init in start())
+        self.convo_handler: Optional["ConvoHandler"] = None
 
         # Cooldown tracking for /another command (chat_id → timestamp)
         self._last_lesson_request: dict[int, float] = {}
@@ -1062,6 +1066,7 @@ class TelegramBot:
                     f"/another — Request another daily lesson\n"
                     f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
                     f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
+                    f"/convo [N]      — Speaking practice: listen & record (default {CONVO_DEFAULT_TURNS} turns)\n"
                     f"/chatid — Show your Telegram Chat ID\n"
                     f"/profiles — List & switch your profiles\n"
                     f"/stop — Cancel a pending tutor reply\n"
@@ -1350,6 +1355,16 @@ class TelegramBot:
         except Exception as e:
             logger.warning("Study module not available: %s", e)
 
+        # ── Conversation practice (speaking/listening) ──────────
+        try:
+            from convo import ConvoHandler
+            self.convo_handler = ConvoHandler(
+                config=self.config, telegram_bot=self
+            )
+            logger.info("Convo handler initialised (speaking practice)")
+        except Exception as e:
+            logger.warning("Convo module not available: %s", e)
+
         # ── Command handlers ──
         @dp.message(Command("start"))
         async def cmd_start(message: types.Message):
@@ -1386,6 +1401,34 @@ class TelegramBot:
         @dp.message(Command("another"))
         async def cmd_another(message: types.Message):
             await self.handle_another_lesson(message.chat.id)
+
+        # ── Conversation practice command ────────────────────────
+        @dp.message(Command("convo"))
+        async def cmd_convo(message: types.Message):
+            if self.convo_handler is None:
+                await message.answer("⚠️ Convo module not available.")
+                return
+            profile_name = self.resolve_profile(message.chat.id)
+            if not profile_name:
+                await message.answer(
+                    "⚠️ Not registered. Ask an admin to add your Telegram chat ID."
+                )
+                return
+
+            # Parse optional turns argument: /convo 6
+            args = message.text.split(maxsplit=1)
+            turns = None
+            if len(args) > 1:
+                try:
+                    turns = int(args[1].strip())
+                except ValueError:
+                    pass
+
+            await self.convo_handler.start_convo(
+                chat_id=message.chat.id,
+                profile_name=profile_name,
+                turns=turns,
+            )
 
         # ── Flashcard command ────────────────────────────────────
         @dp.message(Command("flashcards"))
@@ -1510,6 +1553,13 @@ class TelegramBot:
             # buttons (retry_missed / new_quiz / to_flashcards) are all
             # handled inside the study handler.
             await self.study_handler.handle_callback(callback_query)
+
+        # ── Voice messages → conversation practice ───────────────
+        @dp.message(lambda m: m.voice is not None)
+        async def voice_convo(message: types.Message):
+            if self.convo_handler is None:
+                return
+            await self.convo_handler.handle_voice(message)
 
         # ── All other messages → tutor chat ──
         @dp.message(lambda msg: True)  # catch-all

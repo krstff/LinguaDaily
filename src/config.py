@@ -127,6 +127,12 @@ TTS_DEFAULT_MAX_AGE_DAYS = 7
 TTS_DEFAULT_MAX_FILES   = 10
 
 # ── Flashcards / Quiz ──────────────────────────────────────────
+# ── Conversation practice (speaking/listening) ─────────────────────
+CONVO_DEFAULT_TURNS = 4           # partner lines (and user responses) per session
+CONVO_MIN_TURNS = 2
+CONVO_MAX_TURNS = 8
+CONVO_SESSION_TIMEOUT_SECS = 600  # 10 minutes of inactivity ends the session
+
 FLASHCARD_SESSION_TIMEOUT_SECS = 300
 FLASHCARD_DEFAULT_CARD_COUNT   = 10
 FLASHCARD_DEFAULT_QUIZ_COUNT   = 10
