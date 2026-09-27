@@ -128,7 +128,7 @@ TTS_DEFAULT_MAX_FILES   = 10
 
 # ── Flashcards / Quiz ──────────────────────────────────────────
 # ── Conversation practice (speaking/listening) ─────────────────────
-CONVO_DEFAULT_TURNS = 4           # partner lines (and user responses) per session
+CONVO_DEFAULT_TURNS = 6           # partner lines (and user responses) per session
 CONVO_MIN_TURNS = 2
 CONVO_MAX_TURNS = 8
 CONVO_SESSION_TIMEOUT_SECS = 600  # 10 minutes of inactivity ends the session

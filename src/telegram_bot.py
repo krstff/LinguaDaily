@@ -1020,13 +1020,23 @@ class TelegramBot:
         return not task.done() and not cancelling
 
     async def handle_stop(self, chat_id: int):
-        """Cancel the in-flight tutor reply for this chat (if any).
+        """Cancel the in-flight tutor reply or end the active conversation.
 
         Cancelling the task closes the streaming HTTP connection, which
         makes the inference server abort the generation.  The "Thinking…"
         placeholder is deleted so the exchange disappears from the chat.
         """
         bot = await self._get_aiogram_bot()
+
+        # End an active /convo session first
+        if self.convo_handler is not None and \
+                self.convo_handler.end_convo(chat_id):
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⏹ Conversation ended.",
+            )
+            return
+
         entry = self._in_flight.get(int(chat_id))
         if entry is None or not self._tutor_task_running(entry["task"]):
             await bot.send_message(
@@ -1069,7 +1079,7 @@ class TelegramBot:
                     f"/convo [N]      — Speaking practice: listen & record (default {CONVO_DEFAULT_TURNS} turns)\n"
                     f"/chatid — Show your Telegram Chat ID\n"
                     f"/profiles — List & switch your profiles\n"
-                    f"/stop — Cancel a pending tutor reply\n"
+                    f"/stop — Cancel a pending tutor reply or end a conversation\n"
                     f"/history clear — Clear chat history\n"
                     f"/stats — Show your stats"
                 ),

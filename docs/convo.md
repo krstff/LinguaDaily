@@ -19,7 +19,7 @@ the language level follows the profile's `target_level` (CEFR).
   ├─ LLM (task "convo") ──► feedback + score (0-100) + next line + translation
   ├─ TTS ─────────────────► next audio + spoilers
   │
-  … repeats for N turns (default 4, /convo 6) …
+  … repeats for N turns (default 6, /convo 8) …
   │
   └─ summary: per-turn scores + average
 ```
@@ -44,7 +44,7 @@ acoustics — the LLM never hears the audio.
   "llm": {
     "task_models": { "convo": "small-fast-model" }
   },
-  "convo": { "turns": 4 }
+  "convo": { "turns": 6 }
 }
 ```
 
@@ -54,6 +54,7 @@ acoustics — the LLM never hears the audio.
 * `llm.task_models.convo` — optional small model for the conversation
   (falls back to `llm.default_model`).
 * `convo.turns` — default number of turns (2–8), overridable per call.
+* `/stop` ends an active conversation at any time.
 * The profile needs `use_tts: true` and a working `tts` section.
 * `ffmpeg` must be installed on the daemon host (Telegram voice notes are
   OGG/Opus and are converted to 16 kHz mono WAV before transcription).

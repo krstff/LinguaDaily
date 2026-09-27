@@ -176,6 +176,37 @@ class TestStartConvo:
         assert any("Could not start" in t for t in _sent_texts(aiogram_bot))
 
 
+# ── end_convo (used by /stop) ───────────────────────────────────────
+
+class TestEndConvo:
+    @pytest.mark.asyncio
+    async def test_ends_active_session(self, env):
+        handler, bot, aiogram_bot, _ = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        assert 1 in handler._sessions
+
+        assert handler.end_convo(1) is True
+        assert 1 not in handler._sessions
+        # Second call: nothing left to end
+        assert handler.end_convo(1) is False
+
+    @pytest.mark.asyncio
+    async def test_no_session_returns_false(self, env):
+        handler, bot, aiogram_bot, _ = env
+        assert handler.end_convo(1) is False
+
+    @pytest.mark.asyncio
+    async def test_voice_after_stop_is_rejected(self, env):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        handler.end_convo(1)
+
+        await handler.handle_voice(_voice_message(1))
+        assert any("No active conversation" in t for t in _sent_texts(aiogram_bot))
+
+
 # ── Voice handling ──────────────────────────────────────────────────
 
 class TestVoiceFlow:
@@ -251,7 +282,7 @@ class TestVoiceFlow:
         assert any("90/100" in t and "Ja, ich habe es gelesen." in t for t in texts)
         # next line audio with turn 2 caption
         captions = _audio_captions(aiogram_bot)
-        assert any("Conversation 2/4" in c for c in captions)
+        assert any("Conversation 2/6" in c for c in captions)
 
     @pytest.mark.asyncio
     async def test_score_is_clamped(self, env, monkeypatch):

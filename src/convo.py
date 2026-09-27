@@ -17,7 +17,7 @@ language level follows the profile's CEFR target_level.
 Config (config.json):
     "stt": {"base_url": "...", "model": "..."}   # required for /convo
     "llm": {"task_models": {"convo": "small-model"}}  # optional
-    "convo": {"turns": 4}                        # optional default turns
+    "convo": {"turns": 6}                        # optional default turns
 
 Usage (import):
     from src.convo import ConvoHandler
@@ -129,6 +129,17 @@ class ConvoHandler:
 
     def _end_session(self, chat_id: int):
         self._sessions.pop(chat_id, None)
+
+    def end_convo(self, chat_id: int) -> bool:
+        """End the active session for this chat (e.g. via /stop).
+
+        Returns True if a session was active, False otherwise.
+        """
+        chat_id = int(chat_id)
+        if self._get_session(chat_id) is None:
+            return False
+        self._end_session(chat_id)
+        return True
 
     def _get_llama_client(self, profile_name: str):
         if (self._llama_client is None
@@ -351,6 +362,10 @@ class ConvoHandler:
         await self._send(chat_id, "\n".join(fb_lines))
 
         # 6) Summary or next line
+        # If the session was ended (e.g. /stop) or replaced while we were
+        # processing, don't send the stale reply.
+        if self._sessions.get(chat_id) is not session:
+            return
         if turn_no >= total:
             await self._send_summary(chat_id, session)
             self._end_session(chat_id)
