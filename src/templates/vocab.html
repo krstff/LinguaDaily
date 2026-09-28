@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}LinguaDaily — Vocab{% endblock %}
+{% block content %}
+<h1>Vocabulary</h1>
+<p class="subtitle">Browse and delete the words stored per profile. Search to find specific entries (e.g. leftover test words).</p>
+
+{% if not all_names %}
+<div class="subtitle">No profiles or vocabulary yet. Add a profile on the <a href="/" style="color:var(--blue);">dashboard</a>.</div>
+{% else %}
+
+<!-- ── Filters ─────────────────────────────────────────── -->
+<div class="toolbar">
+  <label style="margin:0;">Profile</label>
+  <select id="profile-select" onchange="onProfileChange(this.value)">
+    {% for name in all_names %}
+    <option value="{{ name }}" {% if name == selected %}selected{% endif %}>
+      {{ name }}{% if name in counts %} ({{ counts[name] }}){% endif %}
+    </option>
+    {% endfor %}
+  </select>
+
+  <input type="text" id="search-input" placeholder="Search word or meaning…"
+         style="max-width:260px;" onkeydown="if(event.key==='Enter')doSearch()">
+  <button class="btn btn-secondary btn-sm" onclick="doSearch()">Search</button>
+
+  <select id="sort-select" onchange="onFilterChange()">
+    <option value="id">Order added</option>
+    <option value="word">Word</option>
+    <option value="frequency">Frequency</option>
+    <option value="mastery_score">Mastery</option>
+    <option value="last_seen">Last seen</option>
+  </select>
+  <select id="order-select" onchange="onFilterChange()">
+    <option value="asc">Asc</option>
+    <option value="desc">Desc</option>
+  </select>
+  <select id="perpage-select" onchange="onFilterChange()">
+    <option value="50">50 / page</option>
+    <option value="100" selected>100 / page</option>
+    <option value="200">200 / page</option>
+    <option value="500">500 / page</option>
+  </select>
+</div>
+
+<!-- ── Actions ─────────────────────────────────────────── -->
+<div class="toolbar">
+  <span id="result-count" style="color:var(--fg_dim);font-size:12px;"></span>
+  <span style="flex:1;"></span>
+  <button class="btn btn-danger btn-sm" id="delete-selected-btn" onclick="deleteSelected()" disabled>✕ Delete selected (0)</button>
+  <button class="btn btn-danger btn-sm" onclick="clearProfile()">🗑 Clear all for profile</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:34px;"><input type="checkbox" id="select-all" style="width:auto;" onchange="toggleAll(this.checked)"></th>
+      <th>Word</th>
+      <th>Meaning</th>
+      <th style="width:70px;">Freq</th>
+      <th style="width:110px;">Last seen</th>
+      <th style="width:70px;">✓ / ✗</th>
+      <th style="width:80px;">Mastery</th>
+    </tr>
+  </thead>
+  <tbody id="vocab-tbody">
+    <tr><td colspan="7" style="text-align:center;color:var(--fg_dim);padding:24px;">Loading…</td></tr>
+  </tbody>
+</table>
+
+<div class="toolbar" id="pagination">
+  <button class="btn btn-secondary btn-sm" id="prev-btn" onclick="goPage(state.page-1)">← Prev</button>
+  <span id="page-info" style="color:var(--fg_dim);font-size:12px;"></span>
+  <button class="btn btn-secondary btn-sm" id="next-btn" onclick="goPage(state.page+1)">Next →</button>
+</div>
+
+<script>
+const state = {
+  profile: {{ selected | tojson }},
+  search: '',
+  sort: 'id',
+  order: 'asc',
+  page: 1,
+  pages: 1,
+  total: 0,
+  perPage: 100,
+};
+
+function escHtml(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function load() {
+  const tbody = document.getElementById('vocab-tbody');
+  const params = new URLSearchParams({
+    profile: state.profile, sort: state.sort, order: state.order,
+    page: state.page, per_page: state.perPage,
+  });
+  if (state.search) params.set('search', state.search);
+
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--fg_dim);padding:24px;">Loading…</td></tr>';
+  try {
+    const res = await fetch('/api/vocab?' + params.toString());
+    const data = await res.json();
+    if (!res.ok) { showToast(data.error || data.message || 'Load failed', true); return; }
+
+    // Sync controls with the server's echo
+    document.getElementById('search-input').value = data.search || '';
+    document.getElementById('sort-select').value = data.sort;
+    document.getElementById('order-select').value = data.order;
+    document.getElementById('perpage-select').value = String(data.per_page);
+    state.page = data.page; state.pages = data.pages; state.total = data.total;
+
+    document.getElementById('result-count').textContent =
+      `${data.total} word(s)` + (data.search ? ` matching “${data.search}”` : '');
+
+    if (!data.entries.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--fg_dim);padding:24px;">No words found.</td></tr>';
+    } else {
+      tbody.innerHTML = data.entries.map(e => `
+        <tr>
+          <td><input type="checkbox" class="row-check" style="width:auto;" value="${e.id}"></td>
+          <td><strong>${escHtml(e.word)}</strong></td>
+          <td>${e.meaning ? escHtml(e.meaning) : '<span style="color:var(--fg_dim)">—</span>'}</td>
+          <td>${e.frequency}</td>
+          <td style="color:var(--fg_dim);font-size:12px;">${e.last_seen ? escHtml(e.last_seen) : '—'}</td>
+          <td style="color:var(--fg_dim);font-size:12px;">${e.total_correct} / ${e.total_wrong}</td>
+          <td>${(e.mastery_score * 100).toFixed(0)}%</td>
+        </tr>`).join('');
+    }
+
+    document.getElementById('page-info').textContent = `Page ${data.page} / ${data.pages}`;
+    document.getElementById('prev-btn').disabled = data.page <= 1;
+    document.getElementById('next-btn').disabled = data.page >= data.pages;
+    document.getElementById('select-all').checked = false;
+    updateSelectedCount();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red);padding:24px;">Network error</td></tr>';
+  }
+}
+
+function onProfileChange(name) {
+  state.profile = name;
+  state.search = '';
+  document.getElementById('search-input').value = '';
+  state.page = 1;
+  load();
+}
+function doSearch() {
+  state.search = document.getElementById('search-input').value.trim();
+  state.page = 1;
+  load();
+}
+function onFilterChange() {
+  state.sort = document.getElementById('sort-select').value;
+  state.order = document.getElementById('order-select').value;
+  state.perPage = parseInt(document.getElementById('perpage-select').value, 10);
+  state.page = 1;
+  load();
+}
+function goPage(p) {
+  if (p < 1 || p > state.pages) return;
+  state.page = p;
+  load();
+}
+
+function selectedIds() {
+  return [...document.querySelectorAll('.row-check:checked')].map(c => parseInt(c.value, 10));
+}
+function updateSelectedCount() {
+  const n = selectedIds().length;
+  const btn = document.getElementById('delete-selected-btn');
+  btn.textContent = `✕ Delete selected (${n})`;
+  btn.disabled = n === 0;
+}
+document.addEventListener('change', e => {
+  if (e.target.classList.contains('row-check')) updateSelectedCount();
+});
+function toggleAll(checked) {
+  document.querySelectorAll('.row-check').forEach(c => { c.checked = checked; });
+  updateSelectedCount();
+}
+
+async function deleteSelected() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected word(s) from '${state.profile}'?`)) return;
+  try {
+    const res = await fetch('/api/vocab/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ profile: state.profile, ids }),
+    });
+    const data = await res.json();
+    showToast(data.message || 'Deleted', !res.ok);
+    if (res.ok) load();
+  } catch (e) { showToast('Network error deleting', true); }
+}
+
+async function clearProfile() {
+  if (!confirm(`Delete ALL words for profile '${state.profile}'?\n\nThis cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/vocab/${encodeURIComponent(state.profile)}/clear`, { method: 'POST' });
+    const data = await res.json();
+    showToast(data.message || 'Cleared', !res.ok);
+    if (res.ok) { state.page = 1; load(); }
+  } catch (e) { showToast('Network error clearing', true); }
+}
+
+load();
+</script>
+{% endif %}
+{% endblock %}

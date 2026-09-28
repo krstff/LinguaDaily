@@ -165,6 +165,7 @@ def create_app(config_path=None, log_file=None, password=None,
             return render_template("dashboard.html", active="dashboard",
                                    profiles={}, profile_count=0,
                                    scheduled_count=0, lang_count=0,
+                                   broadcast_chat_count=0,
                                    error=str(e)), 500
 
         profiles = config.get("profiles", {})
@@ -177,11 +178,18 @@ def create_app(config_path=None, log_file=None, password=None,
             for p in profiles.values()
             if p.get("learning_language"))
 
+        # Distinct Telegram chat IDs the broadcast panel will target
+        chat_ids = set()
+        for p in profiles.values():
+            if p.get("telegram_chat_id"):
+                chat_ids.add(int(p["telegram_chat_id"]))
+
         return render_template("dashboard.html", active="dashboard",
                                profiles=profiles,
                                profile_count=len(profiles),
                                scheduled_count=scheduled,
-                               lang_count=len(langs))
+                               lang_count=len(langs),
+                               broadcast_chat_count=len(chat_ids))
 
     # ── Stats ──────────────────────────────────────────────
     @app.route("/stats")
@@ -232,6 +240,96 @@ def create_app(config_path=None, log_file=None, password=None,
             return jsonify(profile_stats(profile, config=config))
         except Exception as e:
             return jsonify({"error": f"Stats failed: {e}"}), 500
+
+    # ── Vocabulary manager ─────────────────────────────────
+    @app.route("/vocab")
+    @require_auth
+    def vocab_page():
+        try:
+            config = load_config(_config_path)
+        except Exception:
+            config = {}
+        profiles = config.get("profiles", {})
+
+        from src.vocab_db import get_shared_db
+        db = get_shared_db()
+        try:
+            counts = db.profile_counts()
+        except Exception:
+            counts = {}
+
+        # Profiles with vocab entries plus configured ones (so an empty
+        # profile can still be opened).
+        all_names = sorted(set(profiles.keys()) | set(counts.keys()))
+
+        selected = request.args.get("profile")
+        if selected not in all_names:
+            # Default: profile with the most words, else the first known one
+            selected = (max(counts, key=counts.get) if counts
+                        else (all_names[0] if all_names else None))
+
+        return render_template("vocab.html", active="vocab",
+                               profiles=profiles, counts=counts,
+                               all_names=all_names, selected=selected)
+
+    @app.route("/api/vocab")
+    @require_auth
+    def api_vocab():
+        from src.vocab_db import get_shared_db
+        db = get_shared_db()
+
+        profile = request.args.get("profile", "")
+        if not profile:
+            return jsonify({"error": "profile is required"}), 400
+
+        search = request.args.get("search", "").strip() or None
+        sort = request.args.get("sort", "id")
+        order = request.args.get("order", "asc")
+        page = max(1, request.args.get("page", 1, type=int))
+        per_page = min(500, max(1, request.args.get("per_page", 100, type=int)))
+        offset = (page - 1) * per_page
+
+        total, entries = db.search_entries(
+            profile, search=search, sort=sort, order=order,
+            limit=per_page, offset=offset)
+
+        return jsonify({
+            "profile": profile,
+            "search": search or "",
+            "sort": sort,
+            "order": order,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page if total else 1,
+            "total": total,
+            "entries": entries,
+        })
+
+    @app.route("/api/vocab/delete", methods=["POST"])
+    @require_auth
+    def api_vocab_delete():
+        from src.vocab_db import get_shared_db
+        db = get_shared_db()
+
+        data = request.get_json(force=True, silent=True) or {}
+        profile = data.get("profile", "")
+        ids = data.get("ids", [])
+        if not profile or not ids:
+            return jsonify({"message": "profile and ids are required"}), 400
+
+        deleted = db.delete_by_ids(profile, ids)
+        return jsonify({"message": f"Deleted {deleted} word(s) from '{profile}'",
+                        "deleted": deleted})
+
+    @app.route("/api/vocab/<profile>/clear", methods=["POST"])
+    @require_auth
+    def api_vocab_clear(profile):
+        from src.vocab_db import get_shared_db
+        db = get_shared_db()
+
+        deleted = db.delete_profile(profile)
+        return jsonify({"message": f"Deleted all {deleted} word(s) for '{profile}'",
+                        "deleted": deleted})
 
     # ── Logs viewer ──────────────────────────────────────
     @app.route("/logs")
@@ -738,57 +836,135 @@ def create_app(config_path=None, log_file=None, password=None,
         _threading.Thread(target=_run, daemon=True).start()
         return jsonify({"message": f"Lesson started for '{name}' — check logs for progress"})
 
+    # ── Broadcast to all users ─────────────────────────────
+    @app.route("/api/broadcast", methods=["POST"])
+    @require_auth
+    def broadcast_message():
+        """Send a plain-text message to every known Telegram chat.
+
+        Chat IDs come from the config profiles (persistent source of
+        truth) plus any runtime-registered chats held by the running
+        bot.  Uses a *temporary* aiogram bot — the running bot's
+        session is bound to the main event-loop thread and cannot be
+        used from a Flask worker thread (same pattern as run-lesson).
+
+        Expects JSON body: {"message": "..."}
+        """
+        import asyncio
+
+        data = request.get_json(force=True, silent=True) or {}
+        message = (data.get("message") or request.form.get("message") or "").strip()
+        if not message:
+            return jsonify({"message": "Message is empty"}), 400
+        if len(message) > 4096:
+            return jsonify({"message": "Message too long (max 4096 characters)"}), 400
+
+        config = load_config(_config_path)
+
+        token = (config.get("telegram", {}).get("bot_token", "")
+                 or os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+        if not token:
+            return jsonify({"message": "No Telegram bot token configured"}), 400
+
+        # Unique chat IDs: config profiles + runtime-registered chats
+        chat_ids = set()
+        for p in config.get("profiles", {}).values():
+            cid = p.get("telegram_chat_id")
+            if cid:
+                chat_ids.add(int(cid))
+        if _bot_ref is not None:
+            chat_ids.update(_bot_ref.chat_id_to_profiles.keys())
+        chat_ids = sorted(chat_ids)
+
+        if not chat_ids:
+            return jsonify({"message": "No Telegram chat IDs configured"}), 400
+
+        async def _send_all():
+            from aiogram import Bot
+            sent, failed = [], []
+            bot = Bot(token=token)
+            try:
+                for i, cid in enumerate(chat_ids):
+                    if i:
+                        await asyncio.sleep(0.1)  # stay well under rate limits
+                    try:
+                        await bot.send_message(chat_id=cid, text=message)
+                        sent.append(cid)
+                    except Exception as e:
+                        failed.append({"chat_id": cid, "error": str(e)})
+            finally:
+                await bot.session.close()
+            return sent, failed
+
+        try:
+            sent, failed = asyncio.run(asyncio.wait_for(_send_all(), timeout=60))
+        except asyncio.TimeoutError:
+            return jsonify({"message": "Broadcast timed out after 60s"}), 504
+        except Exception as e:
+            return jsonify({"message": f"Broadcast failed: {e}"}), 500
+
+        return jsonify({
+            "message": f"Sent to {len(sent)}/{len(chat_ids)} chat(s)",
+            "sent": len(sent),
+            "failed": failed,
+        })
+
     # ── Model management API ─────────────────────────────
     @app.route("/api/models/fetch")
     @require_auth
     def fetch_models():
         """Fetch available models from the OpenAI-compatible endpoints.
 
-        Queries the LLM endpoint and the TTS endpoint separately so the
-        dashboard offers chat models and TTS models in distinct lists.
+        Queries the LLM, TTS and STT endpoints so the dashboard offers
+        chat, TTS and STT models in distinct lists. Endpoints sharing a
+        base URL are only queried once (result cached per URL).
         """
         config = load_config(_config_path)
         llm_cfg = config.get("llm", {})
         tts_cfg = config.get("tts", {})
+        stt_cfg = config.get("stt", {})
 
         llm_url = llm_cfg.get("base_url", "")
         if not llm_url:
             llm_url = os.environ.get("LLAMA_BASE_URL", "")
         tts_url = tts_cfg.get("base_url", "")
+        stt_url = stt_cfg.get("base_url", "")
 
-        if not llm_url and not tts_url:
-            return jsonify({"llm_models": [], "tts_models": [], "error": "No API URLs configured"})
+        if not llm_url and not tts_url and not stt_url:
+            return jsonify({"llm_models": [], "tts_models": [], "stt_models": [],
+                            "error": "No API URLs configured"})
 
         try:
             from openai import OpenAI
         except ImportError:
-            return jsonify({"llm_models": [], "tts_models": [], "error": "openai package not installed"})
+            return jsonify({"llm_models": [], "tts_models": [], "stt_models": [],
+                            "error": "openai package not installed"})
 
-        results = {"llm_models": [], "tts_models": [], "errors": []}
+        results = {"llm_models": [], "tts_models": [], "stt_models": [], "errors": []}
+        _cache = {}
 
         def list_models(url, api_key):
+            if url in _cache:
+                return _cache[url]
             client = OpenAI(base_url=url, api_key=api_key or "none", timeout=10)
-            return [getattr(m, "id", str(m)) for m in client.models.list()]
+            models = [getattr(m, "id", str(m)) for m in client.models.list()]
+            _cache[url] = models
+            return models
 
-        if llm_url:
+        for key, url, cfg in (("llm_models", llm_url, llm_cfg),
+                              ("tts_models", tts_url, tts_cfg),
+                              ("stt_models", stt_url, stt_cfg)):
+            if not url:
+                continue
             try:
-                results["llm_models"] = list_models(llm_url, llm_cfg.get("api_key", ""))
+                results[key] = list_models(url, cfg.get("api_key", ""))
             except Exception as e:
-                results["errors"].append(f"{llm_url}: {e}")
-
-        if tts_url:
-            if tts_url == llm_url:
-                # Same server — reuse the list we just fetched
-                results["tts_models"] = list(results["llm_models"])
-            else:
-                try:
-                    results["tts_models"] = list_models(tts_url, tts_cfg.get("api_key", ""))
-                except Exception as e:
-                    results["errors"].append(f"{tts_url}: {e}")
+                results["errors"].append(f"{url}: {e}")
 
         return jsonify({
             "llm_models": sorted(results["llm_models"]),
             "tts_models": sorted(results["tts_models"]),
+            "stt_models": sorted(results["stt_models"]),
             "errors": results["errors"],
         })
 
@@ -801,6 +977,7 @@ def create_app(config_path=None, log_file=None, password=None,
         {
             "default_model": "model-name",   # general model (translate, vocab, tutor, simplify)
             "tts_model": "omnivoice",
+            "stt_model": "whisper",
             "embedding_model": "nomic-embed-text"
         }
         """
@@ -811,6 +988,7 @@ def create_app(config_path=None, log_file=None, password=None,
         config = load_config(_config_path)
         llm_cfg = config.setdefault("llm", {})
         tts_cfg = config.setdefault("tts", {})
+        stt_cfg = config.setdefault("stt", {})
         rag_cfg = config.setdefault("rag", {})
 
         changed = []
@@ -834,6 +1012,14 @@ def create_app(config_path=None, log_file=None, password=None,
             elif "model" in tts_cfg:
                 del tts_cfg["model"]
             changed.append("tts_model")
+
+        if "stt_model" in data:
+            val = data["stt_model"]
+            if val:
+                stt_cfg["model"] = val
+            elif "model" in stt_cfg:
+                del stt_cfg["model"]
+            changed.append("stt_model")
 
         if "embedding_model" in data:
             val = data["embedding_model"]
@@ -864,10 +1050,12 @@ def create_app(config_path=None, log_file=None, password=None,
         config = load_config(_config_path)
         llm_cfg = config.get("llm", {})
         tts_cfg = config.get("tts", {})
+        stt_cfg = config.get("stt", {})
         rag_cfg = config.get("rag", {})
         return jsonify({
             "default_model": llm_cfg.get("default_model", ""),
             "tts_model": tts_cfg.get("model", ""),
+            "stt_model": stt_cfg.get("model", ""),
             "embedding_model": rag_cfg.get("embedding_model", ""),
         })
 

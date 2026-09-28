@@ -1074,14 +1074,14 @@ class TelegramBot:
                     f"Commands:\n"
                     f"/start — Show this message\n"
                     f"/another — Request another daily lesson\n"
-                    f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
-                    f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
                     f"/convo [N]      — Speaking practice: listen & record (default {CONVO_DEFAULT_TURNS} turns)\n"
-                    f"/chatid — Show your Telegram Chat ID\n"
-                    f"/profiles — List & switch your profiles\n"
+                    f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
+                    f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
                     f"/stop — Cancel a pending tutor reply or end a conversation\n"
+                    f"/profiles — List & switch your profiles\n"
+                    f"/stats — Show your stats\n"
                     f"/history clear — Clear chat history\n"
-                    f"/stats — Show your stats"
+                    f"/chatid — Show your Telegram Chat ID"
                 ),
                 parse_mode="HTML",
             )

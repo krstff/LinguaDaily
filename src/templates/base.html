@@ -365,6 +365,7 @@ textarea { resize: vertical; }
   <a href="/logs" {% if active == 'logs' %}class="active"{% endif %}>Logs</a>
   <a href="/documents" {% if active == 'documents' %}class="active"{% endif %}>Documents</a>
   <a href="/stats" {% if active == 'stats' %}class="active"{% endif %}>Stats</a>
+  <a href="/vocab" {% if active == 'vocab' %}class="active"{% endif %}>Vocab</a>
   <a href="/config" {% if active == 'config' %}class="active"{% endif %}>Config</a>
 </nav>
 <div class="container">
@@ -677,9 +678,11 @@ async function loadModels() {
       statusEl.textContent = `⚠ ${fetchData.error}`;
     }
 
-    // Populate dropdowns (chat models from the LLM endpoint, TTS from the TTS endpoint)
+    // Populate dropdowns (chat models from the LLM endpoint, TTS/STT from
+    // their respective endpoints, embeddings from the LLM endpoint)
     populateDropdown('model_general', fetchData.llm_models || []);
     populateDropdown('model_tts', fetchData.tts_models || []);
+    populateDropdown('model_stt', fetchData.stt_models || []);
     populateDropdown('model_embed', fetchData.llm_models || []);
 
     // Fetch current selections from config
@@ -693,6 +696,9 @@ async function loadModels() {
     }
     if (curData.tts_model) {
       document.getElementById('model_tts').value = curData.tts_model;
+    }
+    if (curData.stt_model) {
+      document.getElementById('model_stt').value = curData.stt_model;
     }
     if (curData.embedding_model) {
       document.getElementById('model_embed').value = curData.embedding_model;
@@ -729,6 +735,7 @@ async function saveModels() {
   const payload = {
     default_model: document.getElementById('model_general').value,
     tts_model: document.getElementById('model_tts').value,
+    stt_model: document.getElementById('model_stt')?.value || '',
     embedding_model: document.getElementById('model_embed')?.value || '',
   };
 
@@ -755,10 +762,70 @@ async function saveModels() {
   }
 }
 
-// Load models on page load (only when dashboard elements exist)
+// ── Broadcast to all users ─────────────────────────────
+const BROADCAST_CHAT_COUNT = {{ broadcast_chat_count | default(0) }};
+
+async function sendBroadcast() {
+  const btn = document.getElementById('broadcast-btn');
+  const statusEl = document.getElementById('broadcast-status');
+  const ta = document.getElementById('broadcast-message');
+  if (!btn || !statusEl || !ta) return;
+
+  const msg = ta.value.trim();
+  if (!msg) {
+    statusEl.textContent = '⚠ Message is empty';
+    return;
+  }
+  if (BROADCAST_CHAT_COUNT === 0) {
+    statusEl.textContent = '⚠ No Telegram chat IDs configured';
+    return;
+  }
+  if (!confirm(`Send this message to all ${BROADCAST_CHAT_COUNT} chat(s)?`)) return;
+
+  btn.disabled = true;
+  statusEl.textContent = 'Sending…';
+
+  try {
+    const res = await fetch('/api/broadcast', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      statusEl.textContent = `✓ ${data.message || 'Sent'}`;
+      showToast(data.message || 'Broadcast sent', false);
+      if (data.failed && data.failed.length) {
+        const detail = data.failed
+          .map(f => `chat ${f.chat_id}: ${f.error}`).join('; ');
+        showToast(`Some chats failed — ${detail}`, true);
+      }
+      ta.value = '';
+    } else {
+      statusEl.textContent = `⚠ ${data.message || 'Send failed'}`;
+      showToast(data.message || 'Broadcast failed', true);
+    }
+  } catch (e) {
+    statusEl.textContent = '⚠ Network error';
+    showToast('Network error sending broadcast', true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Load models + wire broadcast shortcuts on page load (dashboard only)
 document.addEventListener('DOMContentLoaded', function() {
   if (document.getElementById('model_general')) {
     loadModels();
+  }
+  const broadcastTa = document.getElementById('broadcast-message');
+  if (broadcastTa) {
+    broadcastTa.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        sendBroadcast();
+      }
+    });
   }
 });
 </script>

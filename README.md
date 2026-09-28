@@ -87,16 +87,16 @@ This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.ki
 
 My command setup:
 ```
-start - Get usega information
-another - Requests another article.
-flashcards - Show flashcards.
-quiz - Play a quiz.
-convo - Speaking practice: listen to a line, record your answer.
-history - Clears chat history on server.
-status - Get information about profile status.
-chatid - Get your chat id.
-profiles - Lists all available profiles.
-switch - Switch between profile chats.
+start - Show this message
+another - Request another daily lesson
+convo [N] - Speaking practice: listen to a line, record your answer (default 6 turns)
+quiz [N] - Multiple-choice quiz (default 10 questions)
+flashcards [N] - Browse vocabulary as flashcards (default 10)
+stop - Cancel a pending tutor reply or end a conversation
+profiles - List & switch your profiles
+stats - Show your stats
+history clear - Clear chat history
+chatid - Get your chat id
 ```
 
 ### Web UI

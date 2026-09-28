@@ -28,8 +28,8 @@
 <!-- ── Model Selection Panel ──────────────────────────── -->
 <div class="model-panel">
   <h2>Model Selection</h2>
-  <p class="subtitle">Choose the general model (lessons, translation, vocab, tutor), TTS and RAG embeddings (applies to all profiles)</p>
-  <div class="form-grid" style="grid-template-columns:repeat(3,1fr);">
+  <p class="subtitle">Choose the general model (lessons, translation, vocab, tutor), TTS, STT and RAG embeddings (applies to all profiles)</p>
+  <div class="form-grid" style="grid-template-columns:repeat(2,1fr);">
     <div class="form-row">
       <label>General Model</label>
       <select id="model_general">
@@ -40,6 +40,12 @@
       <label>TTS Model</label>
       <select id="model_tts">
         <option value="">→ unconfigured (TTS disabled)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>STT Model</label>
+      <select id="model_stt">
+        <option value="">→ unconfigured (STT disabled)</option>
       </select>
     </div>
     <div class="form-row">
@@ -120,4 +126,19 @@
     {% endif %}
   </tbody>
 </table>
+
+<!-- ── Broadcast Panel ──────────────────────────── -->
+<div class="model-panel" style="margin-top:24px;">
+  <h2>Broadcast</h2>
+  <p class="subtitle">Send a message to all users — delivered via the Telegram bot to every configured chat ({{ broadcast_chat_count }} chat(s))</p>
+  <div class="form-row">
+    <label>Message</label>
+    <textarea id="broadcast-message" rows="3"
+              placeholder="Type a message to send to all users… (Ctrl+Enter to send)"></textarea>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <button class="btn btn-primary" id="broadcast-btn" onclick="sendBroadcast()">📢 Send to all users</button>
+    <span id="broadcast-status" style="color:var(--fg_dim);font-size:12px;"></span>
+  </div>
+</div>
 {% endblock %}
