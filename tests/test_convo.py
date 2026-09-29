@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import convo as convo_mod
-from convo import ConvoHandler, _clamp_turns, _level_label
+from convo import (
+    ConvoHandler,
+    _clamp_turns,
+    _is_advanced,
+    _level_label,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -118,6 +123,28 @@ class TestHelpers:
         assert _clamp_turns(1) == convo_mod.CONVO_MIN_TURNS
         assert _clamp_turns(99) == convo_mod.CONVO_MAX_TURNS
         assert _clamp_turns(6) == 6
+
+    def test_is_advanced(self):
+        assert _is_advanced("B1") is True
+        assert _is_advanced("b2") is True
+        assert _is_advanced("C1") is True
+        assert _is_advanced("C2") is True
+        assert _is_advanced("A1") is False
+        assert _is_advanced("A2") is False
+        assert _is_advanced("original") is False
+        assert _is_advanced(None) is False
+
+    def test_prompts_require_partner_to_ask(self):
+        # opening + both next-line variants must force a question so the
+        # learner always knows what to say
+        for prompt in (convo_mod.CONVO_OPEN_SYSTEM,
+                       convo_mod.CONVO_NEXT_SYSTEM,
+                       convo_mod.CONVO_NEXT_SYSTEM_TIPS):
+            assert "ENDS WITH A QUESTION" in prompt
+
+    def test_tips_only_in_advanced_prompt(self):
+        assert "tip" in convo_mod.CONVO_NEXT_SYSTEM_TIPS
+        assert "tip" not in convo_mod.CONVO_NEXT_SYSTEM
 
 
 # ── start_convo ─────────────────────────────────────────────────────
@@ -433,6 +460,31 @@ class TestPromptHistory:
         history = handler._sessions[1]["history"]
         assert [e["role"] for e in history] == [
             "partner", "learner", "partner"]
+
+    @pytest.mark.asyncio
+    async def test_prompt_variant_by_level(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+
+        async def _run(level):
+            prompts = []
+            handler._sessions.clear()
+            handler.config["profiles"]["krystof"]["target_level"] = level
+            monkeypatch.setattr(handler, "_get_llama_client",
+                                lambda profile: self._fake_client(prompts))
+            await handler.start_convo(1, "krystof")
+            _stub_stt(monkeypatch, tmp_path, "Ja.")
+            await handler.handle_voice(_voice_message(1))
+            return prompts[1]  # the next-line prompt
+
+        basic = await _run("A2")
+        assert "tip" not in basic
+
+        advanced = await _run("B1")
+        assert "tip" in advanced
+
+        # 'original' stays on the basic variant
+        basic_orig = await _run("original")
+        assert "tip" not in basic_orig
 
     @pytest.mark.asyncio
     async def test_history_keeps_partner_replies(self, env, monkeypatch):

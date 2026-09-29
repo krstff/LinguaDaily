@@ -12,7 +12,10 @@ The user starts a short spoken conversation with /convo.  Each turn:
      llm_convo_model override).
 
 The conversation topic is the profile's latest delivered lesson, and the
-language level follows the profile's CEFR target_level.
+language level follows the profile's CEFR target_level.  The partner's
+lines always end with a question so the learner always knows what to say.
+B1+ learners additionally get a short "how to say it better" tip in the
+feedback (a dedicated prompt variant, not a conditional instruction).
 
 All user-facing messages are shown in the profile's `native_language`
 (the language the user understands; English is the fallback).  The final
@@ -66,13 +69,16 @@ CONVO_OPEN_SYSTEM = """You are a friendly conversation partner for a {level} lea
 The conversation is about the learner's daily article: "{topic}".
 
 Rules:
-- Write ONE natural opening line or question in {language_name} about the topic.
+- Write ONE natural opening line in {language_name} about the topic that
+  ENDS WITH A QUESTION the learner can answer by speaking.
 - 1-2 short sentences, simple {level}-level vocabulary.
 - "translation": the line translated into {native_lang}.
 
 Respond with ONLY a JSON object:
 {{"reply": "...", "translation": "..."}}"""
 
+# Next-line prompt for A1/A2 (and 'original') learners — feedback stays
+# minimal: at this stage it is enough to understand the language.
 CONVO_NEXT_SYSTEM = """You are a friendly conversation partner for a {level} learner of {language_name}.
 
 The conversation is about the learner's daily article: "{topic}".
@@ -89,8 +95,36 @@ Respond with ONLY a JSON object:
   85-100 correct and natural · 60-84 understandable, minor errors ·
   40-59 significant errors · below 40 mostly wrong.
 - "reply": your next line in {language_name} — a natural response to what they
-  said, 1-2 short sentences, simple {level}-level vocabulary, keep it going.
-  Do not repeat a line or question you already used.
+  said that ENDS WITH A QUESTION the learner can answer, 1-2 short sentences,
+  simple {level}-level vocabulary. Do not repeat a line or question you
+  already used.
+- "translation": the reply translated into {native_lang}."""
+
+# Next-line prompt for B1+ learners — the feedback additionally carries one
+# short tip on how to say the idea better, so the learner actively improves
+# their phrasing.  A dedicated prompt (instead of a conditional instruction)
+# keeps the behaviour deterministic on small models.
+CONVO_NEXT_SYSTEM_TIPS = """You are a friendly conversation partner for a {level} learner of {language_name}.
+
+The conversation is about the learner's daily article: "{topic}".
+The learner answers by SPEAKING; their utterance was transcribed by speech
+recognition and may contain recognition errors.
+
+{history}The learner just said: "{user_speech}"
+
+Respond with ONLY a JSON object:
+- "feedback": brief feedback in {native_lang}, max 3 sentences. Note the most
+  important language error if there is one; otherwise confirm it was fine.
+  Then give ONE short tip on how to say the same idea more naturally or
+  accurately — when there is something to improve, show a better phrasing in
+  {language_name}. Concise and factual — no praise padding.
+- "score": integer 0-100 for grammar and word choice. Fair scale:
+  85-100 correct and natural · 60-84 understandable, minor errors ·
+  40-59 significant errors · below 40 mostly wrong.
+- "reply": your next line in {language_name} — a natural response to what they
+  said that ENDS WITH A QUESTION the learner can answer, 1-2 short sentences,
+  simple {level}-level vocabulary. Do not repeat a line or question you
+  already used.
 - "translation": the reply translated into {native_lang}."""
 
 
@@ -100,6 +134,11 @@ def _level_label(level: str) -> str:
     if lvl in ("A1", "A2", "B1", "B2", "C1", "C2"):
         return lvl
     return "A2-B1 (simple)"
+
+
+def _is_advanced(level: str) -> bool:
+    """B1+ levels get the prompt variant with phrasing tips."""
+    return (level or "").strip().upper() in ("B1", "B2", "C1", "C2")
 
 
 def _clamp_turns(turns: Optional[int]) -> int:
@@ -536,7 +575,9 @@ class ConvoHandler:
                 f"{entry['role'].capitalize()}: \"{entry['text']}\""
                 for entry in entries
             ) + "\n\n"
-        system = CONVO_NEXT_SYSTEM.format(
+        template = (CONVO_NEXT_SYSTEM_TIPS if _is_advanced(session["level"])
+                    else CONVO_NEXT_SYSTEM)
+        system = template.format(
             level=_level_label(session["level"]),
             language_name=resolve_language_name(session["lang_code"]),
             topic=(session.get("topic") or "today's article")[:200],

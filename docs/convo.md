@@ -43,6 +43,19 @@ with its score.
 Scores are based on the **transcribed words** (grammar / word choice), not on
 acoustics — the LLM never hears the audio.
 
+## Partner behaviour by level
+
+* The partner's lines (opening and every follow-up) **always end with a
+  question** so the learner always knows what to say next.
+* A1/A2 (and `original`) learners get minimal feedback: the most important
+  error, if any — at that stage it is enough to understand the language.
+* B1+ learners use a dedicated prompt variant (`CONVO_NEXT_SYSTEM_TIPS`)
+  whose feedback additionally carries **one short tip on how to say the
+  idea more naturally or accurately**, with a better phrasing in the target
+  language when possible.  A separate prompt (instead of a conditional
+  instruction in one prompt) keeps the behaviour deterministic even on
+  small models.
+
 ## Configuration
 
 ```json
