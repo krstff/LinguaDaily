@@ -14,6 +14,15 @@ The user starts a short spoken conversation with /convo.  Each turn:
 The conversation topic is the profile's latest delivered lesson, and the
 language level follows the profile's CEFR target_level.
 
+All user-facing messages are shown in the profile's `native_language`
+(the language the user understands; English is the fallback).  The final
+summary includes the full exchange — the partner's lines alongside the
+user's transcribed answers and scores.
+
+Audio is ephemeral: TTS lines are deleted right after being sent and
+voice notes right after transcription, so nothing accumulates in
+output/<profile>/convo/.
+
 Config (config.json):
     "stt": {"base_url": "...", "model": "..."}   # required for /convo
     "llm": {"task_models": {"convo": "small-model"}}  # optional
@@ -81,6 +90,7 @@ Respond with ONLY a JSON object:
   40-59 significant errors · below 40 mostly wrong.
 - "reply": your next line in {language_name} — a natural response to what they
   said, 1-2 short sentences, simple {level}-level vocabulary, keep it going.
+  Do not repeat a line or question you already used.
 - "translation": the reply translated into {native_lang}."""
 
 
@@ -96,6 +106,97 @@ def _clamp_turns(turns: Optional[int]) -> int:
     if not turns:
         return CONVO_DEFAULT_TURNS
     return max(CONVO_MIN_TURNS, min(CONVO_MAX_TURNS, int(turns)))
+
+
+# ── Localized user-facing strings ─────────────────────────────────
+#
+# Keyed by the profile's `native_language` — the language the user
+# understands.  English is the fallback for any code without a table.
+
+_STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        "stt_not_configured": (
+            "⚠️ Speech-to-text is not configured.\n"
+            "Add an <code>stt</code> section to config.json "
+            "(base_url + model) and restart."),
+        "tts_disabled": (
+            "⚠️ TTS is disabled for this profile — "
+            "conversation practice needs audio."),
+        "no_llm": (
+            "⚠️ No LLM model configured — set <code>llm.default_model</code> "
+            "(optionally a small fast one via <code>llm.task_models.convo</code>)."),
+        "no_lesson": "⚠️ No lesson yet — run /another first, then try /convo.",
+        "preparing": "🎧 Preparing your conversation…",
+        "llm_unavailable": (
+            "⚠️ Could not start the conversation — LLM unavailable. Try again."),
+        "no_session": "No active conversation — start one with /convo.",
+        "busy": "⏳ Still working on the last answer — one moment.",
+        "transcribing": "🎧 Transcribing…",
+        "processing_error": "⚠️ Something went wrong — try recording again.",
+        "download_failed": "⚠️ Could not download your voice message.",
+        "ffmpeg_missing": (
+            "⚠️ Could not process the audio — is ffmpeg installed on the daemon?"),
+        "stt_failed": "⚠️ Transcription failed — is the STT endpoint up? Try again.",
+        "empty_transcript": "🤔 I couldn't catch anything — try again?",
+        "tutor_unavailable": "⚠️ The tutor is unavailable — try recording again.",
+        "tts_failed": "(⚠️ TTS failed — text only)",
+        "turn_header": "✅ <b>Turn {turn}/{total}</b> · score: <b>{score}/100</b>",
+        "summary_title": "🏁 <b>Conversation complete!</b>",
+        "summary_topic": "Topic",
+        "summary_avg": "Average score",
+        "summary_note": "(Scores are based on the transcribed words.)",
+        "caption_header": "🗣 <b>Conversation {turn}/{total}</b> · topic",
+        "caption_prompt": "🎤 Record your answer as a voice message.",
+        "partner": "🗣 Partner",
+        "you": "🎤 You",
+    },
+    "cs": {
+        "stt_not_configured": (
+            "⚠️ Přepis řeči (speech-to-text) není nakonfigurovaný.\n"
+            "Přidejte sekci <code>stt</code> do config.json "
+            "(base_url + model) a restartujte."),
+        "tts_disabled": (
+            "⚠️ TTS je pro tento profil vypnutý — "
+            "cvičení konverzace potřebuje zvuk."),
+        "no_llm": (
+            "⚠️ Není nakonfigurovaný žádný LLM model — nastavte "
+            "<code>llm.default_model</code> (volitelně malý rychlý přes "
+            "<code>llm.task_models.convo</code>)."),
+        "no_lesson": "⚠️ Zatím žádná lekce — nejdřív spusťte /another, pak zkuste /convo.",
+        "preparing": "🎧 Připravuji vaši konverzaci…",
+        "llm_unavailable": (
+            "⚠️ Nedaří se nastartovat konverzaci — LLM není dostupné. Zkuste to znovu."),
+        "no_session": "Žádná aktivní konverzace — spusťte ji příkazem /convo.",
+        "busy": "⏳ Stále zpracovávám poslední odpověď — chvilku.",
+        "transcribing": "🎧 Přepisuji…",
+        "processing_error": "⚠️ Něco se pokazilo — zkuste to nahrát znovu.",
+        "download_failed": "⚠️ Nedaří se stáhnout vaši hlasovou zprávu.",
+        "ffmpeg_missing": "⚠️ Zvuk se nepodařilo zpracovat — je na démonu nainstalovaný ffmpeg?",
+        "stt_failed": "⚠️ Přepis selhal — je STT endpoint dostupný? Zkuste to znovu.",
+        "empty_transcript": "🤔 Nic jsem nepochopil — zkuste to znovu?",
+        "tutor_unavailable": "⚠️ Tutořitel není dostupný — zkuste to nahrát znovu.",
+        "tts_failed": "(⚠️ TTS selhalo — jen text)",
+        "turn_header": "✅ <b>Kolo {turn}/{total}</b> · skóre: <b>{score}/100</b>",
+        "summary_title": "🏁 <b>Konverzace dokončena!</b>",
+        "summary_topic": "Téma",
+        "summary_avg": "Průměrné skóre",
+        "summary_note": "(Skóre je založeno na přepsaných slovech.)",
+        "caption_header": "🗣 <b>Konverzace {turn}/{total}</b> · téma",
+        "caption_prompt": "🎤 Nahrajte svou odpověď jako hlasovou zprávu.",
+        "partner": "🗣 Partner",
+        "you": "🎤 Vy",
+    },
+}
+
+
+def _t(lang_code: str, key: str, **fmt) -> str:
+    """Localized user-facing string for the profile's native language.
+
+    Falls back to English for unknown codes or missing keys.
+    """
+    table = _STRINGS.get(lang_code) or _STRINGS["en"]
+    template = table.get(key) or _STRINGS["en"][key]
+    return template.format(**fmt) if fmt else template
 
 
 # ── Handler ─────────────────────────────────────────────────────────
@@ -121,7 +222,9 @@ class ConvoHandler:
         if not session:
             return None
         if time.time() - session["created_at"] > CONVO_SESSION_TIMEOUT_SECS:
-            del self._sessions[chat_id]
+            self._end_session(chat_id)
+            if not session.get("busy"):
+                self._sweep_profile_audio(session["profile"])
             return None
         # Refresh the inactivity timeout
         session["created_at"] = time.time()
@@ -136,10 +239,35 @@ class ConvoHandler:
         Returns True if a session was active, False otherwise.
         """
         chat_id = int(chat_id)
-        if self._get_session(chat_id) is None:
+        session = self._get_session(chat_id)
+        if session is None:
             return False
         self._end_session(chat_id)
+        # Discard leftover audio (skip while a turn is still in flight)
+        if not session.get("busy"):
+            self._sweep_profile_audio(session["profile"])
         return True
+
+    def _sweep_profile_audio(self, profile_name: str):
+        """Delete leftover convo audio for a profile.
+
+        Normal operation discards each file right after use; this picks
+        up stragglers from failed turns or a crashed session so nothing
+        accumulates in output/<profile>/convo/.
+        """
+        work_dir = os.path.join(str(OUTPUT_DIR), profile_name, "convo")
+        if not os.path.isdir(work_dir):
+            return
+        removed = 0
+        for name in os.listdir(work_dir):
+            if ((name.startswith("lingua_") and name.endswith(".wav"))
+                    or (name.startswith("voice_")
+                        and name.endswith((".ogg", ".wav")))):
+                self._cleanup(work_dir, os.path.join(work_dir, name))
+                removed += 1
+        if removed:
+            logger.info("Convo cleanup: removed %d leftover file(s) from %s",
+                        removed, work_dir)
 
     def _get_llama_client(self, profile_name: str):
         if (self._llama_client is None
@@ -158,6 +286,8 @@ class ConvoHandler:
         # Pick up config changes made through the web UI
         self.config = self.bot.config or self.config
         self._end_session(chat_id)
+        # Discard audio left over from a previous (crashed?) session
+        self._sweep_profile_audio(profile_name)
 
         profile = self.config.get("profiles", {}).get(profile_name, {})
         lang_code = profile.get("learning_language", DEFAULT_LEARNING_LANGUAGE)
@@ -166,28 +296,15 @@ class ConvoHandler:
 
         # ── Prerequisites ─────────────────────────────────────────
         if not is_configured(self.config):
-            await self._send(
-                chat_id,
-                "⚠️ Speech-to-text is not configured.\n"
-                "Add an <code>stt</code> section to config.json "
-                "(base_url + model) and restart.",
-            )
+            await self._send(chat_id, _t(native, "stt_not_configured"))
             return
         if not profile.get("use_tts", True) or not self.config.get("tts"):
-            await self._send(
-                chat_id,
-                "⚠️ TTS is disabled for this profile — "
-                "conversation practice needs audio.",
-            )
+            await self._send(chat_id, _t(native, "tts_disabled"))
             return
 
         client = self._get_llama_client(profile_name)
         if not client.resolve_model("convo"):
-            await self._send(
-                chat_id,
-                "⚠️ No LLM model configured — set <code>llm.default_model</code> "
-                "(optionally a small fast one via <code>llm.task_models.convo</code>).",
-            )
+            await self._send(chat_id, _t(native, "no_llm"))
             return
 
         lesson = None
@@ -196,28 +313,20 @@ class ConvoHandler:
         except Exception as e:
             logger.error("Could not fetch latest lesson: %s", e)
         if not lesson or not (lesson.get("title") or "").strip():
-            await self._send(
-                chat_id,
-                "⚠️ No lesson yet — run /another first, then try /convo.",
-            )
+            await self._send(chat_id, _t(native, "no_lesson"))
             return
 
         if not turns:
             turns = (self.config.get("convo", {}) or {}).get("turns")
         turns = _clamp_turns(turns)
-        placeholder = await self._send(
-            chat_id, "🎧 Preparing your conversation…")
+        placeholder = await self._send(chat_id, _t(native, "preparing"))
 
         # ── Opening line (LLM) ────────────────────────────────────
         data = await asyncio.to_thread(
             self._generate_opening, client, lesson, lang_code, native, level)
         if not data or not str(data.get("reply", "")).strip():
             await self._delete(placeholder)
-            await self._send(
-                chat_id,
-                "⚠️ Could not start the conversation — LLM unavailable. "
-                "Try again.",
-            )
+            await self._send(chat_id, _t(native, "llm_unavailable"))
             return
         reply = str(data["reply"]).strip()[:300]
         translation = str(data.get("translation", "")).strip()[:300]
@@ -231,25 +340,16 @@ class ConvoHandler:
             "lang_code": lang_code,
             "native_lang": native,
             "lines": [],          # [{"transcript": str, "score": int}, …]
+            "history": [],        # [{"role": "partner"|"learner", "text": str}, …]
             "created_at": time.time(),
             "busy": False,
         }
         self._sessions[chat_id] = session
+        session["history"].append({"role": "partner", "text": reply})
 
         # ── Audio (TTS) ───────────────────────────────────────────
-        wav = await asyncio.to_thread(
-            self._synth_line, profile_name, reply, lang_code, level)
-
         await self._delete(placeholder)
-        if wav:
-            await self._send_audio(
-                chat_id, wav,
-                self._turn_caption(session, 1, reply, translation))
-        else:
-            await self._send(
-                chat_id,
-                "(⚠️ TTS failed — text only)\n"
-                + self._turn_caption(session, 1, reply, translation))
+        await self._send_turn_audio(chat_id, session, 1, reply, translation)
         logger.info("Convo started for chat %d (profile '%s', %d turns, "
                     "topic: %s)", chat_id, profile_name, turns,
                     session["topic"])
@@ -259,28 +359,20 @@ class ConvoHandler:
         chat_id = message.chat.id
         session = self._get_session(chat_id)
         if not session:
-            await self._send(
-                chat_id,
-                "No active conversation — start one with /convo.",
-            )
+            await self._send(chat_id, _t(DEFAULT_NATIVE_LANGUAGE, "no_session"))
             return
+        native = session["native_lang"]
         if session.get("busy"):
-            await self._send(
-                chat_id,
-                "⏳ Still working on the last answer — one moment.",
-            )
+            await self._send(chat_id, _t(native, "busy"))
             return
 
         session["busy"] = True
-        placeholder = await self._send(chat_id, "🎧 Transcribing…")
+        placeholder = await self._send(chat_id, _t(native, "transcribing"))
         try:
             await self._process_voice(message, session, chat_id)
         except Exception as e:
             logger.error("Convo voice processing failed: %s", e, exc_info=True)
-            await self._send(
-                chat_id,
-                "⚠️ Something went wrong — try recording again.",
-            )
+            await self._send(chat_id, _t(native, "processing_error"))
         finally:
             session["busy"] = False
             await self._delete(placeholder)
@@ -302,16 +394,16 @@ class ConvoHandler:
             await bot.download(message.voice, destination=ogg_path)
         except Exception as e:
             logger.error("Could not download voice message: %s", e)
-            await self._send(chat_id, "⚠️ Could not download your voice message.")
+            self._cleanup(work_dir, ogg_path)
+            await self._send(chat_id, _t(session["native_lang"], "download_failed"))
             return
 
         # 2) Convert to WAV (ffmpeg)
         wav_path = await asyncio.to_thread(voice_to_wav, ogg_path, work_dir)
         if not wav_path:
+            self._cleanup(work_dir, ogg_path)
             await self._send(
-                chat_id,
-                "⚠️ Could not process the audio — is ffmpeg installed on the daemon?",
-            )
+                chat_id, _t(session["native_lang"], "ffmpeg_missing"))
             return
 
         # 3) Transcribe (STT endpoint)
@@ -321,15 +413,11 @@ class ConvoHandler:
 
         if transcript is None:
             await self._send(
-                chat_id,
-                "⚠️ Transcription failed — is the STT endpoint up? Try again.",
-            )
+                chat_id, _t(session["native_lang"], "stt_failed"))
             return
         if not transcript:
             await self._send(
-                chat_id,
-                "🤔 I couldn't catch anything — try again?",
-            )
+                chat_id, _t(session["native_lang"], "empty_transcript"))
             return
 
         # 4) Score + next line (LLM)
@@ -338,9 +426,7 @@ class ConvoHandler:
             self._generate_next, client, session, transcript)
         if not data or not str(data.get("reply", "")).strip():
             await self._send(
-                chat_id,
-                "⚠️ The tutor is unavailable — try recording again.",
-            )
+                chat_id, _t(session["native_lang"], "tutor_unavailable"))
             return
 
         score = max(0, min(100, int(data.get("score", 0) or 0)))
@@ -349,12 +435,15 @@ class ConvoHandler:
         translation = str(data.get("translation", "")).strip()[:300]
 
         session["lines"].append({"transcript": transcript, "score": score})
+        session["history"].append({"role": "learner", "text": transcript[:300]})
+        session["history"].append({"role": "partner", "text": reply})
         turn_no = len(session["lines"])
         total = session["turns_total"]
 
         # 5) Feedback message
         fb_lines = [
-            f"✅ <b>Turn {turn_no}/{total}</b> · score: <b>{score}/100</b>",
+            _t(session["native_lang"], "turn_header",
+               turn=turn_no, total=total, score=score),
             f"💬 <i>“{html.escape(transcript)}”</i>",
         ]
         if feedback:
@@ -369,34 +458,59 @@ class ConvoHandler:
         if turn_no >= total:
             await self._send_summary(chat_id, session)
             self._end_session(chat_id)
+            # This turn's own files are already discarded — sweep stragglers
+            self._sweep_profile_audio(session["profile"])
             return
 
-        wav = await asyncio.to_thread(
-            self._synth_line, profile, reply, lang_code, session["level"])
-        if wav:
-            await self._send_audio(
-                chat_id, wav,
-                self._turn_caption(session, turn_no + 1, reply, translation))
-        else:
-            await self._send(
-                chat_id,
-                "(⚠️ TTS failed — text only)\n"
-                + self._turn_caption(session, turn_no + 1, reply, translation))
+        await self._send_turn_audio(
+            chat_id, session, turn_no + 1, reply, translation)
 
     async def _send_summary(self, chat_id: int, session: dict):
+        """Final summary: the full exchange (partner + user lines) + scores."""
+        native = session["native_lang"]
         scores = [l["score"] for l in session["lines"]]
         avg = round(sum(scores) / len(scores)) if scores else 0
+        # Partner lines the user actually heard: one per turn (the trailing
+        # history entry is the unsent closing line, if any).
+        partner_lines = [e["text"] for e in session["history"]
+                         if e["role"] == "partner"]
         lines = [
-            "🏁 <b>Conversation complete!</b>",
-            f"Topic: <i>{html.escape(session['topic'])}</i>",
-            f"Average score: <b>{avg}/100</b>",
+            _t(native, "summary_title"),
+            f"{_t(native, 'summary_topic')}: <i>{html.escape(session['topic'])}</i>",
+            f"{_t(native, 'summary_avg')}: <b>{avg}/100</b>",
             "",
         ]
         for i, l in enumerate(session["lines"], 1):
+            partner = partner_lines[i - 1] \
+                if i - 1 < len(partner_lines) else ""
             lines.append(
-                f"{i}. <i>“{html.escape(l['transcript'])}”</i> — {l['score']}/100")
-        lines += ["", "<i>(Scores are based on the transcribed words.)</i>"]
+                f"{i}. {_t(native, 'partner')}: "
+                f"<i>“{html.escape(partner)}”</i>")
+            lines.append(
+                f"   {_t(native, 'you')}: "
+                f"<i>“{html.escape(l['transcript'])}”</i> — {l['score']}/100")
+        lines += ["", f"<i>{_t(native, 'summary_note')}</i>"]
         await self._send(chat_id, "\n".join(lines))
+
+    async def _send_turn_audio(self, chat_id: int, session: dict, turn_no: int,
+                               reply: str, translation: str):
+        """Synthesize a partner line, send it, then delete the audio.
+
+        The WAV is discarded as soon as it has been sent — there is no
+        point in keeping it and it stops the output dir from growing.
+        Falls back to a text-only message if sending the audio fails.
+        """
+        caption = self._turn_caption(session, turn_no, reply, translation)
+        wav = await asyncio.to_thread(
+            self._synth_line, session["profile"], reply,
+            session["lang_code"], session["level"])
+        if wav:
+            sent = await self._send_audio(chat_id, wav, caption)
+            self._cleanup(os.path.dirname(wav), wav)
+            if sent is not None:
+                return
+        await self._send(
+            chat_id, _t(session["native_lang"], "tts_failed") + "\n" + caption)
 
     # ── LLM calls ─────────────────────────────────────────────────
 
@@ -413,14 +527,15 @@ class ConvoHandler:
 
     def _generate_next(self, client, session: dict,
                        transcript: str) -> Optional[dict]:
-        # Compact history of previous exchanges (keeps the call small)
-        lines = session.get("lines", [])
+        # Full exchange history (partner + learner lines) so the partner
+        # keeps the conversation coherent and natural
+        entries = session.get("history", [])
         history = ""
-        if lines:
-            prev = lines[-1]
-            history = (
-                f"Conversation so far:\nLearner: \"{prev['transcript']}\"\n\n"
-            )
+        if entries:
+            history = "Conversation so far:\n" + "\n".join(
+                f"{entry['role'].capitalize()}: \"{entry['text']}\""
+                for entry in entries
+            ) + "\n\n"
         system = CONVO_NEXT_SYSTEM.format(
             level=_level_label(session["level"]),
             language_name=resolve_language_name(session["lang_code"]),
@@ -457,17 +572,19 @@ class ConvoHandler:
 
     def _turn_caption(self, session: dict, turn_no: int, reply: str,
                       translation: str) -> str:
-        native_name = resolve_language_name(session["native_lang"])
+        native = session["native_lang"]
+        native_name = resolve_language_name(native)
         parts = [
-            f"🗣 <b>Conversation {turn_no}/{session['turns_total']}</b>"
-            f" · topic: <i>{html.escape(session['topic'])}</i>",
+            _t(native, "caption_header",
+               turn=turn_no, total=session["turns_total"])
+            + f": <i>{html.escape(session['topic'])}</i>",
             "",
             f"<tg-spoiler>{html.escape(reply)}</tg-spoiler>",
         ]
         if translation:
             parts += ["", f"<i>{html.escape(native_name)}:</i> "
                           f"<tg-spoiler>{html.escape(translation)}</tg-spoiler>"]
-        parts += ["", "🎤 Record your answer as a voice message."]
+        parts += ["", _t(native, "caption_prompt")]
         return "\n".join(parts)
 
     async def _send(self, chat_id: int, text: str, reply_markup=None):

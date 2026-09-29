@@ -21,12 +21,24 @@ the language level follows the profile's `target_level` (CEFR).
   │
   … repeats for N turns (default 6, /convo 8) …
   │
-  └─ summary: per-turn scores + average
+  └─ summary: the full exchange (partner + user lines),
+              per-turn scores + average
 ```
 
-Each turn is ONE small LLM call (feedback + next line together) so the
-conversation stays responsive — point it at a small fast model via
-`llm.task_models.convo` or a per-profile `llm_convo_model` override.
+User-facing messages are localized to the profile's `native_language`
+(the language the user understands — see `_STRINGS` in `src/convo.py`;
+English is the fallback for languages without a table).
+
+Each turn is ONE LLM call (feedback + next line together). The prompt
+includes the full exchange history (partner + learner lines, plus the
+opening line) so the partner responds coherently — with a capable model
+this keeps the conversation natural. A small fast model can still be
+pointed at it via `llm.task_models.convo` or a per-profile
+`llm_convo_model` override.
+
+The final summary lists the whole conversation: for each turn the partner's
+line (the one the user answered) followed by the user's transcribed answer
+with its score.
 
 Scores are based on the **transcribed words** (grammar / word choice), not on
 acoustics — the LLM never hears the audio.
@@ -55,6 +67,10 @@ acoustics — the LLM never hears the audio.
   (falls back to `llm.default_model`).
 * `convo.turns` — default number of turns (2–8), overridable per call.
 * `/stop` ends an active conversation at any time.
+* Audio is ephemeral: TTS lines are deleted right after being sent and
+  voice notes right after transcription. Session end (summary, `/stop`,
+  timeout, or a new `/convo`) sweeps any stragglers, so nothing
+  accumulates in `output/<profile>/convo/`.
 * The profile needs `use_tts: true` and a working `tts` section.
 * `ffmpeg` must be installed on the daemon host (Telegram voice notes are
   OGG/Opus and are converted to 16 kHz mono WAV before transcription).

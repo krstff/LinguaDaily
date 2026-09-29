@@ -3,6 +3,7 @@
 LLM / STT / TTS layers are mocked; no network or model calls happen.
 """
 
+import itertools
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -55,10 +56,16 @@ def env(tmp_path, monkeypatch):
 
     handler = ConvoHandler(config=config, telegram_bot=bot)
 
-    # TTS stub: return a real (tiny) file so FSInputFile has something
-    wav_file = tmp_path / "line.wav"
-    wav_file.write_bytes(b"RIFF....")
-    handler._synth_line = lambda *a, **k: str(wav_file)
+    # TTS stub: return a fresh real (tiny) file per call, like the real
+    # synthesize() does — so per-turn audio deletion is exercised
+    counter = itertools.count(1)
+
+    def _fake_synth(*a, **k):
+        f = tmp_path / f"line_{next(counter)}.wav"
+        f.write_bytes(b"RIFF....")
+        return str(f)
+
+    handler._synth_line = _fake_synth
 
     # Keep temp audio out of the real output/ dir
     monkeypatch.setattr(convo_mod, "OUTPUT_DIR", tmp_path)
@@ -320,6 +327,57 @@ class TestVoiceFlow:
         assert any("Quantencomputer" in t for t in texts)
 
     @pytest.mark.asyncio
+    async def test_summary_includes_partner_lines(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {
+            "reply": "Hast du den Artikel gelesen?", "translation": "Did you read it?"}
+        handler._generate_next = lambda *a, **k: {
+            "feedback": "Gut.", "score": 80, "reply": "Sehr interessant.",
+            "translation": "Very interesting."}
+        await handler.start_convo(1, "krystof")
+        handler._sessions[1]["turns_total"] = 2
+
+        _stub_stt(monkeypatch, tmp_path, "Ja, habe ich.")
+        await handler.handle_voice(_voice_message(1))
+        _stub_stt(monkeypatch, tmp_path, "Weil Quantencomputer cool sind.")
+        await handler.handle_voice(_voice_message(1))
+
+        texts = _sent_texts(aiogram_bot)
+        summary = [t for t in texts if "Conversation complete" in t][0]
+        # partner lines the user heard are part of the summary
+        assert "Hast du den Artikel gelesen?" in summary
+        assert "Sehr interessant." in summary
+        # user lines with scores, in order
+        assert "Ja, habe ich." in summary
+        assert "Weil Quantencomputer cool sind." in summary
+        assert summary.index("Hast du den Artikel gelesen?") \
+            < summary.index("Ja, habe ich.") \
+            < summary.index("Sehr interessant.")
+
+    @pytest.mark.asyncio
+    async def test_messages_use_profile_native_language(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler.config["profiles"]["krystof"]["native_language"] = "cs"
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+
+        texts = _sent_texts(aiogram_bot)
+        assert any("Připravuji vaši konverzaci" in t for t in texts)
+        captions = _audio_captions(aiogram_bot)
+        assert any("Konverzace 1/" in c for c in captions)
+        assert any("Nahrajte svou odpověď" in c for c in captions)
+
+    @pytest.mark.asyncio
+    async def test_unknown_language_falls_back_to_english(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler.config["profiles"]["krystof"]["native_language"] = "xx"
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+
+        texts = _sent_texts(aiogram_bot)
+        assert any("Preparing your conversation" in t for t in texts)
+
+    @pytest.mark.asyncio
     async def test_lesson_topic_used_in_prompts(self, env, monkeypatch):
         handler, bot, aiogram_bot, tmp_path = env
         captured = {}
@@ -333,6 +391,149 @@ class TestVoiceFlow:
         await handler.start_convo(1, "krystof")
         assert captured["lesson_title"] == "Quantencomputer"
         assert captured["level"] == "A2"
+
+
+# ── Prompt history ──────────────────────────────────────────────────
+
+class TestPromptHistory:
+    def _fake_client(self, prompts):
+        class FakeClient:
+            def resolve_model(self, task):
+                return "fake-model"
+
+            def chat_json(self, system, user, task=None):
+                prompts.append(system)
+                if "opening line" in system:
+                    return {"reply": "Hast du den Artikel gelesen?",
+                            "translation": "Did you read the article?"}
+                return {"feedback": "Gut.", "score": 80,
+                        "reply": "Was hat dich überrascht?",
+                        "translation": "What surprised you?"}
+        return FakeClient()
+
+    @pytest.mark.asyncio
+    async def test_history_grows_with_partner_lines(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        prompts = []
+        monkeypatch.setattr(handler, "_get_llama_client",
+                            lambda profile: self._fake_client(prompts))
+        await handler.start_convo(1, "krystof")
+
+        _stub_stt(monkeypatch, tmp_path, "Ja, ich habe es gelesen.")
+        await handler.handle_voice(_voice_message(1))
+
+        # turn-2 prompt (2nd LLM call) must contain the opening line; the
+        # learner's first answer arrives as the "just said" line
+        assert len(prompts) == 2
+        next_prompt = prompts[1]
+        assert 'Partner: "Hast du den Artikel gelesen?"' in next_prompt
+        assert 'The learner just said: "Ja, ich habe es gelesen."' in next_prompt
+
+        # after turn 1 the history has opening, exchange, and the new reply
+        history = handler._sessions[1]["history"]
+        assert [e["role"] for e in history] == [
+            "partner", "learner", "partner"]
+
+    @pytest.mark.asyncio
+    async def test_history_keeps_partner_replies(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        prompts = []
+        monkeypatch.setattr(handler, "_get_llama_client",
+                            lambda profile: self._fake_client(prompts))
+        await handler.start_convo(1, "krystof")
+        handler._sessions[1]["turns_total"] = 4
+
+        _stub_stt(monkeypatch, tmp_path, "Ja.")
+        await handler.handle_voice(_voice_message(1))
+        _stub_stt(monkeypatch, tmp_path, "Weil es schnell ist.")
+        await handler.handle_voice(_voice_message(1))
+
+        # turn-3 prompt (3rd LLM call) contains both partner lines so far
+        # and the previous learner line
+        next_prompt = prompts[2]
+        assert next_prompt.count("Partner:") == 2
+        assert next_prompt.count("Learner:") == 1
+        assert 'Partner: "Was hat dich überrascht?"' in next_prompt
+        assert 'Learner: "Ja."' in next_prompt
+        assert 'The learner just said: "Weil es schnell ist."' in next_prompt
+
+
+# ── Audio cleanup (no disk accumulation) ────────────────────────────
+
+class TestAudioCleanup:
+    @pytest.mark.asyncio
+    async def test_tts_line_deleted_after_send(self, env):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        # the opening line's WAV must be gone right after it was sent
+        assert not list(tmp_path.glob("line_*.wav"))
+
+    @pytest.mark.asyncio
+    async def test_leftovers_swept_on_stop(self, env):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        work_dir = tmp_path / "krystof" / "convo"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "lingua_deadbeef.wav").write_bytes(b"RIFF")
+        (work_dir / "voice_123.ogg").write_bytes(b"OggS")
+
+        assert handler.end_convo(1) is True
+
+        assert not list(work_dir.glob("lingua_*.wav"))
+        assert not list(work_dir.glob("voice_*.ogg"))
+
+    @pytest.mark.asyncio
+    async def test_leftovers_swept_on_final_turn(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        handler._generate_next = lambda *a, **k: {
+            "feedback": "Gut.", "score": 80, "reply": "Weiter", "translation": "More",
+        }
+        await handler.start_convo(1, "krystof")
+        handler._sessions[1]["turns_total"] = 1
+        work_dir = tmp_path / "krystof" / "convo"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "lingua_deadbeef.wav").write_bytes(b"RIFF")
+
+        _stub_stt(monkeypatch, tmp_path, "Eins.")
+        await handler.handle_voice(_voice_message(1))
+
+        assert 1 not in handler._sessions
+        assert not list(work_dir.glob("lingua_*.wav"))
+
+    @pytest.mark.asyncio
+    async def test_start_convo_sweeps_crashed_session_leftovers(self, env):
+        handler, bot, aiogram_bot, tmp_path = env
+        work_dir = tmp_path / "krystof" / "convo"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "lingua_deadbeef.wav").write_bytes(b"RIFF")
+        (work_dir / "voice_123.ogg").write_bytes(b"OggS")
+
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+
+        assert not list(work_dir.glob("lingua_*.wav"))
+        assert not list(work_dir.glob("voice_*.ogg"))
+
+    @pytest.mark.asyncio
+    async def test_conversion_failure_removes_ogg(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+
+        async def _fake_download(voice, destination=None):
+            with open(destination, "wb") as f:
+                f.write(b"OggS")
+        aiogram_bot.download = AsyncMock(side_effect=_fake_download)
+        monkeypatch.setattr(convo_mod, "voice_to_wav", lambda *a, **k: None)
+
+        await handler.handle_voice(_voice_message(1))
+
+        work_dir = tmp_path / "krystof" / "convo"
+        assert not list(work_dir.glob("voice_*.ogg"))
+        assert any("ffmpeg" in t for t in _sent_texts(aiogram_bot))
 
 
 # ── Model resolution ────────────────────────────────────────────────
