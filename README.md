@@ -70,6 +70,13 @@ The startup banner shows all configured profiles, schedules, and service status:
   LLM:        gemma-4-26B-language @ http://llama-swap:8080/v1
 ============================================================
 ```
+
+## Adding a Language
+
+1. **`src/languages.py`** — the single file that defines supported languages. If you want to add a support for a new language, i recommend just dropping this whole file into a LLM. Alternatively you can fill out the related fields in this file.
+2. **Kiwix servers (optional)** — Web UI → *Sources* (Wikipedia) and *Documents* (Wiktionary): add a per-language server for offline ZIM content. Without one, the app uses the online wikis.
+3. **Grammar RAG (optional)** — for the tutor to answer grammar questions well, upload and index a grammar book: Web UI → *Documents*.
+
 ## Connections
 
 This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.kiwix.org/wiki/Main_Page) for wiki articles, locally deployed LLM and TTS, Qdrant for RAG). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.

@@ -43,6 +43,7 @@ from typing import Optional
 
 from telegramify_markdown import convert as md_convert, split_entities
 
+from languages import LESSON_ACK_DONE_TEXT, LESSON_ACK_TEXT, resolve_language_name
 from config import (
     CONVO_DEFAULT_TURNS,
     CONFIG_PATH,
@@ -51,18 +52,15 @@ from config import (
     DEFAULT_NATIVE_LANGUAGE,
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
-    LESSON_ACK_DONE_TEXT,
     LESSON_ACK_EFFECT_DEFAULT,
     LESSON_ACK_EFFECT_MONTH_STREAK,
     LESSON_ACK_EFFECT_WEEK_STREAK,
-    LESSON_ACK_TEXT,
     TG_HISTORY_PURGE_DAYS,
     TG_LESSON_ACK_DELETE_DELAY_SECS,
     TG_LESSON_ACK_DEFAULT,
     TG_LESSON_COOLDOWN_SECS,
     TG_MAX_MSG_LEN,
     TG_SAFE_TRUNCATE,
-    resolve_language_name,
     load_config,
 )
 

@@ -19,11 +19,8 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
-from config import (
-    DEFAULT_NATIVE_LANGUAGE,
-    NEWS_FEED_CATALOGUE,
-    NEWS_DEFAULT_FEEDS,
-)
+from config import DEFAULT_NATIVE_LANGUAGE
+from languages import NEWS_FEED_CATALOGUE, NEWS_DEFAULT_FEEDS
 
 logger = logging.getLogger(__name__)
 

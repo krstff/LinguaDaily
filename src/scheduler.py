@@ -40,7 +40,8 @@ import os
 import sys
 from typing import Callable, Optional
 
-from config import CONFIG_PATH, resolve_language_name, load_config
+from config import CONFIG_PATH, load_config
+from languages import resolve_language_name
 
 logger = logging.getLogger(__name__)
 

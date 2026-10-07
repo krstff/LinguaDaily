@@ -31,6 +31,7 @@ from config import (
     TTS_DEFAULT_VOICE,
     load_config,
 )
+from languages import COMMA_DECIMAL_LANGUAGES
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +112,7 @@ def _convert_numbers_to_words(text, language_id):
     if _num2words is None:
         return text
     
-    # Languages that standardly use a comma as the decimal separator
-    COMMA_DECIMAL_LANGS = {
-        "de", "fr", "es", "it", "nl", "pt", "ru", "pl", "cs", "sk", "da", "fi", "se", "no", "hu"
-    }
-
-    uses_comma_decimal = language_id in COMMA_DECIMAL_LANGS
+    uses_comma_decimal = language_id in COMMA_DECIMAL_LANGUAGES
 
     # Helper function to convert matched string into words
     def process_match(match, is_decimal=False):

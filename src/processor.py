@@ -15,8 +15,8 @@ Usage (import):
 from config import (
     DEFAULT_LEARNING_LANGUAGE,
     DEFAULT_PROFILE_NAME,
-    resolve_language_name,
 )
+from languages import resolve_language_name
 
 from vocab_db import VocabDB, get_shared_db
 

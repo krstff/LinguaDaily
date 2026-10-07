@@ -6,6 +6,10 @@ All source files should import from here instead of duplicating
 SCRIPT_DIR / PROJECT_DIR / CONFIG_PATH boilerplate or their own
 _load_config() functions.
 
+Language-dependent strings (language codes, per-language texts) live in
+src/languages.py — the single file to edit when extending language
+support.  They are re-exported from here for backward compatibility.
+
 Usage:
     from src.config import PROJECT_DIR, CONFIG_PATH, DATA_DIR, load_config
 
@@ -16,44 +20,26 @@ Usage:
 import json
 import pathlib
 
-# ── Language code → display name mapping ────────────────────
+# ── Language-dependent strings ────────────────────────────────────
 #
-# Used to resolve `learning_language_name` automatically from
-# the `learning_language` code.  The user only needs to set
-# the ISO code ("de", "it", …) in config.json; the human-readable
-# name is computed here so it can never go out of sync.
-#
-LANGUAGE_NAMES: dict[str, str] = {
-    "en": "English",
-    "de": "German",
-    "es": "Spanish",
-    "it": "Italian",
-    "fr": "French",
-    "pt": "Portuguese",
-    "ru": "Russian",
-    "zh": "Chinese",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "ar": "Arabic",
-    "hi": "Hindi",
-    "hu": "Hungarian",
-    "cs": "Czech",
-    "pl": "Polish",
-    "nl": "Dutch",
-    "sv": "Swedish",
-    "da": "Danish",
-    "no": "Norwegian",
-    "fi": "Finnish",
-    "tr": "Turkish",
-}
-
-
-def resolve_language_name(lang_code: str) -> str:
-    """Return a human-readable language name for an ISO code.
-
-    Falls back to the code itself if the mapping is unknown.
-    """
-    return LANGUAGE_NAMES.get(lang_code, lang_code)
+# All per-language texts and language codes live in src/languages.py
+# (the single file to edit when extending language support).
+# Re-exported here so existing `from config import ...` keeps working.
+from languages import (  # noqa: F401
+    COMMA_DECIMAL_LANGUAGES,
+    CONVO_STRINGS,
+    LANG_HEADINGS,
+    LANGUAGE_NAMES,
+    LESSON_ACK_DONE_TEXT,
+    LESSON_ACK_TEXT,
+    NEWS_DEFAULT_FEEDS,
+    NEWS_FEED_CATALOGUE,
+    SUPPORTED_LANGUAGE_CODES,
+    convo_text,
+    lesson_ack_done_text,
+    lesson_ack_text,
+    resolve_language_name,
+)
 
 
 # ── Path resolution (computed once at import time) ───────────
@@ -76,43 +62,6 @@ KIWIX_DEFAULT_ZIM_NAME = "wikipedia_en_all_maxi_2026-02"
 ARTICLE_FILTER_DEFAULTS = {"min_words": 250, "max_words": 600}
 CLEAN_WORD_BUFFER = 0.25   # fraction of words lost during cleaning (parens, refs, etc.)
 
-# ── News feeds (fallback catalogue) ────────────────────────────
-NEWS_FEED_CATALOGUE: dict[str, dict[str, list[str]]] = {
-    "en": {
-        "Technology": [
-            "https://feeds.bbci.co.uk/news/technology/rss.xml",
-            "https://www.theregister.com/security/headlines.atom",
-        ],
-        "Science": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Mathematics": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "History": ["https://feeds.bbci.co.uk/news/world/rss.xml"],
-        "Art": ["https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"],
-        "Music": ["https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"],
-        "Philosophy": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Literature": ["https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"],
-        "Architecture": ["https://feeds.bbci.co.uk/news/world/rss.xml"],
-        "Biology": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Physics": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Chemistry": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Geography": [
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-            "https://www.nationalgeographic.com/news/",
-        ],
-        "Astronomy": [
-            "https://www.nasa.gov/rss/dyn/breaking_news.rss",
-            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        ],
-        "Psychology": ["https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
-        "Economics": ["https://feeds.bbci.co.uk/news/business/rss.xml"],
-        "Politics": [
-            "https://feeds.bbci.co.uk/news/politics/rss.xml",
-            "https://feeds.bbci.co.uk/news/world/rss.xml",
-        ],
-        "Medicine": ["https://feeds.bbci.co.uk/news/health/rss.xml"],
-        "Culture": ["https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"],
-    },
-}
-NEWS_DEFAULT_FEEDS = ["https://feeds.bbci.co.uk/news/rss.xml"]
 
 # ── LLM ────────────────────────────────────────────────────────
 # NOTE: model names have NO defaults — config.json is the single source
@@ -156,30 +105,6 @@ TG_LESSON_ACK_DELETE_DELAY_SECS = 5
 LESSON_ACK_EFFECT_DEFAULT        = "5104841245755180586" # Fire
 LESSON_ACK_EFFECT_WEEK_STREAK    = "5046509860389126442" # Confetti
 LESSON_ACK_EFFECT_MONTH_STREAK   = "5159385139981059251" # Heart
-
-# Post-lesson acknowledgement texts, per learner's LEARNING language
-# (the language of the lesson, not their native one).
-# Unknown language codes fall back to "en".
-LESSON_ACK_TEXT: dict[str, str] = {
-    "en": "📖 You've reached the end of your lesson.\nClick below when you're done reading 👇",
-    "de": "📖 Du bist am Ende deiner Lektion.\nKlicke unten, wenn du fertig bist 👇",
-    "cs": "📖 Jsi u konce lekce.\nKlikni dole, když budeš hotový 👇",
-    "hu": "📖 Elérkeztél a lecke végére.\nKattints lent, ha kész vagy 👇",
-    "it": "📖 Sei arrivato alla fine della lezione.\nClicca qui sotto quando hai finito 👇",
-    "es": "📖 Has llegado al final de la lección.\nHaz clic abajo cuando termines 👇",
-    "fr": "📖 Tu es à la fin de ta leçon.\nClique ci-dessous quand tu as fini 👇",
-}
-# Short "good job" confirmation shown (with the streak effect) after the
-# "Finished" click — also in the learning language.
-LESSON_ACK_DONE_TEXT: dict[str, str] = {
-    "en": "🎉 Good job!",
-    "de": "🎉 Gut gemacht!",
-    "cs": "🎉 Dobře!",
-    "hu": "🎉 Jól csináltad!",
-    "it": "🎉 Ben fatto!",
-    "es": "🎉 ¡Bien hecho!",
-    "fr": "🎉 Bien joué !",
-}
 
 # ── RAG ───────────────────────────────────────────────────
 RAG_DEFAULT_QDRANT_URL    = "http://localhost:6333"

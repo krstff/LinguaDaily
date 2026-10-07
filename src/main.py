@@ -17,8 +17,8 @@ import os
 import signal
 import sys
 
-from config import (CONFIG_PATH, DATA_DIR, LOG_FILE,
-                    resolve_language_name, load_config)
+from config import CONFIG_PATH, DATA_DIR, LOG_FILE, load_config
+from languages import resolve_language_name
 
 logger = logging.getLogger("lingua")
 

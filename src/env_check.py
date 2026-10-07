@@ -33,10 +33,8 @@ import sys
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-from config import (
-    CONFIG_PATH, DATA_DIR, PROJECT_DIR, load_config,
-    resolve_language_name, LANGUAGE_NAMES,
-)
+from config import CONFIG_PATH, DATA_DIR, PROJECT_DIR, load_config
+from languages import LANGUAGE_NAMES, resolve_language_name
 
 
 # ── Required Python packages ────────────────────────────────────────

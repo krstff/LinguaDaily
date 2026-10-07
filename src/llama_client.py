@@ -526,7 +526,7 @@ class LlamaClient:
         str or None
             Simplified text, or None on failure.
         """
-        from config import resolve_language_name
+        from languages import resolve_language_name
 
         model = self.resolve_model("simplify")
         language_name = resolve_language_name(language)
@@ -571,7 +571,7 @@ class LlamaClient:
         list[dict]
             List of {word, meaning} dicts, or empty list on failure.
         """
-        from config import resolve_language_name
+        from languages import resolve_language_name
 
         model = self.resolve_model("vocab")
         source_lang_name = resolve_language_name(source_lang)
@@ -819,7 +819,7 @@ class LlamaClient:
         references = []
         if intent in ("grammar_query", "vocab_query"):
             # Derive language code from name (e.g. "German" → "de")
-            from config import LANGUAGE_NAMES
+            from languages import LANGUAGE_NAMES
             lang_code = ""
             for code, name in LANGUAGE_NAMES.items():
                 if name.lower() == language_name.lower():

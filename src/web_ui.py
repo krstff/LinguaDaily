@@ -29,9 +29,9 @@ from src.config import (
     LOG_FILE,
     PROJECT_DIR,
     TTS_DEFAULT_VOICE,
-    resolve_language_name,
     load_config,
 )
+from src.languages import LANGUAGE_NAMES, resolve_language_name
 
 try:
     from flask import Flask, jsonify, render_template, request, send_from_directory
@@ -110,17 +110,12 @@ def create_app(config_path=None, log_file=None, password=None,
     def favicon():
         return send_from_directory(_TEMPLATE_DIR, "icon.png", mimetype="image/png")
 
-    # ── Global context: Kiwix languages for profile dropdowns ──
+    # ── Global context: supported languages for profile dropdowns ──
     @app.context_processor
-    def inject_kiwix_languages():
-        try:
-            cfg = load_config(_config_path)
-        except Exception:
-            cfg = {}
-        servers = cfg.get("kiwix_servers", {})
-        # Sorted list of language codes that have Kiwix server entries
-        langs = sorted(servers.keys())
-        return {"kiwix_languages": langs}
+    def inject_supported_languages():
+        # Sorted ISO codes from languages.py — the single source of truth
+        # for which languages the app supports (displayed as raw codes).
+        return {"supported_languages": sorted(LANGUAGE_NAMES)}
 
     # ── Hot-reload endpoint ──────────────────────────────
     @app.route("/api/reload", methods=["POST"])
@@ -443,10 +438,9 @@ def create_app(config_path=None, log_file=None, password=None,
         feeds_raw = (config.get("sources", {}) or {}).get("news", {}) or {}
         news_feeds = feeds_raw.get("feeds", {})
 
-        # Collect available languages from both Kiwix servers and news feeds
-        all_langs = set(kiwix_servers.keys())
-        all_langs.update(news_feeds.keys())
-        feed_languages = sorted(all_langs)
+        # Feeds can be configured for any supported language — languages.py
+        # is the source of truth, not the set of configured sources.
+        feed_languages = sorted(LANGUAGE_NAMES)
 
         wikipedia_backend = ((config.get("wikipedia") or {}).get("backend") or "auto")
 
@@ -541,51 +535,6 @@ def create_app(config_path=None, log_file=None, password=None,
                 json.dump(config, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             return jsonify({"message": f"Kiwix server '{lang}' removed"})
-        except Exception as e:
-            return jsonify({"message": f"Write error: {e}"}), 500
-
-    # ── Add language support (scaffolds Kiwix + feeds) ──────
-    @app.route("/api/sources/language", methods=["POST"])
-    @require_auth
-    def add_language():
-        """Add a new language with Kiwix server entry and empty feeds bucket.
-
-        Form fields: lang (required), base_url (optional), zim_name (optional)
-        """
-        lang = request.form.get("lang", "").strip().lower()
-        if not lang or len(lang) != 2:
-            return jsonify({"message": "Enter a valid two-letter language code"}), 400
-
-        config = load_config(_config_path)
-
-        # Check for existing Kiwix entry
-        kiwix = config.setdefault("kiwix_servers", {})
-        if lang in kiwix:
-            return jsonify({"message": f"Kiwix server for '{lang}' already exists"}), 409
-
-        # Add Kiwix server (with optional URL/ZIM from form, or empty)
-        base_url = request.form.get("base_url", "").strip()
-        zim_name = request.form.get("zim_name", "").strip()
-        kiwix[lang] = {}
-        if base_url:
-            kiwix[lang]["base_url"] = base_url
-        if zim_name:
-            kiwix[lang]["zim_name"] = zim_name
-
-        # Add empty feeds bucket
-        sources = config.setdefault("sources", {})
-        news = sources.setdefault("news", {})
-        feeds = news.setdefault("feeds", {})
-        feeds.setdefault(lang, {})
-
-        try:
-            backup = _config_path.with_suffix(".json.bak")
-            if _config_path.exists():
-                shutil.copy2(_config_path, backup)
-            with open(_config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            return jsonify({"message": f"Language '{lang}' added"})
         except Exception as e:
             return jsonify({"message": f"Write error: {e}"}), 500
 
