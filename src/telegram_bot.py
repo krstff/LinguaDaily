@@ -1571,6 +1571,15 @@ class TelegramBot:
                 return
             await self.convo_handler.handle_voice(message)
 
+        # ── Text messages → active conversation, else tutor ──────
+        @dp.message(lambda m: m.text is not None)
+        async def text_message(message: types.Message):
+            if (self.convo_handler is not None
+                    and self.convo_handler.has_session(message.chat.id)):
+                await self.convo_handler.handle_text(message)
+                return
+            await self.handle_tutor_message(message.chat.id, message.text)
+
         # ── All other messages → tutor chat ──
         @dp.message(lambda msg: True)  # catch-all
         async def tutor_catch_all(message: types.Message):

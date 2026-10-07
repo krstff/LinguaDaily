@@ -12,10 +12,9 @@ the language level follows the profile's `target_level` (CEFR).
   ├─ LLM (task "convo") ──► opening line + translation (JSON)
   ├─ TTS ─────────────────► audio sent with spoiler-hidden text + translation
   │
-  user records a voice message
+  user answers with a voice message or a typed text message
   │
-  ├─ ffmpeg ──────────────► OGG/Opus → 16 kHz WAV
-  ├─ STT endpoint ────────► transcript
+  ├─ (voice only) ffmpeg ─► OGG/Opus → 16 kHz WAV → STT transcript
   ├─ LLM (task "convo") ──► feedback + score (0-100) + next line + translation
   ├─ TTS ─────────────────► next audio + spoilers
   │
@@ -40,8 +39,8 @@ The final summary lists the whole conversation: for each turn the partner's
 line (the one the user answered) followed by the user's transcribed answer
 with its score.
 
-Scores are based on the **transcribed words** (grammar / word choice), not on
-acoustics — the LLM never hears the audio.
+Scores are based on the **words** (transcribed or typed — grammar / word
+choice), not on acoustics — the LLM never hears the audio.
 
 ## Partner behaviour by level
 
@@ -74,8 +73,8 @@ acoustics — the LLM never hears the audio.
 ```
 
 * `stt` — any OpenAI-compatible `/v1/audio/transcriptions` endpoint.
-  **Required** for `/convo`; without it the command reports that STT is
-  not configured.
+  Only needed for **voice** answers; `/convo` works without it (the
+  learner types instead). Voice messages without STT get a clear error.
 * `llm.task_models.convo` — optional small model for the conversation
   (falls back to `llm.default_model`).
 * `convo.turns` — default number of turns (2–8), overridable per call.
@@ -113,15 +112,17 @@ models:
 ## Telegram
 
 * `/convo [N]` — start a conversation (N = turns, default from config).
-* Voice messages are routed to the active conversation; text messages keep
-  going to the tutor. A voice message without an active session gets a
+* While a conversation is active, **both** voice messages and text
+  messages are routed to it (text skips the STT step). Without an active
+  session, text keeps going to the tutor and a voice message gets a
   short hint.
 * Sessions expire after 10 minutes of inactivity (`CONVO_SESSION_TIMEOUT_SECS`).
 
 ## Files
 
-* `src/convo.py` — `ConvoHandler`: session state, prompts, voice pipeline
+* `src/convo.py` — `ConvoHandler`: session state, prompts, voice + text
+  answer pipeline
 * `src/stt.py` — OpenAI-compatible transcription client + ffmpeg conversion
 * `src/llama_client.py` — `chat_json()` (JSON-tolerant LLM call),
   `resolve_model("convo")` task resolution
-* `src/telegram_bot.py` — `/convo` command + voice-message routing
+* `src/telegram_bot.py` — `/convo` command + voice/text-message routing

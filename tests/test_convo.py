@@ -151,12 +151,13 @@ class TestHelpers:
 
 class TestStartConvo:
     @pytest.mark.asyncio
-    async def test_requires_stt_config(self, env):
+    async def test_starts_without_stt_config(self, env):
+        # STT is only needed for voice answers — typed text still works
         handler, bot, aiogram_bot, _ = env
         del handler.config["stt"]
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
         await handler.start_convo(1, "krystof")
-        assert 1 not in handler._sessions
-        assert any("Speech-to-text" in t for t in _sent_texts(aiogram_bot))
+        assert 1 in handler._sessions
 
     @pytest.mark.asyncio
     async def test_requires_lesson(self, env):
@@ -508,6 +509,110 @@ class TestPromptHistory:
         assert 'Partner: "Was hat dich überrascht?"' in next_prompt
         assert 'Learner: "Ja."' in next_prompt
         assert 'The learner just said: "Weil es schnell ist."' in next_prompt
+
+
+# ── Text answers ────────────────────────────────────────────────────
+
+class TestTextFlow:
+    def _text_message(self, chat_id=1, text="Ja, ich habe es gelesen."):
+        msg = MagicMock()
+        msg.chat.id = chat_id
+        msg.text = text
+        return msg
+
+    @pytest.mark.asyncio
+    async def test_text_without_session_is_ignored(self, env):
+        handler, bot, aiogram_bot, _ = env
+        assert handler.has_session(1) is False
+        await handler.handle_text(self._text_message(1))
+        # nothing sent — the bot would have routed it to the tutor instead
+        assert aiogram_bot.send_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_text_advances_turn(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        handler._generate_next = lambda *a, **k: {
+            "feedback": "Sehr gut.",
+            "score": 92,
+            "reply": "Sehr interessant.",
+            "translation": "Very interesting.",
+        }
+
+        await handler.handle_text(self._text_message(1, "Ja, ich habe es."))
+
+        session = handler._sessions[1]
+        assert session["lines"] == [
+            {"transcript": "Ja, ich habe es.", "score": 92}
+        ]
+        texts = _sent_texts(aiogram_bot)
+        assert any("92/100" in t and "Ja, ich habe es." in t for t in texts)
+        captions = _audio_captions(aiogram_bot)
+        assert any("Conversation 2/6" in c for c in captions)
+
+    @pytest.mark.asyncio
+    async def test_text_prompt_mentions_typed_input(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        prompts = []
+
+        class FakeClient:
+            def resolve_model(self, task):
+                return "fake-model"
+
+            def chat_json(self, system, user, task=None):
+                prompts.append(system)
+                if "opening line" in system:
+                    return {"reply": "Hi?", "translation": "Hi?"}
+                return {"feedback": "Gut.", "score": 80,
+                        "reply": "Warum?", "translation": "Why?"}
+
+        monkeypatch.setattr(handler, "_get_llama_client", lambda p: FakeClient())
+        await handler.start_convo(1, "krystof")
+
+        await handler.handle_text(self._text_message(1, "Ja."))
+
+        next_prompt = prompts[1]
+        assert "TYPING" in next_prompt
+        assert 'The learner just typed: "Ja."' in next_prompt
+        # voice phrasing must not leak into the text prompt
+        assert "SPEAKING" not in next_prompt
+
+    @pytest.mark.asyncio
+    async def test_voice_prompt_mentions_speaking(self, env, monkeypatch):
+        handler, bot, aiogram_bot, tmp_path = env
+        prompts = []
+
+        class FakeClient:
+            def resolve_model(self, task):
+                return "fake-model"
+
+            def chat_json(self, system, user, task=None):
+                prompts.append(system)
+                if "opening line" in system:
+                    return {"reply": "Hi?", "translation": "Hi?"}
+                return {"feedback": "Gut.", "score": 80,
+                        "reply": "Warum?", "translation": "Why?"}
+
+        monkeypatch.setattr(handler, "_get_llama_client", lambda p: FakeClient())
+        await handler.start_convo(1, "krystof")
+        _stub_stt(monkeypatch, tmp_path, "Ja.")
+
+        await handler.handle_voice(_voice_message(1))
+
+        next_prompt = prompts[1]
+        assert "SPEAKING" in next_prompt
+        assert 'The learner just said: "Ja."' in next_prompt
+
+    @pytest.mark.asyncio
+    async def test_text_while_busy_rejects(self, env):
+        handler, bot, aiogram_bot, _ = env
+        handler._generate_opening = lambda *a, **k: {"reply": "Hi", "translation": "Hi"}
+        await handler.start_convo(1, "krystof")
+        handler._sessions[1]["busy"] = True
+
+        await handler.handle_text(self._text_message(1))
+        assert any("Still working" in t for t in _sent_texts(aiogram_bot))
 
 
 # ── Audio cleanup (no disk accumulation) ────────────────────────────

@@ -89,7 +89,7 @@ My command setup:
 ```
 start - Show this message
 another - Request another daily lesson
-convo [N] - Speaking practice: listen to a line, record your answer (default 6 turns)
+convo [N] - Speaking practice: listen to a line, answer by voice or text (default 6 turns)
 quiz [N] - Multiple-choice quiz (default 10 questions)
 flashcards [N] - Browse vocabulary as flashcards (default 10)
 stop - Cancel a pending tutor reply or end a conversation
