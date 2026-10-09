@@ -33,4 +33,7 @@ jobs:
         run: cp config.sample.json config.json
 
       - name: Run tests
+        env:
+          # Services are reached via localhost + mapped port (not by service name)
+          QDRANT_TEST_URL: http://localhost:6333
         run: pytest
