@@ -8,6 +8,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +28,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Provide config.json from sample (real config is gitignored)
+        run: cp config.sample.json config.json
 
       - name: Run tests
         run: pytest
