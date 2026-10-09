@@ -555,6 +555,41 @@ class TestStopCommand:
         bot._in_flight[111222333]["task"].cancel()
         bot.db.close()
 
+    @pytest.mark.asyncio
+    async def test_stop_ends_active_convo(self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        convo = MagicMock()
+        convo.end_convo = MagicMock(return_value=True)
+        bot.convo_handler = convo
+
+        await bot.handle_stop(111222333)
+
+        convo.end_convo.assert_called_once()
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Conversation ended" in sent
+        bot.db.close()
+
+    @pytest.mark.asyncio
+    async def test_stop_falls_through_to_in_flight_without_convo(
+            self, sample_config, mock_aiogram):
+        from src.telegram_bot import TelegramBot
+        config = sample_config[0]
+        bot = TelegramBot(config=config)
+
+        # convo module present but no active session → normal /stop behaviour
+        convo = MagicMock()
+        convo.end_convo = MagicMock(return_value=False)
+        bot.convo_handler = convo
+
+        await bot.handle_stop(111222333)
+
+        sent = mock_aiogram.send_message.call_args[1]["text"]
+        assert "Nothing to stop" in sent
+        bot.db.close()
+
 
 # ── Command handler tests ───────────────────────────────────────────
 

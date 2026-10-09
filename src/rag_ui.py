@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import CONFIG_PATH, DATA_DIR, load_config
+from src.languages import LANGUAGE_NAMES
 
 logger = logging.getLogger("lingua")
 
@@ -93,12 +94,14 @@ def register_rag_ui(app, config_path=None):
             sources = []
             rag_config = {}
 
-        available_languages = []
+        # Language dropdowns track languages.py, not configured sources —
+        # the app works with online Wikipedia even when no Kiwix server
+        # is set up for a language.
+        available_languages = sorted(LANGUAGE_NAMES)
         wiktionary_backend = "auto"
         wiktionary_servers = {}
         try:
             config = load_config(_config_path)
-            available_languages = sorted(config.get("kiwix_servers", {}).keys())
             wt = config.get("wiktionary") or {}
             wiktionary_backend = wt.get("backend") or "auto"
             wiktionary_servers = wt.get("servers") or {}

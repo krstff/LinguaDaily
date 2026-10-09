@@ -70,6 +70,13 @@ The startup banner shows all configured profiles, schedules, and service status:
   LLM:        gemma-4-26B-language @ http://llama-swap:8080/v1
 ============================================================
 ```
+
+## Adding a Language
+
+1. **`src/languages.py`** — the single file that defines supported languages. If you want to add a support for a new language, i recommend just dropping this whole file into a LLM. Alternatively you can fill out the related fields in this file.
+2. **Kiwix servers (optional)** — Web UI → *Sources* (Wikipedia) and *Documents* (Wiktionary): add a per-language server for offline ZIM content. Without one, the app uses the online wikis.
+3. **Grammar RAG (optional)** — for the tutor to answer grammar questions well, upload and index a grammar book: Web UI → *Documents*.
+
 ## Connections
 
 This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.kiwix.org/wiki/Main_Page) for wiki articles, locally deployed LLM and TTS, Qdrant for RAG). Altough RSS feed fetching is also supported and any OpenAI API compatible LLM should also work. All connections are setup in the config file. Sources and models can be selected and edited through the web UI.
@@ -87,15 +94,16 @@ This project relies heavily on self hosted services (eg. [Kiwix](https://wiki.ki
 
 My command setup:
 ```
-start - Get usega information
-another - Requests another article.
-flashcards - Show flashcards.
-quiz - Play a quiz.
-history - Clears chat history on server.
-status - Get information about profile status.
-chatid - Get your chat id.
-profiles - Lists all available profiles.
-switch - Switch between profile chats.
+start - Show this message
+another - Request another daily lesson
+convo [N] - Speaking practice: listen to a line, answer by voice or text (default 6 turns)
+quiz [N] - Multiple-choice quiz (default 10 questions)
+flashcards [N] - Browse vocabulary as flashcards (default 10)
+stop - Cancel a pending tutor reply or end a conversation
+profiles - List & switch your profiles
+stats - Show your stats
+history clear - Clear chat history
+chatid - Get your chat id
 ```
 
 ### Web UI
@@ -171,3 +179,4 @@ So i don't forget how this works :))
 - [TTS Module Guide](docs/tts.md) — OmniVoice wrapper, text sanitization
 - [Wikipedia Fetcher Guide](docs/wikipedia-fetcher.md) — Kiwix/ZIM client, HTML extraction, smart truncation
 - [RAG Guide](docs/rag_guide.md) — Optional textbook grounding for the tutor chat via Qdrant
+- [Conversation Practice](docs/convo.md) — Speaking/listening with /convo (STT + TTS + small LLM)

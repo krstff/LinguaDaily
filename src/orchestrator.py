@@ -29,10 +29,10 @@ from config import (
     DEFAULT_NATIVE_LANGUAGE,
     PROJECT_DIR,
     TTS_DEFAULT_VOICE,
-    resolve_language_name,
     tts_speed_for_level,
     load_config,
 )
+from languages import resolve_language_name
 
 logger = logging.getLogger(__name__)
 

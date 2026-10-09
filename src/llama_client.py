@@ -300,7 +300,9 @@ class LlamaClient:
         Priority (highest first):
           1. Profile-level task override (e.g. profile.llm_translate_model)
           2. Profile-level generic override (profile.llm_model)
-          3. Global default model (llm.default_model)
+          3. Global per-task override (llm.task_models — e.g. a small fast
+             model for conversation practice: {"convo": "qwen-1b"})
+          4. Global default model (llm.default_model)
 
         Returns None if no model is configured (caller must handle that).
 
@@ -322,6 +324,11 @@ class LlamaClient:
                 return self.profile[task_key]
             if "llm_model" in self.profile:
                 return self.profile["llm_model"]
+
+        # Global per-task override (llm.task_models)
+        task_models = self.llm_cfg.get("task_models", {}) or {}
+        if task in task_models:
+            return task_models[task]
 
         return self.default_model
 
@@ -393,6 +400,73 @@ class LlamaClient:
 
     # ── Public API ─────────────────────────────────────────────────
 
+    def chat_json(
+        self,
+        system: str,
+        user: str,
+        task: str = "default",
+        temperature: float = 0.7,
+    ) -> Optional[dict]:
+        """Single chat completion that must return a JSON object.
+
+        Resolves the model for `task` (so a small fast model can be
+        configured per task, e.g. conversation practice), sends the
+        system + user messages, and parses the reply as JSON.
+        Tolerates markdown code fences and surrounding prose — the
+        outermost {…} block is parsed.
+
+        Parameters
+        ----------
+        system : str
+            System prompt.
+        user : str
+            User message.
+        task : str
+            Task identifier for model resolution (see resolve_model).
+        temperature : float
+            Sampling temperature.
+
+        Returns
+        -------
+        dict or None
+            Parsed JSON object, or None on any failure.
+        """
+        model = self.resolve_model(task)
+        if not model:
+            logger.error("No LLM model configured for task '%s'", task)
+            return None
+
+        result = self._chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            model=model,
+            temperature=temperature,
+        )
+        if not result:
+            return None
+
+        text = result.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(
+                l for l in lines if not l.strip().startswith("```")
+            ).strip()
+
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            logger.warning("No JSON object in LLM reply: %s", text[:200])
+            return None
+
+        try:
+            data = json.loads(text[start:end + 1])
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse LLM JSON: %s — raw: %s",
+                           e, text[:200])
+            return None
+
     def translate(
         self,
         text: str,
@@ -452,7 +526,7 @@ class LlamaClient:
         str or None
             Simplified text, or None on failure.
         """
-        from config import resolve_language_name
+        from languages import resolve_language_name
 
         model = self.resolve_model("simplify")
         language_name = resolve_language_name(language)
@@ -497,7 +571,7 @@ class LlamaClient:
         list[dict]
             List of {word, meaning} dicts, or empty list on failure.
         """
-        from config import resolve_language_name
+        from languages import resolve_language_name
 
         model = self.resolve_model("vocab")
         source_lang_name = resolve_language_name(source_lang)
@@ -745,7 +819,7 @@ class LlamaClient:
         references = []
         if intent in ("grammar_query", "vocab_query"):
             # Derive language code from name (e.g. "German" → "de")
-            from config import LANGUAGE_NAMES
+            from languages import LANGUAGE_NAMES
             lang_code = ""
             for code, name in LANGUAGE_NAMES.items():
                 if name.lower() == language_name.lower():

@@ -43,25 +43,24 @@ from typing import Optional
 
 from telegramify_markdown import convert as md_convert, split_entities
 
+from languages import LESSON_ACK_DONE_TEXT, LESSON_ACK_TEXT, resolve_language_name
 from config import (
+    CONVO_DEFAULT_TURNS,
     CONFIG_PATH,
     DATA_DIR,
     DEFAULT_LEARNING_LANGUAGE,
     DEFAULT_NATIVE_LANGUAGE,
     FLASHCARD_DEFAULT_CARD_COUNT,
     FLASHCARD_DEFAULT_QUIZ_COUNT,
-    LESSON_ACK_DONE_TEXT,
     LESSON_ACK_EFFECT_DEFAULT,
     LESSON_ACK_EFFECT_MONTH_STREAK,
     LESSON_ACK_EFFECT_WEEK_STREAK,
-    LESSON_ACK_TEXT,
     TG_HISTORY_PURGE_DAYS,
     TG_LESSON_ACK_DELETE_DELAY_SECS,
     TG_LESSON_ACK_DEFAULT,
     TG_LESSON_COOLDOWN_SECS,
     TG_MAX_MSG_LEN,
     TG_SAFE_TRUNCATE,
-    resolve_language_name,
     load_config,
 )
 
@@ -293,6 +292,9 @@ class TelegramBot:
 
         # Study handler (flashcards + quiz, lazy-init in start())
         self.study_handler: Optional["StudyHandler"] = None
+
+        # Convo handler (speaking/listening practice, lazy-init in start())
+        self.convo_handler: Optional["ConvoHandler"] = None
 
         # Cooldown tracking for /another command (chat_id → timestamp)
         self._last_lesson_request: dict[int, float] = {}
@@ -1016,13 +1018,23 @@ class TelegramBot:
         return not task.done() and not cancelling
 
     async def handle_stop(self, chat_id: int):
-        """Cancel the in-flight tutor reply for this chat (if any).
+        """Cancel the in-flight tutor reply or end the active conversation.
 
         Cancelling the task closes the streaming HTTP connection, which
         makes the inference server abort the generation.  The "Thinking…"
         placeholder is deleted so the exchange disappears from the chat.
         """
         bot = await self._get_aiogram_bot()
+
+        # End an active /convo session first
+        if self.convo_handler is not None and \
+                self.convo_handler.end_convo(chat_id):
+            await bot.send_message(
+                chat_id=chat_id,
+                text="⏹ Conversation ended.",
+            )
+            return
+
         entry = self._in_flight.get(int(chat_id))
         if entry is None or not self._tutor_task_running(entry["task"]):
             await bot.send_message(
@@ -1060,13 +1072,14 @@ class TelegramBot:
                     f"Commands:\n"
                     f"/start — Show this message\n"
                     f"/another — Request another daily lesson\n"
-                    f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
+                    f"/convo [N]      — Speaking practice: listen & record (default {CONVO_DEFAULT_TURNS} turns)\n"
                     f"/quiz [N]       — Multiple-choice quiz (default 10 questions)\n"
-                    f"/chatid — Show your Telegram Chat ID\n"
+                    f"/flashcards [N] — Browse vocabulary as flashcards (default 10)\n"
+                    f"/stop — Cancel a pending tutor reply or end a conversation\n"
                     f"/profiles — List & switch your profiles\n"
-                    f"/stop — Cancel a pending tutor reply\n"
+                    f"/stats — Show your stats\n"
                     f"/history clear — Clear chat history\n"
-                    f"/stats — Show your stats"
+                    f"/chatid — Show your Telegram Chat ID"
                 ),
                 parse_mode="HTML",
             )
@@ -1350,6 +1363,16 @@ class TelegramBot:
         except Exception as e:
             logger.warning("Study module not available: %s", e)
 
+        # ── Conversation practice (speaking/listening) ──────────
+        try:
+            from convo import ConvoHandler
+            self.convo_handler = ConvoHandler(
+                config=self.config, telegram_bot=self
+            )
+            logger.info("Convo handler initialised (speaking practice)")
+        except Exception as e:
+            logger.warning("Convo module not available: %s", e)
+
         # ── Command handlers ──
         @dp.message(Command("start"))
         async def cmd_start(message: types.Message):
@@ -1386,6 +1409,34 @@ class TelegramBot:
         @dp.message(Command("another"))
         async def cmd_another(message: types.Message):
             await self.handle_another_lesson(message.chat.id)
+
+        # ── Conversation practice command ────────────────────────
+        @dp.message(Command("convo"))
+        async def cmd_convo(message: types.Message):
+            if self.convo_handler is None:
+                await message.answer("⚠️ Convo module not available.")
+                return
+            profile_name = self.resolve_profile(message.chat.id)
+            if not profile_name:
+                await message.answer(
+                    "⚠️ Not registered. Ask an admin to add your Telegram chat ID."
+                )
+                return
+
+            # Parse optional turns argument: /convo 6
+            args = message.text.split(maxsplit=1)
+            turns = None
+            if len(args) > 1:
+                try:
+                    turns = int(args[1].strip())
+                except ValueError:
+                    pass
+
+            await self.convo_handler.start_convo(
+                chat_id=message.chat.id,
+                profile_name=profile_name,
+                turns=turns,
+            )
 
         # ── Flashcard command ────────────────────────────────────
         @dp.message(Command("flashcards"))
@@ -1510,6 +1561,22 @@ class TelegramBot:
             # buttons (retry_missed / new_quiz / to_flashcards) are all
             # handled inside the study handler.
             await self.study_handler.handle_callback(callback_query)
+
+        # ── Voice messages → conversation practice ───────────────
+        @dp.message(lambda m: m.voice is not None)
+        async def voice_convo(message: types.Message):
+            if self.convo_handler is None:
+                return
+            await self.convo_handler.handle_voice(message)
+
+        # ── Text messages → active conversation, else tutor ──────
+        @dp.message(lambda m: m.text is not None)
+        async def text_message(message: types.Message):
+            if (self.convo_handler is not None
+                    and self.convo_handler.has_session(message.chat.id)):
+                await self.convo_handler.handle_text(message)
+                return
+            await self.handle_tutor_message(message.chat.id, message.text)
 
         # ── All other messages → tutor chat ──
         @dp.message(lambda msg: True)  # catch-all

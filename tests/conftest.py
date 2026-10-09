@@ -13,6 +13,21 @@ if SRC_DIR not in sys.path:
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: tests requiring live external services (Kiwix, Qdrant); "
+        "skipped unless RUN_INTEGRATION=1",
+    )
+
+
+@pytest.fixture(autouse=True)
+def skip_integration_tests(request):
+    """Skip @pytest.mark.integration tests unless RUN_INTEGRATION=1 is set."""
+    if "integration" in request.keywords and os.environ.get("RUN_INTEGRATION") != "1":
+        pytest.skip("integration test: set RUN_INTEGRATION=1 to enable")
+
+
 def _reset_client_caches():
     """Clear the shared OpenAI client caches in all loaded config modules."""
     for module_name in ("config", "src.config"):

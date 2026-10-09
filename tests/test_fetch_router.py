@@ -246,8 +246,10 @@ class TestCli:
         from src.fetch_router import main
         mock_fetch.return_value = ("CLI Test", "word " * 300)
 
+        # main() does `from config import load_config`, which resolves to the
+        # top-level `config` module (src/ is on sys.path), not `src.config`.
         with patch("sys.argv", ["fetch_router.py", "--source", "wikipedia", "Topic"]), \
-             patch("src.config.load_config") as mock_load_cfg:
+             patch("config.load_config") as mock_load_cfg:
             mock_load_cfg.return_value = {"kiwix": {}, "profiles": {}}
             with patch("builtins.print") as mock_print:
                 main()

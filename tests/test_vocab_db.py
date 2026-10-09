@@ -93,6 +93,95 @@ class TestVocabDB:
         assert db.migrate_csv() == {}  # no CSVs → nothing happens
 
 
+class TestSearchAndDelete:
+    """search_entries / delete_by_ids / delete_profile / profile_counts."""
+
+    @pytest.fixture
+    def seeded(self, db):
+        db.add_words("krystof", [
+            {"word": "Haus", "meaning": "house"},
+            {"word": "Auto", "meaning": "car"},
+            {"word": "Politiker", "meaning": "politician"},
+        ])
+        db.add_words("johi", [{"word": "ciao", "meaning": "hello"}])
+        # Bump Haus frequency so sorting is meaningful
+        db.record_exposure("krystof", ["Haus", "Haus"])
+        db.record_exposure("krystof", [], outcomes=[("Haus", True)])
+        return db
+
+    def test_profile_counts(self, seeded):
+        assert seeded.profile_counts() == {"krystof": 3, "johi": 1}
+
+    def test_search_returns_total_and_entries_with_id(self, seeded):
+        total, entries = seeded.search_entries("krystof")
+        assert total == 3
+        assert len(entries) == 3
+        assert all("id" in e and e["id"] > 0 for e in entries)
+
+    def test_search_filters_case_insensitive_word_and_meaning(self, seeded):
+        total, _ = seeded.search_entries("krystof", search="polit")
+        assert total == 1
+        total, entries = seeded.search_entries("krystof", search="HOUSE")
+        assert total == 1
+        assert entries[0]["word"] == "Haus"
+        total, _ = seeded.search_entries("krystof", search="zzz-nope")
+        assert total == 0
+
+    def test_search_scoped_to_profile(self, seeded):
+        total, _ = seeded.search_entries("johi", search="ciao")
+        assert total == 1
+        total, _ = seeded.search_entries("krystof", search="ciao")
+        assert total == 0
+
+    def test_search_pagination(self, db):
+        # Zero-padded so lexicographic word order == numeric order
+        db.add_words("p", [{"word": f"w{i:02d}", "meaning": f"m{i}"} for i in range(25)])
+        total, page1 = db.search_entries("p", sort="word", limit=10, offset=0)
+        assert total == 25
+        assert [e["word"] for e in page1] == [f"w{i:02d}" for i in range(10)]
+        total, page3 = db.search_entries("p", sort="word", limit=10, offset=20)
+        assert [e["word"] for e in page3] == [f"w{i:02d}" for i in range(20, 25)]
+
+    def test_search_sort_and_order(self, seeded):
+        # Haus has frequency 3 (2 exposures + 1 add), others 1
+        _, entries = seeded.search_entries("krystof", sort="frequency", order="desc")
+        assert entries[0]["word"] == "Haus"
+        _, entries = seeded.search_entries("krystof", sort="word", order="asc")
+        assert [e["word"] for e in entries] == sorted(
+            ["Haus", "Auto", "Politiker"], key=str.lower)
+
+    def test_search_invalid_sort_falls_back_to_id(self, seeded):
+        total, entries = seeded.search_entries("krystof", sort="DROP TABLE")
+        assert total == 3  # no SQL injection, just default ordering
+
+    def test_delete_by_ids(self, seeded):
+        _, entries = seeded.search_entries("krystof")
+        by_word = {e["word"]: e["id"] for e in entries}
+        deleted = seeded.delete_by_ids("krystof", [by_word["Haus"], by_word["Auto"]])
+        assert deleted == 2
+        assert seeded.word_count("krystof") == 1
+        # johi untouched
+        assert seeded.word_count("johi") == 1
+
+    def test_delete_by_ids_scoped_to_profile(self, seeded):
+        """An id from another profile must not be deleted via this profile."""
+        _, johi_entries = seeded.search_entries("johi")
+        johi_id = johi_entries[0]["id"]
+        deleted = seeded.delete_by_ids("krystof", [johi_id])
+        assert deleted == 0
+        assert seeded.word_count("johi") == 1
+
+    def test_delete_by_ids_empty_and_unknown(self, seeded):
+        assert seeded.delete_by_ids("krystof", []) == 0
+        assert seeded.delete_by_ids("krystof", [999999]) == 0
+        assert seeded.word_count("krystof") == 3
+
+    def test_delete_profile(self, seeded):
+        assert seeded.delete_profile("krystof") == 3
+        assert seeded.word_count("krystof") == 0
+        assert seeded.profile_counts() == {"johi": 1}
+
+
 class TestSharedInstance:
     """Process-wide shared VocabDB (bot loop + web UI threads)."""
 

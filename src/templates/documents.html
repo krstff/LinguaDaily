@@ -344,7 +344,12 @@
       <input type="hidden" id="wiktionary-modal-lang" value="">
       <div class="form-row">
         <label>Language code</label>
-        <input type="text" id="wiktionary-modal-lang-input" placeholder="de" maxlength="8">
+        <select id="wiktionary-modal-lang-select" required>
+          <option value="">— select —</option>
+          {% for lang in available_languages %}
+          <option value="{{ lang }}">{{ lang }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div class="form-row">
         <label>Base URL</label>
@@ -391,16 +396,18 @@ function openWiktionaryModal(row) {
     document.getElementById('wiktionary-modal-title').textContent = 'Edit Wiktionary Server';
     document.getElementById('wiktionary-modal-action').value = 'edit';
     document.getElementById('wiktionary-modal-lang').value = lang;
-    document.getElementById('wiktionary-modal-lang-input').value = lang;
-    document.getElementById('wiktionary-modal-lang-input').disabled = true;
+    const langSel = document.getElementById('wiktionary-modal-lang-select');
+    langSel.value = lang;
+    langSel.disabled = true;
     document.getElementById('wiktionary-modal-base-url').value = row.dataset.baseUrl;
     document.getElementById('wiktionary-modal-zim').value = row.dataset.zimName;
   } else {
     document.getElementById('wiktionary-modal-title').textContent = 'Add Wiktionary Server';
     document.getElementById('wiktionary-modal-action').value = 'add';
     document.getElementById('wiktionary-modal-lang').value = '';
-    document.getElementById('wiktionary-modal-lang-input').value = '';
-    document.getElementById('wiktionary-modal-lang-input').disabled = false;
+    const langSel = document.getElementById('wiktionary-modal-lang-select');
+    langSel.value = '';
+    langSel.disabled = false;
     document.getElementById('wiktionary-modal-base-url').value = '';
     document.getElementById('wiktionary-modal-zim').value = '';
   }
@@ -415,7 +422,7 @@ async function saveWiktionaryServer(event) {
   event.preventDefault();
   const formData = new FormData();
   formData.append('action', document.getElementById('wiktionary-modal-action').value);
-  formData.append('lang', document.getElementById('wiktionary-modal-lang-input').value.trim());
+  formData.append('lang', document.getElementById('wiktionary-modal-lang-select').value.trim());
   formData.append('base_url', document.getElementById('wiktionary-modal-base-url').value.trim());
   formData.append('zim_name', document.getElementById('wiktionary-modal-zim').value.trim());
   try {

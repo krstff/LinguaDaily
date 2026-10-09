@@ -59,6 +59,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import KIWIX_DEFAULT_BASE_URL
+from languages import LANG_HEADINGS
 from wikipedia_fetcher import (
     KiwixClient,
     WikipediaClient,
@@ -139,24 +140,12 @@ class WiktionaryClient(WikipediaClient):
         return text
 
 
-# ── Language scoping (step 0) ─────────────────────────────────────────
+# ── Language scoping (step 0) ─────────────────────────────────────
+#
+# LANG_HEADINGS (folded language-name patterns per target language)
+# lives in src/languages.py — the single file to edit when
+# extending language support.
 
-# Folded language-name patterns per TARGET language.  A page section is
-# "for us" when its h2 heading (text or extiw link title) contains one of
-# the folded patterns.  Patterns are stored folded (diacritics stripped,
-# casefolded).
-#   * de/cs/hu/it/es — the endonym as written on that language's own wiki
-#     ("Haus (Deutsch)", bare "čeština", bare "Magyar", …)
-#   * en — the English exonyms, because on en.wiktionary.org the
-#     language sections are headed "English", "Czech", "German", …
-LANG_HEADINGS = {
-    "de": ("deutsch",),
-    "en": ("english", "czech", "german", "hungarian", "spanish", "italian"),
-    "cs": ("cestina", "cesky"),
-    "hu": ("magyar",),
-    "it": ("italiano",),
-    "es": ("espanol", "castellano"),
-}
 
 # Every language name known to the scoping table — Tier 2 word links whose
 # text is one of these are language mentions, not lemma candidates.

@@ -138,6 +138,69 @@ class VocabDB:
             ).fetchone()
         return row[0]
 
+    def profile_counts(self) -> dict[str, int]:
+        """Word count per profile: {profile: count}."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT profile, COUNT(*) FROM vocab GROUP BY profile"
+            ).fetchall()
+        return {p: n for p, n in rows}
+
+    def search_entries(
+        self,
+        profile: str,
+        search: str | None = None,
+        sort: str = "id",
+        order: str = "asc",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[int, list[dict]]:
+        """Search + paginate vocabulary for a profile.
+
+        Returns (total_matching, entries). Each entry includes its row
+        ``id`` so the UI can delete specific words. ``search`` is a
+        case-insensitive substring match on word or meaning. ``sort`` is
+        restricted to a whitelist of column names.
+        """
+        allowed_sort = {"id", "word", "word_key", "meaning", "frequency",
+                        "last_seen", "total_correct", "total_wrong",
+                        "mastery_score"}
+        if sort not in allowed_sort:
+            sort = "id"
+        sql_order = "DESC" if str(order).lower() == "desc" else "ASC"
+
+        where = "WHERE profile = ?"
+        params: list = [profile]
+        if search:
+            where += (" AND (LOWER(word) LIKE LOWER(?) "
+                      "OR LOWER(meaning) LIKE LOWER(?))")
+            like = f"%{search.strip()}%"
+            params += [like, like]
+
+        with self._lock:
+            total = self.conn.execute(
+                f"SELECT COUNT(*) FROM vocab {where}", params
+            ).fetchone()[0]
+            rows = self.conn.execute(
+                "SELECT id, word, meaning, frequency, last_seen, "
+                "total_correct, total_wrong, mastery_score FROM vocab "
+                f"{where} ORDER BY {sort} {sql_order} LIMIT ? OFFSET ?",
+                params + [int(limit), int(offset)],
+            ).fetchall()
+        return total, [
+            {
+                "id": r[0],
+                "word": r[1],
+                "meaning": r[2],
+                "frequency": r[3],
+                "last_seen": r[4] or None,
+                "total_correct": r[5],
+                "total_wrong": r[6],
+                "mastery_score": r[7],
+            }
+            for r in rows
+        ]
+
     # ── Writes ─────────────────────────────────────────────────────
 
     def add_words(self, profile: str, words) -> int:
@@ -210,6 +273,34 @@ class VocabDB:
                         (c, wrong, mastery, profile, str(w).strip().lower()),
                     )
             self.conn.commit()
+
+    # ── Deletes ────────────────────────────────────────────────────
+
+    def delete_by_ids(self, profile: str, ids: list[int]) -> int:
+        """Delete specific vocab rows by id (restricted to ``profile``).
+
+        Returns the number of rows deleted. Unknown ids are ignored.
+        """
+        ids = [int(i) for i in ids if str(i).strip()]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        with self._lock:
+            cur = self.conn.execute(
+                f"DELETE FROM vocab WHERE profile = ? AND id IN ({placeholders})",
+                [profile] + ids,
+            )
+            self.conn.commit()
+        return cur.rowcount
+
+    def delete_profile(self, profile: str) -> int:
+        """Delete every vocab row for a profile. Returns rows deleted."""
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM vocab WHERE profile = ?", (profile,)
+            )
+            self.conn.commit()
+        return cur.rowcount
 
     # ── Legacy CSV migration ───────────────────────────────────────
 

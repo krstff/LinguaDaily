@@ -19,7 +19,8 @@ Usage:
 import logging
 from datetime import date, datetime, timedelta, timezone
 
-from config import load_config, resolve_language_name
+from config import load_config
+from languages import resolve_language_name
 from vocab_db import VocabDB, get_shared_db
 
 logger = logging.getLogger(__name__)
